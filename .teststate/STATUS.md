@@ -1,6 +1,6 @@
 # Стан тестів (автоматично, не правити руками)
 
-Створено: `tools/test_ledger.py`. Оновлено: 2026-11-10 14:56:30
+Створено: `tools/test_ledger.py`. Оновлено: 2026-11-10 17:17:21
 
 **Якщо ти ШІ-агент:** перш ніж запускати тести, виконай `python tools/test_ledger.py status`. Запускай лише ті, що позначені «не запускався», «застарів» або «ПАДАЄ».
 
@@ -14,7 +14,7 @@
 | `tests/test_agent_live_ux.py` | пройдено | unittest | 2026-11-10 14:42:08 |  |
 | `tests/test_agent_reliability.py` | пройдено | unittest | 2026-11-10 14:42:09 |  |
 | `tests/test_agent_scenarios.py` | пройдено | unittest | 2026-11-10 11:50:18 |  |
-| `tests/test_all_tools.py` | пройдено | script | 2026-11-10 14:42:11 |  |
+| `tests/test_all_tools.py` | пройдено | script | 2026-11-10 17:17:18 |  |
 | `tests/test_ast_editor.py` | пройдено | script | 2026-11-10 14:50:59 |  |
 | `tests/test_audit_regressions.py` | пройдено | unittest | 2026-11-10 14:50:59 |  |
 | `tests/test_auto_setup.py` | пройдено | script | 2026-11-10 14:51:00 |  |
@@ -46,7 +46,7 @@
 | `tests/test_deep_mode_live_model.py` | пройдено | script | 2026-11-10 14:53:04 |  |
 | `tests/test_deep_view.py` | пройдено | unittest | 2026-11-10 11:50:20 |  |
 | `tests/test_deploy.py` | пройдено | script | 2026-11-10 14:53:06 |  |
-| `tests/test_diff_stats.py` | пройдено | script | 2026-11-10 11:50:20 |  |
+| `tests/test_diff_stats.py` | пройдено | script | 2026-11-10 17:17:19 |  |
 | `tests/test_dom_bridge.py` | пройдено | unittest | 2026-11-10 11:50:20 |  |
 | `tests/test_edge_cases.py` | пройдено | script | 2026-11-10 14:53:07 |  |
 | `tests/test_editor_files.py` | пройдено | script | 2026-11-10 14:44:21 |  |
@@ -55,7 +55,7 @@
 | `tests/test_everything_works.py` | пройдено | unittest | 2026-11-10 14:53:07 |  |
 | `tests/test_features.py` | пройдено | script | 2026-11-10 14:53:09 |  |
 | `tests/test_focus_mode.py` | пройдено | script | 2026-11-10 14:53:16 |  |
-| `tests/test_git_degradation.py` | пройдено | unittest | 2026-11-10 11:50:20 |  |
+| `tests/test_git_degradation.py` | пройдено | unittest | 2026-11-10 17:17:20 |  |
 | `tests/test_ide_core.py` | пройдено | unittest | 2026-11-10 14:50:23 |  |
 | `tests/test_idle_reload_live.py` | пройдено | script | 2026-11-10 14:53:25 |  |
 | `tests/test_idle_unload_live.py` | пройдено | script | 2026-11-10 14:53:28 |  |
@@ -106,7 +106,7 @@
 | `tests/test_stabilization_regressions.py` | пройдено | unittest | 2026-11-10 14:55:30 |  |
 | `tests/test_stage4_reliability.py` | пройдено | unittest | 2026-11-10 12:35:33 |  |
 | `tests/test_startup_regressions.py` | пройдено | unittest | 2026-11-10 14:46:51 |  |
-| `tests/test_startup_speed.py` | пройдено | unittest | 2026-11-10 14:46:53 |  |
+| `tests/test_startup_speed.py` | пройдено | unittest | 2026-11-10 17:17:21 |  |
 | `tests/test_streaming.py` | пройдено | script | 2026-11-10 14:55:34 |  |
 | `tests/test_tabs.py` | пройдено | unittest | 2026-11-10 14:55:35 |  |
 | `tests/test_task_center_live.py` | пройдено | script | 2026-11-10 14:55:48 |  |
