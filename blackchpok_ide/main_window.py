@@ -6084,7 +6084,11 @@ class BlackChpokIDE(tk.Tk):
         if path:
             self.open_path(Path(path))
 
-    def open_path(self, path: Path, line: int = 0) -> None:
+    def open_path(self, path: Path | str, line: int = 0) -> None:
+        # Публічний вхід: сюди приходять і Path, і рядки з пошуку, палітри
+        # та панелей. Без цього приведення ``file_tree.reveal`` падав на
+        # рядку з ``'str' object has no attribute 'resolve'``.
+        path = Path(path)
         if self.tabs.open_file(path, line=line):
             # Файл відкрито — стартовий екран більше не потрібен.
             self._hide_welcome()

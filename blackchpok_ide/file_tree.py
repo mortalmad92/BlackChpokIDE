@@ -193,13 +193,14 @@ class FileTree(ttk.Frame):
             return
         self.on_open(path)
 
-    def reveal(self, path: Path) -> None:
+    def reveal(self, path: Path | str) -> None:
         """Розкрити папку і виділити файл."""
         if not self.root_dir:
             return
         try:
+            path = Path(path)
             relative = path.resolve().relative_to(self.root_dir.resolve())
-        except ValueError:
+        except (ValueError, TypeError, OSError):
             return
         parent_item = ""
         current = self.root_dir
