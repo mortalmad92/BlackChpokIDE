@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+
+LOG = logging.getLogger("blackchpok.workspace")
 
 MAX_READ_BYTES = 8 * 1024 * 1024
 MAX_SEARCH_RESULTS = 400
@@ -122,8 +125,13 @@ def write_text_file(path: Path, content: str) -> None:
             backup = path.with_suffix(path.suffix + ".bak")
             try:
                 backup.write_bytes(path.read_bytes())
-            except OSError:
-                pass
+            except OSError as exc:
+                # Бекап не вдався — запис усе одно робимо (краще новий вміст,
+                # ніж нічого), але користувач має знати, що відкотити зміну
+                # не вийде. Раніше тут стояло `pass`: панель «Зміни»
+                # показувала різницю зі старою копією, якої насправді немає.
+                LOG.warning("Резервну копію %s не створено: %s",
+                            backup.name, exc)
         path.write_text(content, encoding="utf-8", newline="\n")
     except OSError as exc:
         raise WorkspaceError(f"Не вдалось записати {path.name}: {exc}") from exc

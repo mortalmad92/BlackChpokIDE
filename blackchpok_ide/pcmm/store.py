@@ -423,12 +423,16 @@ class MemoryStore:
             try:
                 self._conn.commit()
                 self._conn.execute("PRAGMA optimize")
-            except sqlite3.Error:
-                pass
+            except sqlite3.Error as exc:
+                # НЕ ковтаємо: якщо commit не пройшов, записані в памʼять
+                # факти лишились лише в журналі WAL і можуть не потрапити
+                # на диск. Раніше тут стояло `pass`, і користувач втрачав
+                # памʼять без жодного повідомлення.
+                LOG.warning("Не вдалось зафіксувати памʼять NEUROMESH: %s", exc)
             try:
                 self._conn.close()
-            except sqlite3.Error:
-                pass
+            except sqlite3.Error as exc:
+                LOG.debug("З'єднання NEUROMESH не закрилось: %s", exc)
         self._conn = None
         self._closed = True
 
