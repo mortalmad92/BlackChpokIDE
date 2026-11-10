@@ -609,10 +609,23 @@ class Settings:
         data: dict[str, Any] = {}
         if target.exists():
             try:
-                data = json.loads(target.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+                loaded = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
                 LOG.warning("Не вдалось прочитати %s: %s", target, exc)
-                data = {}
+                loaded = {}
+            # ``json.loads`` цілком законно повертає число, рядок, список або
+            # null — якщо файл пошкоджено чи перезаписано чимось іншим.
+            # Раніше результат одразу йшов у from_dict(), де викликався
+            # ``data.get(...)``, і користувач отримував
+            #   AttributeError: 'int' object has no attribute 'get'
+            # ще до появи вікна. Тепер приймаємо лише словник.
+            if isinstance(loaded, dict):
+                data = loaded
+            else:
+                LOG.warning(
+                    "Файл налаштувань %s має неочікуваний тип (%s) — "
+                    "використано типові налаштування",
+                    target, type(loaded).__name__)
         settings = cls.from_dict(data)
         if not settings.workspace:
             settings.workspace = str(Path.home())
@@ -837,7 +850,10 @@ def load_session() -> dict[str, Any]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        # UnicodeDecodeError — файл записано не в UTF-8 (обірваний запис,
+        # чужий редактор, пошкоджений диск). ``read_text`` кидає його ДО
+        # json.loads, тому раніше сесія ламала старт.
         return {}
     return data if isinstance(data, dict) else {}
 

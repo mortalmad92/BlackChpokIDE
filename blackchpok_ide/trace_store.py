@@ -325,7 +325,7 @@ class TraceStore:
         if self._path is None:
             return
         try:
-            lines = self._path.read_text(encoding="utf-8").splitlines()
+            lines = self._path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             return
         if len(lines) <= KEEP_TRACES * 1.5:
@@ -348,7 +348,7 @@ class TraceStore:
             self._cache = traces
             return traces
         try:
-            body = self._path.read_text(encoding="utf-8")
+            body = self._path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             self._cache = traces
             return traces
