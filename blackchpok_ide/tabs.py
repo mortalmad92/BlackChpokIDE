@@ -300,7 +300,20 @@ class EditorTabs(tk.Frame):
     def count(self) -> int:
         return len(self.editors)
 
-    def select(self, frame_id: str) -> None:
+    def select(self, frame_id: str | int) -> None:
+        """Активувати вкладку.
+
+        Приймає АБО ідентифікатор вкладки (``str``, внутрішній ключ), АБО
+        її номер у смузі (``int``). Номер — те, чим природно користується
+        виклик на кшталт «перемкнутись на другу вкладку»; раніше ``select(0)``
+        мовчки нічого не робив, бо ``0`` не збігався з жодним ключем, і
+        здавалося, що перемикання вкладок не працює.
+        """
+        if isinstance(frame_id, int) and not isinstance(frame_id, bool):
+            order = list(self.editors)
+            if not order or not -len(order) <= frame_id < len(order):
+                return
+            frame_id = order[frame_id]
         if frame_id not in self.editors:
             return
         if self._active and self._active in self.editors:
@@ -335,7 +348,22 @@ class EditorTabs(tk.Frame):
             tab.set_title(title, bool(editor.modified))
 
     # ── збереження ─────────────────────────────────────────────────────────
-    def save_tab(self, frame_id: str, *, force_as: bool = False) -> bool:
+    def _tab_key(self, frame_id: str | int) -> str:
+        """Перетворити номер вкладки на внутрішній ключ (або повернути як є).
+
+        Публічні методи приймають і ключ, і номер: виклик із номера —
+        природний для «закрий першу вкладку», і без цього перетворення
+        ``close_tab(0)`` мовчки нічого не робив.
+        """
+        if isinstance(frame_id, int) and not isinstance(frame_id, bool):
+            order = list(self.editors)
+            if not order or not -len(order) <= frame_id < len(order):
+                return ""
+            return order[frame_id]
+        return str(frame_id)
+
+    def save_tab(self, frame_id: str | int, *, force_as: bool = False) -> bool:
+        frame_id = self._tab_key(frame_id)
         editor = self.editors.get(frame_id)
         if editor is None:
             return False
@@ -417,7 +445,10 @@ class EditorTabs(tk.Frame):
             return False
         return self.close_tab(self._active)
 
-    def close_tab(self, frame_id: str) -> bool:
+    def close_tab(self, frame_id: str | int) -> bool:
+        frame_id = self._tab_key(frame_id)
+        if not frame_id:
+            return False
         editor = self.editors.get(frame_id)
         if editor is None:
             return False
@@ -478,7 +509,8 @@ class EditorTabs(tk.Frame):
             self._closed.remove(path)
         return self.open_file(path)
 
-    def close_others(self, frame_id: str) -> None:
+    def close_others(self, frame_id: str | int) -> None:
+        frame_id = self._tab_key(frame_id)
         for key in [k for k in self._order if k != frame_id]:
             saved = self.close_tab(key)
             if not saved:
@@ -492,8 +524,8 @@ class EditorTabs(tk.Frame):
                 return False
         return True
 
-    def reveal_in_explorer(self, frame_id: str) -> None:
-        path = self.paths.get(frame_id)
+    def reveal_in_explorer(self, frame_id: str | int) -> None:
+        path = self.paths.get(self._tab_key(frame_id))
         if path is None:
             return
         import subprocess
@@ -504,8 +536,8 @@ class EditorTabs(tk.Frame):
             if self.on_status:
                 self.on_status(f"Не вдалось відкрити провідник: {exc}")
 
-    def copy_path(self, frame_id: str) -> None:
-        path = self.paths.get(frame_id)
+    def copy_path(self, frame_id: str | int) -> None:
+        path = self.paths.get(self._tab_key(frame_id))
         if path is None:
             return
         self.clipboard_clear()
