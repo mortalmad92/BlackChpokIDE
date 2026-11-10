@@ -467,6 +467,58 @@ class LLMError(RuntimeError):
     """Помилка спілкування з моделлю."""
 
 
+def _human_error_body(body: str) -> str:
+    """Зробити тіло помилки сервера читабельним для людини.
+
+    Навіщо. Багато OpenAI-сумісних серверів віддають помилку з
+    ``ensure_ascii=True`` — тобто замість кирилиці в тілі лежать
+    escape-послідовності::
+
+        {"error": {"message": "\\u043c\\u043e\\u0434\\u0435\\u043b\\u044c ..."}}
+
+    Користувач бачив у діалозі саме ``\\u043c\\u043e...`` замість
+    «модель впала: немає памʼяті» і не міг нічого зрозуміти.
+
+    Розбираємо JSON і витягуємо людське повідомлення, якщо воно є. Якщо
+    тіло не JSON — лишаємо як було (обрізане), щоб не втратити зміст.
+    """
+    text = (body or "").strip()
+    if not text:
+        return ""
+    # Спершу пробуємо розібрати JSON завжди — навіть коли escape-послідовностей
+    # немає. Інакше тіло на кшталт {"error": {"message": "текст"}} лишалось би
+    # сирим JSON замість самого повідомлення (так і було: тест
+    # test_plain_json_without_escape_is_readable це зловив).
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        # Не JSON — віддаємо як є. Розшифровуємо escape-послідовності, якщо
+        # вони є, щоб користувач не бачив \u043c замість кирилиці.
+        if "\\u" in text:
+            try:
+                return text.encode("utf-8").decode("unicode_escape")[:800]
+            except (UnicodeDecodeError, ValueError):
+                return text[:800]
+        return text[:800]
+    message = ""
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+        elif isinstance(error, str):
+            message = error
+        if not message:
+            message = str(data.get("message") or data.get("detail") or "")
+    if not message:
+        # JSON розібрався, але повідомлення немає — віддаємо
+        # розшифрований текст, щоб не показувати escape-послідовності.
+        try:
+            return json.dumps(data, ensure_ascii=False)[:800]
+        except (TypeError, ValueError):
+            return text[:800]
+    return message[:800]
+
+
 def _merge_usage(target: dict[str, Any], incoming: dict[str, int]) -> None:
     """Доповнити лічильники токенів, не затираючи відомі значення.
 
@@ -595,7 +647,7 @@ class LLMClient:
         except urllib.error.HTTPError as exc:
             detail = secrets.redact(
                 exc.read().decode("utf-8", errors="replace")[:800])
-            raise LLMError(f"HTTP {exc.code} від {url}: {detail}") from exc
+            raise LLMError(f"HTTP {exc.code} від {url}: {_human_error_body(detail)}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(self._connection_error(url, exc.reason)) from exc
         except TimeoutError as exc:
@@ -952,7 +1004,7 @@ class LLMClient:
         except urllib.error.HTTPError as exc:
             detail = secrets.redact(
                 exc.read().decode("utf-8", errors="replace")[:800])
-            raise LLMError(f"HTTP {exc.code} від {url}: {detail}") from exc
+            raise LLMError(f"HTTP {exc.code} від {url}: {_human_error_body(detail)}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(self._connection_error(url, exc.reason)) from exc
         except TimeoutError as exc:
@@ -1055,7 +1107,7 @@ class LLMClient:
         except urllib.error.HTTPError as exc:
             detail = secrets.redact(
                 exc.read().decode("utf-8", errors="replace")[:800])
-            raise LLMError(f"HTTP {exc.code} від {url}: {detail}") from exc
+            raise LLMError(f"HTTP {exc.code} від {url}: {_human_error_body(detail)}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(self._connection_error(url, exc.reason)) from exc
         except TimeoutError as exc:
@@ -1312,7 +1364,7 @@ class LLMClient:
                             slot["arguments"] += str(function["arguments"])
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:800]
-            raise LLMError(f"HTTP {exc.code} від {url}: {detail}") from exc
+            raise LLMError(f"HTTP {exc.code} від {url}: {_human_error_body(detail)}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(
                 f"Немає з'єднання з {url}. Перевір, чи запущено локальний сервер "
