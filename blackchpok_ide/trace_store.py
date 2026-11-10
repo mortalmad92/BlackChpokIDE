@@ -332,7 +332,11 @@ class TraceStore:
             return
         keep = lines[-KEEP_TRACES:]
         try:
-            self._path.write_text("\n".join(keep) + "\n", encoding="utf-8")
+            # Атомарна заміна: обрізання журналу не має лишити обірваний
+            # файл, якщо процес уб'ють посеред запису.
+            from .config import write_text_atomic
+
+            write_text_atomic(self._path, "\n".join(keep) + "\n")
         except OSError:
             LOG.debug("Не вдалось обрізати traces", exc_info=True)
         if self._cache is not None and len(self._cache) > KEEP_TRACES:

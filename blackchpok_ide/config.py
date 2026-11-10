@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import tempfile
 from dataclasses import dataclass, field, fields, asdict
 from logging.handlers import RotatingFileHandler
@@ -554,6 +555,70 @@ class SocialSettings:
         return bool(self.account(key))
 
 
+#: Замок для запису файлів стану. Потрібен, бо кілька потоків можуть
+#: зберігати налаштування одночасно (UI-потік, фоновий агент, автозбереження).
+#: Без нього 20 потоків билися за один ``.tmp``-файл: ``os.replace`` падав із
+#: ``WinError 32`` («файл зайнятий іншим процесом») і ЖОДЕН запис не проходив.
+_STATE_WRITE_LOCK = threading.RLock()
+
+
+def write_json_atomic(target: Path, data: Any, *, indent: int = 2) -> Path:
+    """Записати JSON так, щоб збій посеред запису не зіпсував файл.
+
+    Навіщо. Звичайний ``write_text`` відкриває файл на запис і ОДРАЗУ його
+    обрізає. Якщо живлення зникне посеред запису (або процес уб'ють),
+    на диску лишиться обірваний JSON. ``Settings.load()`` це переживе
+    (типові налаштування), але **налаштування користувача буде втрачено
+    назавжди** — модель, ключ, робоча тека, нещодавні проєкти.
+
+    Тому пишемо в сусідній ``.tmp`` і підміняємо через ``os.replace``.
+    Ця операція атомарна на рівні файлової системи: читач бачить або
+    старий файл цілком, або новий цілком, ніколи — половину.
+
+    Ім'я тимчасового файлу унікальне (PID + поток + лічильник): інакше
+    два потоки писали б в один ``.tmp`` і ``os.replace`` падав із
+    ``WinError 32``. Запис серіалізується замком — так простіше й
+    надійніше, ніж ловити гонки на самій файловій системі.
+    """
+    path = Path(target)
+    with _STATE_WRITE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(data, ensure_ascii=False, indent=indent)
+        suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+        temporary = path.with_name(path.name + suffix)
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError:
+            # Не лишаємо сміття: якщо підміна не вдалась, тимчасовий файл
+            # більше не потрібен.
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
+    return path
+
+
+def write_text_atomic(target: Path, text: str) -> Path:
+    """Те саме для довільного тексту (журнали, списки рядків)."""
+    path = Path(target)
+    with _STATE_WRITE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
+        temporary = path.with_name(path.name + suffix)
+        try:
+            temporary.write_text(text, encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
+    return path
+
+
 @dataclass
 class Settings:
     workspace: str = ""
@@ -822,8 +887,9 @@ class Settings:
             LOG.info("Збереження налаштувань вимкнено (BLACKCHPOK_NO_SAVE)")
             return target
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            # Атомарний запис: збій живлення посеред запису не має
+            # знищити налаштування користувача (див. write_json_atomic).
+            write_json_atomic(target, self.to_dict())
         except OSError as exc:
             LOG.warning("Не вдалось зберегти налаштування: %s", exc)
         return target
@@ -861,7 +927,6 @@ def load_session() -> dict[str, Any]:
 def save_session(data: dict[str, Any]) -> None:
     path = session_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        write_json_atomic(path, data)
     except OSError as exc:
         LOG.warning("Не вдалось зберегти сесію: %s", exc)

@@ -299,8 +299,11 @@ class TaskQueue:
             "paused": self.paused,
         }
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            # Атомарний запис: черга — це незавершена робота користувача.
+            # Обірваний файл означав би втрату всіх завдань.
+            from .config import write_json_atomic
+
+            write_json_atomic(self.path, payload)
         except OSError as exc:
             LOG.warning("Не вдалось зберегти чергу: %s", exc)
 
