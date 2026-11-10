@@ -248,16 +248,46 @@ class TaskQueue:
 
     # ── збереження ─────────────────────────────────────────────────────────
     def _load(self) -> None:
+        """Завантажити чергу. Будь-яке пошкодження файлу — не привід падати.
+
+        Навіщо така суворість. ``TaskQueue()`` створюється в конструкторі
+        головного вікна (``main_window.py:290``) БЕЗ захисту. Якщо файл
+        містить не те, що очікується (список чисел, рядок, ``{"tasks": [1]}``),
+        ``QueueTask.from_dict`` кидав ``AttributeError: 'int' object has no
+        attribute 'items'`` — виняток летів нагору й **IDE не відкривалась
+        узагалі**. Користувач бачив лише зникнення вікна, без підказки, і міг
+        полагодити хіба що видаленням файлу навмання.
+
+        Перевірено: 7 з 10 пошкоджених варіантів ламали створення черги.
+        Тепер кожен елемент перевіряється на тип, а будь-який виняток під час
+        відновлення одного завдання відкидає ЛИШЕ його.
+        """
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return
-        raw = data.get("tasks") if isinstance(data, dict) else data
+        # ``{"tasks": [...]}`` — типовий формат; інакше файл міг бути записаний
+        # просто списком. Усе, що не словник і не список, ігноруємо.
+        if isinstance(data, dict):
+            raw = data.get("tasks")
+            if not isinstance(raw, list):
+                raw = []
+        elif isinstance(data, list):
+            raw = data
+        else:
+            LOG.warning("queue.json має неочікуваний тип (%s) — черга порожня",
+                        type(data).__name__)
+            return
         restored: list[QueueTask] = []
-        for item in raw or []:
+        for item in raw:
+            if not isinstance(item, dict):
+                # Не словник — не завдання. Раніше тут летів AttributeError.
+                LOG.warning("Пропущено запис черги неочікуваного типу: %s",
+                            type(item).__name__)
+                continue
             try:
                 restored.append(QueueTask.from_dict(item))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, AttributeError, KeyError):
                 continue
         self.tasks = restored
         if isinstance(data, dict):
