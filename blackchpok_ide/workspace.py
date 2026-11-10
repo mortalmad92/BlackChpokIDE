@@ -54,7 +54,12 @@ class FileHit:
     text: str
 
 
-def is_text_file(path: Path) -> bool:
+def is_text_file(path: Path | str) -> bool:
+    # ``Path | str`` приймаємо свідомо: ці функції кличуть і з рядком
+    # (змінна оточення, дані з інструмента). Раніше рядок падав з
+    # ``AttributeError: 'str' object has no attribute 'suffix'`` — і вся
+    # перевірка «це текст?» ламалась замість того, щоб відповісти.
+    path = Path(path)
     if path.suffix.lower() in TEXT_EXT:
         return True
     if not path.suffix:
@@ -82,7 +87,8 @@ def decode_bytes(raw: bytes) -> tuple[str, str]:
     return raw.decode("utf-8", errors="replace"), "utf-8/replace"
 
 
-def read_text_file(path: Path) -> tuple[str, str]:
+def read_text_file(path: Path | str) -> tuple[str, str]:
+    path = Path(path)
     if not path.exists():
         raise WorkspaceError(f"Файл не знайдено: {path}")
     if not path.is_file():
@@ -97,9 +103,9 @@ def read_text_file(path: Path) -> tuple[str, str]:
     return content.replace("\r\n", "\n").replace("\r", "\n"), encoding
 
 
-def safe_join(root: Path, relative: str) -> Path:
+def safe_join(root: Path | str, relative: str) -> Path:
     """Приєднати відносний шлях до кореня, не виходячи за його межі."""
-    root = root.resolve()
+    root = Path(root).resolve()
     candidate = Path(relative)
     resolved = (candidate if candidate.is_absolute() else root / candidate).resolve()
     if resolved != root:
@@ -110,15 +116,17 @@ def safe_join(root: Path, relative: str) -> Path:
     return resolved
 
 
-def relative_to_root(root: Path, path: Path) -> str:
+def relative_to_root(root: Path | str, path: Path | str) -> str:
     """Показати шлях відносно кореня; якщо він зовні — абсолютний."""
+    path = Path(path)
     try:
         return path.resolve().relative_to(Path(root).resolve()).as_posix()
     except (ValueError, OSError):
         return str(path)
 
 
-def write_text_file(path: Path, content: str) -> None:
+def write_text_file(path: Path | str, content: str) -> None:
+    path = Path(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
@@ -202,10 +210,10 @@ def quick_open_index(root: Path) -> list[Path]:
     return files
 
 
-def language_label(path: Path) -> str:
+def language_label(path: Path | str) -> str:
     from .syntax import language_for
 
-    lang = language_for(path.name)
+    lang = language_for(Path(path).name)
     return {
         "python": "Python", "javascript": "JavaScript", "typescript": "TypeScript",
         "clike": "C/C++/Java", "sql": "SQL", "shell": "Shell", "markdown": "Markdown",
