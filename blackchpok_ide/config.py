@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 import tempfile
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -582,6 +582,27 @@ class Settings:
     preferences: list[dict[str, Any]] = field(default_factory=list)
 
     # ── читання / запис ─────────────────────────────────────────────────────
+    @staticmethod
+    def _only_known(cls_: type, data: dict[str, Any]) -> dict[str, Any]:
+        """Лишити лише поля, які справді є в датакласі.
+
+        Навіщо: ``settings.json`` може бути записаний НОВІШОЮ версією IDE
+        (додали поле) — і після відкату на старішу версію читання падало з
+        ``TypeError: LLMSettings.__init__() got an unexpected keyword
+        argument``. Для користувача це виглядало як «IDE не запускається
+        після оновлення», без жодної підказки.
+
+        Раніше так фільтрували ЛИШЕ одне поле (``api_key_enc``), вручну.
+        Тепер фільтр загальний: невідомі ключі ігноруються, відомі
+        читаються. Дані не втрачаються — вони лишаються у файлі, доки
+        його не перезаписано новішою версією.
+        """
+        try:
+            known = {f.name for f in fields(cls_)}
+        except (TypeError, AttributeError):
+            return dict(data or {})
+        return {key: value for key, value in (data or {}).items() if key in known}
+
     @classmethod
     def load(cls, path: Path | None = None) -> "Settings":
         target = path or settings_path()
@@ -606,7 +627,8 @@ class Settings:
         # читаються зовсім.
         llm_fields = {key: value for key, value in llm_data.items()
                       if key not in ("api_key_enc",)}
-        llm = LLMSettings(**llm_fields)
+        # Невідомі поля (з новішої версії IDE) відкидаємо, а не падаємо.
+        llm = LLMSettings(**cls._only_known(LLMSettings, llm_fields))
         # ── Секрети: спершу зашифроване поле, потім (застаріле) відкрите ──
         # ``api_key_enc`` — шифротекст DPAPI. Якщо його немає, а ``api_key``
         # лежить відкритим текстом (стара версія), читаємо його як є: ключ
@@ -619,10 +641,12 @@ class Settings:
                 # Нічого не прочитали — лишаємо порожнім, щоб агент чесно
                 # сказав «ключ не заданий», а не стукав із сміттям.
                 llm.api_key = ""
-        ui = UISettings(**(data.get("ui") or {}) if isinstance(data.get("ui"), dict) else {}).normalise()
-        agent = AgentSettings(**(data.get("agent") or {}) if isinstance(data.get("agent"), dict) else {})
+        ui = UISettings(**cls._only_known(
+            UISettings, data.get("ui") if isinstance(data.get("ui"), dict) else {})).normalise()
+        agent = AgentSettings(**cls._only_known(
+            AgentSettings, data.get("agent") if isinstance(data.get("agent"), dict) else {}))
         engine_data = data.get("engine") if isinstance(data.get("engine"), dict) else {}
-        engine = EngineSettings(**engine_data)
+        engine = EngineSettings(**cls._only_known(EngineSettings, engine_data))
         # ── МІГРАЦІЯ: прапорець рушія й адреса мусять збігатися ────────────
         # У користувача, який увімкнув власний рушій у старій версії,
         # лишилась адреса ``http://127.0.0.1:8080/v1``, а рушій — ``native``.
