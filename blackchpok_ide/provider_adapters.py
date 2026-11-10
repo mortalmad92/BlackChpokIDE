@@ -306,7 +306,21 @@ def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
 
 def anthropic_result(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], str]:
     """Відповідь Anthropic → (текст, tool_calls, причина завершення)."""
+    text, calls, reason, _thought = anthropic_result_split(data)
+    return text, calls, reason
+
+
+def anthropic_result_split(
+        data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], str, str]:
+    """Те саме, але ще й окремо РОЗДУМИ (``thinking``).
+
+    Claude з увімкненим розширеним мисленням повертає блоки
+    ``{"type": "thinking", "thinking": "…"}``. Раніше вони просто
+    відкидались: користувач не бачив ходу думки, а стрімінг ці самі блоки
+    показував — тобто поведінка залежала від того, чи ввімкнено потік.
+    """
     texts: list[str] = []
+    thoughts: list[str] = []
     calls: list[dict[str, Any]] = []
     for block in data.get("content") or []:
         if not isinstance(block, dict):
@@ -314,6 +328,8 @@ def anthropic_result(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], s
         kind = block.get("type")
         if kind == "text":
             texts.append(str(block.get("text") or ""))
+        elif kind == "thinking":
+            thoughts.append(str(block.get("thinking") or ""))
         elif kind == "tool_use":
             calls.append({
                 "id": str(block.get("id") or f"call_{len(calls)}"),
@@ -324,7 +340,8 @@ def anthropic_result(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], s
                                             ensure_ascii=False),
                 },
             })
-    return "".join(texts), calls, str(data.get("stop_reason") or "")
+    return ("".join(texts), calls, str(data.get("stop_reason") or ""),
+            "".join(thoughts))
 
 
 def anthropic_stream_delta(data: dict[str, Any]) -> dict[str, Any]:
@@ -483,7 +500,22 @@ def _gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 def gemini_result(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], str]:
     """Відповідь Gemini → (текст, tool_calls, причина завершення)."""
+    text, calls, reason, _thought = gemini_result_split(data)
+    return text, calls, reason
+
+
+def gemini_result_split(
+        data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], str, str]:
+    """Те саме, але ще й окремо РОЗДУМИ (``"thought": true``).
+
+    Gemini 2.5+ віддає міркування окремими частинами з прапорцем
+    ``thought``. Раніше вони склеювались із відповіддю: користувач бачив
+    «Думаю… Можливо, треба…» всередині відповіді, а модель ще й отримувала
+    ці роздуми як власний текст. Тепер вони йдуть у ``reasoning`` — так
+    само, як у OpenAI-сумісному каналі.
+    """
     texts: list[str] = []
+    thoughts: list[str] = []
     calls: list[dict[str, Any]] = []
     candidates = data.get("candidates") or []
     first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
@@ -491,7 +523,11 @@ def gemini_result(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], str]
         if not isinstance(part, dict):
             continue
         if part.get("text"):
-            texts.append(str(part["text"]))
+            raw = str(part["text"])
+            if part.get("thought"):
+                thoughts.append(raw)
+            else:
+                texts.append(raw)
         call = part.get("functionCall")
         if isinstance(call, dict):
             calls.append({
@@ -504,7 +540,7 @@ def gemini_result(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]], str]
                 },
             })
     reason = str(first.get("finishReason") or "")
-    return "".join(texts), calls, reason
+    return "".join(texts), calls, reason, "".join(thoughts)
 
 
 def gemini_usage(data: dict[str, Any]) -> dict[str, int]:

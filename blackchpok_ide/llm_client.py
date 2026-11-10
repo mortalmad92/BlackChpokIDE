@@ -1101,6 +1101,7 @@ class LLMClient:
         request.add_header("Accept", "text/event-stream")
 
         pieces: list[str] = []
+        thoughts: list[str] = []
         calls: list[dict[str, Any]] = []
         finish_reason = ""
         usage: dict[str, Any] = {}
@@ -1129,9 +1130,13 @@ class LLMClient:
                         raise LLMError(f"Gemini: {secrets.redact(str(detail))}")
                     if data.get("usageMetadata"):
                         usage = provider_adapters.gemini_usage(data)
-                    text, found, reason = provider_adapters.gemini_result(data)
+                    text, found, reason, thought = provider_adapters.gemini_result_split(data)
                     if reason:
                         finish_reason = reason
+                    if thought:
+                        thoughts.append(thought)
+                        if on_reasoning is not None:
+                            _safe_call(on_reasoning, thought)
                     if text:
                         pieces.append(text)
                         if on_text is not None:
@@ -1156,7 +1161,7 @@ class LLMClient:
             tool_calls=calls,
             finish_reason=finish_reason,
             usage=usage or None,
-            reasoning="",
+            reasoning="".join(thoughts),
         )
 
     def _chat_anthropic(
@@ -1183,7 +1188,7 @@ class LLMClient:
         if data.get("type") == "error":
             detail = (data.get("error") or {}).get("message") or str(data)[:300]
             raise LLMError(f"Anthropic: {secrets.redact(str(detail))}")
-        content, calls, stop = provider_adapters.anthropic_result(data)
+        content, calls, stop, thought = provider_adapters.anthropic_result_split(data)
         usage = provider_adapters.anthropic_usage(data)
         # Якщо модель не має нативного виклику — пробуємо текстовий розбір,
         # як і для OpenAI-сумісних: локальність протоколу тут не важлива.
@@ -1197,7 +1202,7 @@ class LLMClient:
             tool_calls=calls,
             finish_reason=stop,
             usage=usage,
-            reasoning="",
+            reasoning=thought,
         )
 
     # ── Gemini ─────────────────────────────────────────────────────────────
@@ -1224,7 +1229,7 @@ class LLMClient:
         if data.get("error"):
             detail = (data.get("error") or {}).get("message") or str(data)[:300]
             raise LLMError(f"Gemini: {secrets.redact(str(detail))}")
-        content, calls, stop = provider_adapters.gemini_result(data)
+        content, calls, stop, thought = provider_adapters.gemini_result_split(data)
         usage = provider_adapters.gemini_usage(data)
         if not calls and tools and content:
             recovered = extract_tool_calls(content, tools, known_tools)
@@ -1236,7 +1241,7 @@ class LLMClient:
             tool_calls=calls,
             finish_reason=stop,
             usage=usage,
-            reasoning="",
+            reasoning=thought,
         )
 
     def chat_stream(
