@@ -897,13 +897,44 @@ class McpClient:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _stop_client_with_timeout(client: Any, timeout: float) -> bool:
+    """Викликати ``client.stop()`` і дочекатися, не блокуючи назавжди.
+
+    Навіщо окремий потік: ``stop()`` надсилає запит і чекає на відповідь
+    сервера. Якщо сервер уже завис, цей виклик міг тягнутись десятки секунд
+    і блокував закриття вікна IDE. Тепер чекаємо рівно ``timeout``.
+    """
+    import threading as _threading
+
+    done = _threading.Event()
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            client.stop()
+            box["ok"] = True
+        except Exception as exc:  # noqa: BLE001 - причина йде в результат
+            box["error"] = exc
+            LOG.debug("зупинка MCP-клієнта впала", exc_info=True)
+        finally:
+            done.set()
+
+    thread = _threading.Thread(target=_run, name="mcp-stop", daemon=True)
+    thread.start()
+    thread.join(timeout=max(0.1, float(timeout)))
+    return bool(done.is_set() and box.get("ok"))
+
+
 class McpManager:
     """Набір запущених MCP-серверів із наскрізним маршрутизацією викликів."""
-
     def __init__(self) -> None:
         self.servers: dict[str, McpClient] = {}
         self._status: dict[str, str] = {}
         self._lock = threading.RLock()
+        #: Конфіги запущених серверів — потрібні watchdog'у для перезапуску.
+        self._configs: dict[str, McpServerConfig] = {}
+        #: Активний супервізор (якщо стеження ввімкнено).
+        self._watching = None
 
     # ── конфігурація з файлів ────────────────────────────────────────────────
 
@@ -964,6 +995,11 @@ class McpManager:
             with self._lock:
                 previous = self.servers.get(name)
                 self.servers[name] = client
+                # Конфіг запам'ятовуємо: без нього watchdog не зможе
+                # перезапустити сервер, що помер.
+                if not hasattr(self, "_configs"):
+                    self._configs = {}
+                self._configs[name] = config
             if previous is not None:
                 previous.stop()
             try:
@@ -979,14 +1015,100 @@ class McpManager:
                 self._status[name] = text
         return statuses
 
-    def stop_all(self) -> None:
-        """Зупинити всі сервери (не кидає винятків)."""
+    def stop_all(self, timeout: float = 5.0) -> dict[str, bool]:
+        """Зупинити всі сервери й **дочекатися** цього.
+
+        ``docs/MCP_SUPERVISOR.md`` §5: раніше «graceful shutdown із
+        очікуванням — частково: ``stop_all`` у потоці без очікування».
+        Тепер кожен сервер зупиняється з обмеженням часу, і результат
+        видно: ``{ім'я: чи справді зупинився}``. Сервер, що завис, чесно
+        позначений ``False``, а не виданий за зупинений.
+        """
+        self.stop_watchdog()
         with self._lock:
             clients = list(self.servers.values())
+            names = list(self.servers)
             self.servers.clear()
             self._status.clear()
-        for client in clients:
-            client.stop()
+            self._configs.clear()
+        results: dict[str, bool] = {}
+        for name, client in zip(names, clients):
+            results[name] = _stop_client_with_timeout(client, timeout)
+            if not results[name]:
+                LOG.warning("MCP «%s» не зупинився за %.0f с", name, timeout)
+        return results
+
+    # ── супервізор ───────────────────────────────────────────────────────────
+    # ``docs/MCP_SUPERVISOR.md`` §5: health-check, ретрай із бекофом і
+    # watchdog раніше були відсутні. Тепер вони живуть у
+    # :mod:`blackchpok_ide.mcp_supervisor`, а менеджер лише делегує — щоб не
+    # переписувати робочий транспорт і не ризикувати регресією.
+
+    def _supervisor(self):
+        """Створити супервізор поверх цього менеджера (ліниво)."""
+        from .mcp_supervisor import MpcSupervisor
+
+        return MpcSupervisor(McpClient)
+
+    def health_check(self, name: str):
+        """Перевірити один сервер по-справжньому.
+
+        На відміну від :attr:`status`, не вірить рядку «працює», а питає
+        ``tools/list`` і перевіряє придатність схем (§3 документа).
+        """
+        from .mcp_supervisor import HealthReport, schema_is_usable
+
+        with self._lock:
+            client = self.servers.get(name)
+        report = HealthReport(name=name)
+        if client is None:
+            report.reason = "сервер не запущено"
+            return report
+        if not client.running:
+            report.reason = "процес не працює"
+            return report
+        try:
+            schemas = client.list_tools() or []
+        except Exception as exc:  # noqa: BLE001 - причина йде у звіт
+            report.reason = f"tools/list не відповів: {exc}"
+            return report
+        usable = [s for s in schemas if schema_is_usable(s)]
+        report.tools = len(schemas)
+        report.valid_schemas = len(usable)
+        if not schemas:
+            report.reason = "сервер не віддав жодного інструмента"
+        elif not usable:
+            report.reason = (f"{len(schemas)} схем, жодна не придатна")
+        else:
+            report.ok = True
+            if len(usable) < len(schemas):
+                report.reason = (f"придатних {len(usable)} з {len(schemas)} — "
+                                 f"решту відкинуто")
+        return report
+
+    def health_check_all(self) -> dict:
+        with self._lock:
+            names = list(self.servers)
+        return {name: self.health_check(name) for name in names}
+
+    def start_watchdog(self, interval: float = 5.0) -> None:
+        """Підняти стеження за процесами (перезапуск мертвих із бекофом)."""
+        supervisor = self._supervisor()
+        with self._lock:
+            self._watching = supervisor
+            configs = dict(getattr(self, "_configs", {}))
+        for name, client in list(self.servers.items()):
+            config = configs.get(name)
+            if config is not None:
+                supervisor._configs[name] = config
+            supervisor._clients[name] = client
+        supervisor.start_watchdog(interval=interval)
+
+    def stop_watchdog(self) -> None:
+        supervisor = getattr(self, "_watching", None)
+        if supervisor is not None:
+            supervisor.stop_watchdog()
+            self._watching = None
 
     def add(self, config: McpServerConfig, start: bool = True) -> McpClient:
         """Приєднати сервер під час роботи IDE (за потреби — одразу запустити)."""
