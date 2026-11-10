@@ -1,4 +1,4 @@
-﻿"""Р“РѕР»РѕРІРЅРµ РІС–РєРЅРѕ BlackChpok IDE Сѓ СЃС‚РёР»С– СЃСѓС‡Р°СЃРЅРѕРіРѕ Р°РіРµРЅС‚РЅРѕРіРѕ СЂРµРґР°РєС‚РѕСЂР°.
+"""Р“РѕР»РѕРІРЅРµ РІС–РєРЅРѕ BlackChpok IDE Сѓ СЃС‚РёР»С– СЃСѓС‡Р°СЃРЅРѕРіРѕ Р°РіРµРЅС‚РЅРѕРіРѕ СЂРµРґР°РєС‚РѕСЂР°.
 
 Р РѕР·РєР»Р°РґРєР° РїРѕРІС‚РѕСЂСЋС” РґРёР·Р°Р№РЅ, РґРѕ СЏРєРѕРіРѕ РјРё РїСЂР°РіРЅРµРјРѕ:
 
@@ -7681,6 +7681,17 @@ class BlackChpokIDE(tk.Tk):
             pass
 
     def on_close(self) -> None:
+        """Закрити застосунок рівно один раз.
+
+        ``on_close`` викликається і кнопкою «×», і пунктом меню, і
+        ``atexit``, і тестами. Другий виклик раніше падав з
+        ``TclError: cannot invoke "destroy" command: application has been
+        destroyed`` — бо вікно вже знищене, а ми знову чіпаємо Tk. Тепер
+        повторний вхід тихо виходить.
+        """
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True
         self._remember_layout()
         # РљРѕРЅС‚РµРєСЃС‚ Р°РєС‚РёРІРЅРѕС— СЂРѕР·РјРѕРІРё Р·Р±РµСЂС–РіР°С”РјРѕ РЅР° РґРёСЃРє: С–РЅР°РєС€Рµ РїС–СЃР»СЏ
         # РїРµСЂРµР·Р°РїСѓСЃРєСѓ С‡Р°С‚ РІС–РґРєСЂРёРІР°РІСЃСЏ Р± С–Р· РїРѕРІС–РґРѕРјР»РµРЅРЅСЏРјРё, Р°Р»Рµ Р°РіРµРЅС‚ РЅРµ
@@ -7868,7 +7879,11 @@ class BlackChpokIDE(tk.Tk):
                 self.after_cancel(self._queue_pump_after)
             except (tk.TclError, ValueError):
                 pass
-        self.destroy()
+        try:
+            self.destroy()
+        except tk.TclError:
+            # Вікно вже знищене (подвійний закрив, закриття з atexit).
+            LOG.debug("Вікно вже знищене до destroy()")
 
 
 def launch(settings: Settings) -> int:
