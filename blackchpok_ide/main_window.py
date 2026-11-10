@@ -961,7 +961,7 @@ class BlackChpokIDE(tk.Tk):
             rows.append(("", None))
             rows.append(("— Останні —", None))
             for path in recent[:8]:
-                label = f"{Path(path).name}  В·  {path}"
+                label = f"{Path(path).name}  ·  {path}"
                 rows.append((label, lambda p=path: self.open_recent_folder(p)))
         self._popup(anchor or self.header_bar.project_btn, rows)
 
@@ -994,14 +994,14 @@ class BlackChpokIDE(tk.Tk):
         head.pack(fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_MD))
         self.nav_head = head
 
-        self.brand_icon = tk.Label(head, text="в—¤", bg=theme.BG_ALT, fg=theme.ACCENT,
+        self.brand_icon = tk.Label(head, text="◤", bg=theme.BG_ALT, fg=theme.ACCENT,
                                    font=("Segoe UI", 13, "bold"))
         self.brand_icon.pack(side="left")
         self.brand_label = tk.Label(head, text="BlackChpok", bg=theme.BG_ALT,
                                     fg=theme.FG_BRIGHT, font=self.theme.ui_h2, anchor="w")
         self.brand_label.pack(side="left", padx=(theme.SPACE_SM, 0))
         self.collapse_btn = widgets.IconButton(
-            head, "В«", self.toggle_sidebar, bg=theme.BG_ALT, fg=theme.FG_FAINT,
+            head, "«", self.toggle_sidebar, bg=theme.BG_ALT, fg=theme.FG_FAINT,
             font=("Segoe UI", 9), tooltip="Згорнути панель (Ctrl+B)")
         self.collapse_btn.pack(side="right")
 
@@ -1206,7 +1206,7 @@ class BlackChpokIDE(tk.Tk):
                                     fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w")
         self.local_label.pack(side="left", padx=(theme.SPACE_SM, 0), pady=(0, 2))
         widgets.Tip(self.local_label, "Local-first: дані й моделі лишаються на цьому комп'ютері")
-        widgets.IconButton(state_row, "в—”", self.open_settings, bg=theme.BG_ALT,
+        widgets.IconButton(state_row, "◔", self.open_settings, bg=theme.BG_ALT,
                            fg=theme.FG_FAINT, font=("Segoe UI", 10),
                            tooltip="Налаштування (Ctrl+,)").pack(side="right")
 
@@ -2398,7 +2398,7 @@ class BlackChpokIDE(tk.Tk):
         ВАЖЛИВО про «зависання»: це мережевий запит із таймаутом 4 с, і
         викликати його з потоку інтерфейсу НЕ МОЖНА. Заміряно профілером:
         перший кадр застигав на 2.4 с саме тут (``_model_summary`` →
-        ``_server_alive`` в†’ ``list_models``).
+        ``_server_alive`` → ``list_models``).
 
         Тепер функція працює так:
 
@@ -2497,7 +2497,7 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Власний рушій не завантажив модель: %s", exc)
             return f"{NATIVE_FAILURE_PREFIX}{exc}"[:120]
         self._on_native_model(info.get("path") or chosen.path)
-        note = f" В· ctx {info.get('context_actual', 0)}"
+        note = f" · ctx {info.get('context_actual', 0)}"
         return f"власний рушій: {chosen.key}{note}"
     def _stop_managed_server(self, *, reason: str = "") -> bool:
         """Зупинити попередній керований рушій, щоб не тримати VRAM двічі.
@@ -2677,7 +2677,7 @@ class BlackChpokIDE(tk.Tk):
             online = False
         try:
             self.header_bar.set_model_status(
-                online, detail=(f"{self.settings.llm.model} В· {url}"
+                online, detail=(f"{self.settings.llm.model} · {url}"
                                 if online else f"{detail or 'сервер не відповідає'}"))
         except (tk.TclError, AttributeError):
             pass
@@ -2911,7 +2911,7 @@ class BlackChpokIDE(tk.Tk):
         result = ast_index.analyse(editor.get_text())
         if result.problem is not None:
             self.show_text_window(
-                f"AST В· {editor.filename}",
+                f"AST · {editor.filename}",
                 f"Файл не розбирається — рядок {result.problem.line}:\n"
                 f"{result.problem.short}\n\n(виправ помилку, щоб побачити дерево)",
             )
@@ -2922,7 +2922,7 @@ class BlackChpokIDE(tk.Tk):
                  f"розбір: {result.elapsed:.1f} мс", ""]
         for depth, name, snippet in rows:
             lines.append(f"{'  ' * depth}{name}" + (f"  {snippet}" if snippet else ""))
-        self.show_text_window(f"AST В· {editor.filename}", "\n".join(lines))
+        self.show_text_window(f"AST · {editor.filename}", "\n".join(lines))
 
     def show_symbols_report(self) -> None:
         """Повний звіт про символи: підписи, доку, декоратори."""
@@ -2959,7 +2959,7 @@ class BlackChpokIDE(tk.Tk):
             self.set_status(f"Не вдалось прочитати diff: {exc}")
             return
         self.show_text_window(
-            f"diff В· {path.name}",
+            f"diff · {path.name}",
             diff_stats.make_unified_diff(old_text, new_text, path.name),
         )
 
@@ -6776,7 +6776,7 @@ class BlackChpokIDE(tk.Tk):
         try:
             self.header_bar.set_model_status(
                 bool(online),
-                detail=detail or f"{entry.name} В· {self.settings.llm.base_url}")
+                detail=detail or f"{entry.name} · {self.settings.llm.base_url}")
         except (tk.TclError, AttributeError):
             pass
         self._sync_model_labels(entry)
@@ -7071,7 +7071,7 @@ class BlackChpokIDE(tk.Tk):
         self.agent.llm_settings = self.settings.llm
         provider = cloud_agents.get(cloud.provider)
         name = provider.label if provider else "хмара"
-        reasoning = " В· reasoning" if cloud_agents.is_reasoning_model(cloud.model) else ""
+        reasoning = " · reasoning" if cloud_agents.is_reasoning_model(cloud.model) else ""
         self.set_status(f"Хмарний агент: {name} · {cloud.model}{reasoning}")
         self._cloud_active = True
         return True
@@ -7235,7 +7235,7 @@ class BlackChpokIDE(tk.Tk):
         # ── УВІМКНУЛИ ВЛАСНИЙ РУШІЙ — ЗАВАНТАЖИТИ МОДЕЛЬ ─────────────────
         # Прапорця було замало: адреса лишалась HTTP, а модель у рушій не
         # завантажувалась узагалі, тож перший же запит ішов у мережу й падав
-        # Р· В«[WinError 10061] target machine actively refused itВ».
+        # з «[WinError 10061] target machine actively refused it».
         # Тепер збереження налаштувань справді вмикає рушій.
         self._apply_engine_choice()
         self.set_status("Налаштування збережено.")
@@ -7403,7 +7403,7 @@ class BlackChpokIDE(tk.Tk):
             f"Впевненість: {data.get('why_confidence')}",
         ]
         for event in (data.get("history") or [])[:10]:
-            lines.append(f"В· {event.get('action')}: {str(event.get('detail'))[:160]}")
+            lines.append(f"· {event.get('action')}: {str(event.get('detail'))[:160]}")
         self.show_text_window(f"Спогад {memory_id[-8:]}", "\n".join(lines))
 
     # ── статус ─────────────────────────────────────────────────────────────
@@ -7446,7 +7446,7 @@ class BlackChpokIDE(tk.Tk):
                  f"Усього: {len(rows)} (останні зверху)", ""]
         for stamp, where, kind, text in reversed(rows):
             clock = _time.strftime("%H:%M:%S", _time.localtime(stamp))
-            lines.append(f"## {clock} В· {where}")
+            lines.append(f"## {clock} · {where}")
             lines.append(f"`{kind}`: {text}")
             lines.append("")
         lines.append("_Повний стек — у журналі `ide.log`._")
