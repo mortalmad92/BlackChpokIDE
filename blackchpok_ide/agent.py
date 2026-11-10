@@ -2905,33 +2905,44 @@ class AgentRunner:
         """
         names: list[str] = []
         seen: set[str] = set()
-        sources = (
-            getattr(self, "_specs", None),
-            TOOL_SCHEMAS,
-        )
-        for source in sources:
-            for name in (source or {}):
-                text = str(name or "").strip()
-                if text and text not in seen:
-                    seen.add(text)
-                    names.append(text)
-        for schema in getattr(self, "_specs_schemas", None) or ():
-            function = schema.get("function") if isinstance(schema, dict) else None
-            if isinstance(function, dict) and function.get("name"):
-                text = str(function["name"]).strip()
-                if text and text not in seen:
-                    seen.add(text)
-                    names.append(text)
-        # MCP-інструменти та інструменти памʼяті теж можуть бути викликані.
-        source = getattr(self, "_all_schemas", None)
-        if isinstance(source, list):
-            for schema in source:
-                function = schema.get("function") if isinstance(schema, dict) else None
-                if isinstance(function, dict) and function.get("name"):
-                    text = str(function["name"]).strip()
-                    if text and text not in seen:
-                        seen.add(text)
-                        names.append(text)
+
+        def add(name: object) -> None:
+            text = str(name or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                names.append(text)
+
+        def add_schema(schema: object) -> None:
+            """Ім'я зі схеми у форматі OpenAI (``{"function": {"name": …}}``)."""
+            if not isinstance(schema, dict):
+                return
+            function = schema.get("function")
+            if isinstance(function, dict):
+                add(function.get("name"))
+            else:
+                add(schema.get("name"))
+
+        # 1. ``_specs`` — мапа «ім'я → специфікація» для поточного ходу.
+        specs = getattr(self, "_specs", None)
+        if isinstance(specs, dict):
+            for name in specs:
+                add(name)
+        # 2. Базові схеми інструментів застосунку (50 у TOOL_SCHEMAS).
+        if isinstance(TOOL_SCHEMAS, dict):
+            for name in TOOL_SCHEMAS:
+                add(name)
+        elif isinstance(TOOL_SCHEMAS, (list, tuple)):
+            for schema in TOOL_SCHEMAS:
+                add_schema(schema)
+        # 3. Схеми памʼяті, MCP і скілів — вони теж можуть бути викликані.
+        for attr in ("_all_schemas", "_specs_schemas", "_turn_schemas"):
+            source = getattr(self, attr, None)
+            if isinstance(source, dict):
+                for name in source:
+                    add(name)
+            elif isinstance(source, (list, tuple)):
+                for schema in source:
+                    add_schema(schema)
         return names
 
     def _ask(self, client: LLMClient, messages: list[dict[str, Any]],
