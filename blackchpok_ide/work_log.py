@@ -126,7 +126,10 @@ def tool_view(name: str) -> tuple[str, str, str]:
 
 def human_duration(seconds: float) -> str:
     """Тривалість по-людськи: 12 с · 2 хв 54 с · 1 год 5 хв."""
-    total = int(max(0, seconds))
+    try:
+        total = int(max(0.0, float(seconds)))
+    except (TypeError, ValueError):
+        total = 0
     if total < 60:
         return f"{total} с"
     minutes, secs = divmod(total, 60)
