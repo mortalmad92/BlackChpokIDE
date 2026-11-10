@@ -65,7 +65,11 @@ class LocalRAG:
         read_text: Callable[..., str],
         relative_path: Callable[[Path], str],
     ) -> None:
-        self.root = root.resolve()
+        # ``root`` може прийти як ``str``: типова анотація каже ``Path``, але
+        # ``server.py`` і тести передають рядок із змінної оточення. Раніше
+        # це падало з ``AttributeError: 'str' object has no attribute
+        # 'resolve'`` — тобто RAG мовчки не працював зовсім.
+        self.root = Path(root).resolve()
         self._safe_path = safe_path
         self._walk_files = walk_files
         self._read_text = read_text
