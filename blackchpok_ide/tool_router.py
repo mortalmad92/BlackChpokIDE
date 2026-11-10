@@ -402,10 +402,17 @@ def _read_rules(phrase: str) -> list[ToolHint]:
                               "завантажити сторінку", source="vibe_router"))
         return hints
 
-    if _has(low, "що змінилось", "стан git", "git status", "стан репозиторію"):
+    if _has(low, "що змінилось", "стан git", "git status", "стан репозиторію",
+            "покажи зміни", "які зміни", "що змінилося", "змінені файли"):
         hints.append(ToolHint("git_status", {}, HIGH, "стан репозиторію"))
-    elif _has(low, "git diff", "покажи диф", "різниця git", "покажи diff"):
+    elif _has(low, "git diff", "покажи диф", "різниця git", "покажи diff",
+              "diff змін", "різницю змін"):
         hints.append(ToolHint("git_diff", {}, HIGH, "різниця змін"))
+    elif _has(low, "зроби коміт", "створи коміт", "закоміть", "git commit",
+              "зафіксуй зміни"):
+        # Коміт робить сама IDE-команда, але агенту потрібен реальний стан
+        # репозиторію: без цього він «комітив» би наосліп.
+        hints.append(ToolHint("git_status", {}, MEDIUM, "перед комітом — стан"))
 
     if _has(low, "покажи файли", "список файлів", "що в папці", "вміст папки",
             "ls", "dir ", "що тут є"):
@@ -420,11 +427,34 @@ def _read_rules(phrase: str) -> list[ToolHint]:
         match = re.search(r"(\*[\w.*?/\-]+|[\w\-]+\.(?:py|js|ts|json|md|txt))", phrase, re.I)
         pattern = match.group(1) if match else (pattern or "*.py")
         hints.append(ToolHint("find_files", {"pattern": pattern}, HIGH, "пошук файлів"))
+    else:
+        # «Знайди всі .py» — це пошук ФАЙЛІВ за шаблоном, хоча слова «файли»
+        # у фразі немає. Без цієї гілки запит ішов у ``search_text`` і шукав
+        # рядок «.py» у тексті замість того, щоб перелічити файли.
+        glob = re.search(r"(\*[\w.*?/\-]+)", phrase)
+        ext = re.search(r"\.(py|js|ts|tsx|jsx|json|md|txt|html|css|go|rs|java)\b",
+                        phrase, re.I)
+        if glob or (ext and _has(low, "знайди", "пошукай", "всі", "усі", "find")):
+            pattern = glob.group(1) if glob else f"*.{ext.group(1).lower()}"
+            hints.append(ToolHint("find_files", {"pattern": pattern}, HIGH,
+                                  "просили знайти файли за шаблоном"))
 
     if _has(low, "запусти тести", "прожени тести", "виконай тести", "перевір тестами"):
         hints.append(ToolHint("run_command",
                               {"command": f'"{_python()}" -m unittest discover -s tests -v'},
                               HIGH, "просили тести"))
+    # ── Запуск застосунку/сервера проєкту ──────────────────────────────────
+    # «Запусти сервер», «запусти проєкт», «запусти сайт» — це вбудоване
+    # прев'ю, а не довільна команда. Раніше роутер не давав ЖОДНОЇ підказки
+    # (``_command_after`` не знаходив команди в такій фразі), і агент
+    # відповідав словами замість того, щоб підняти застосунок.
+    elif _has(low, "запусти сервер", "запусти проєкт", "запусти проект",
+              "запусти сайт", "запусти застосунок", "запусти програму",
+              "підніми сервер", "start server", "start app"):
+        hints.append(ToolHint("app_start", {}, HIGH, "просили запустити застосунок"))
+    elif _has(low, "зупини сервер", "зупини проєкт", "зупини сайт",
+              "зупини застосунок", "stop server", "stop app"):
+        hints.append(ToolHint("app_stop", {}, HIGH, "просили зупинити застосунок"))
     elif _has(low, "запусти", "виконай", "run "):
         command = _command_after(low)
         if command:
@@ -471,8 +501,13 @@ def _read_rules(phrase: str) -> list[ToolHint]:
         hints.append(ToolHint("read_file", {"path": path}, HIGH, "просили файл"))
     elif path and not hints:
         hints.append(ToolHint("read_file", {"path": path}, MEDIUM, "названо файл"))
-    elif not path and _has(low, "що в цьому файлі", "що в файлі", "що тут",
-                           "що в цьому коді", "покажи файл", "що за файл"):
+    elif (not path and _has(low, "що в цьому файлі", "що в файлі", "що тут",
+                            "що в цьому коді", "покажи файл", "що за файл")
+          # «Покажи ФАЙЛИ» — це перелік теки, а не читання відкритого файлу.
+          # Підрядок «покажи файл» входить у «покажи файли», тож без цієї
+          # перевірки роутер додавав ще й ``read_file`` з порожнім шляхом, і
+          # агент намагався прочитати неіснуючий файл.
+          and not _has(low, "файли", "файлів", "папк", "теці", "теку", "директор")):
         # Файл названо неявно («в цьому файлі») — читаємо той, що відкритий
         # у редакторі. Без цього правила фраза не давала жодного наміру, і
         # агент відповідав балачкою замість того, щоб подивитись код.

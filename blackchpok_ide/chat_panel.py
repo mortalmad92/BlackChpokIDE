@@ -1454,7 +1454,7 @@ class ChatPanel(tk.Frame):
             self.voice_settings.speak_replies = False
             self._note("Озвучення вимкнено.")
         elif action == "help":
-            self._note(voice_commands_text())
+            self._note(voice.voice_commands_text())
 
     def speak_text(self, text: str) -> None:
         """Озвучити текст у фоні.

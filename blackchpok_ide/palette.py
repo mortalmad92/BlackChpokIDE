@@ -1,4 +1,4 @@
-"""Палітра команд (Ctrl+Shift+P), швидке відкриття файлів (Ctrl+P), пошук (Ctrl+F)."""
+﻿"""РџР°Р»С–С‚СЂР° РєРѕРјР°РЅРґ (Ctrl+Shift+P), С€РІРёРґРєРµ РІС–РґРєСЂРёС‚С‚СЏ С„Р°Р№Р»С–РІ (Ctrl+P), РїРѕС€СѓРє (Ctrl+F)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from . import theme, widgets, workspace as ws
 
 
 class Palette(tk.Toplevel):
-    """Універсальне вікно з полем фільтра і списком результатів."""
+    """РЈРЅС–РІРµСЂСЃР°Р»СЊРЅРµ РІС–РєРЅРѕ Р· РїРѕР»РµРј С„С–Р»СЊС‚СЂР° С– СЃРїРёСЃРєРѕРј СЂРµР·СѓР»СЊС‚Р°С‚С–РІ."""
 
     def __init__(
         self,
@@ -20,7 +20,7 @@ class Palette(tk.Toplevel):
         title: str,
         items: list[tuple[str, str, Callable[[], None]]],
         *,
-        placeholder: str = "Фільтр…",
+        placeholder: str = "Р¤С–Р»СЊС‚СЂвЂ¦",
     ) -> None:
         super().__init__(master)
         self.fonts = fonts
@@ -29,7 +29,7 @@ class Palette(tk.Toplevel):
         self._placeholder = placeholder
         self._build(title, placeholder)
         self.transient(master)
-        # Одне модальне вікно за раз і без спливних карток під ним.
+        # РћРґРЅРµ РјРѕРґР°Р»СЊРЅРµ РІС–РєРЅРѕ Р·Р° СЂР°Р· С– Р±РµР· СЃРїР»РёРІРЅРёС… РєР°СЂС‚РѕРє РїС–Рґ РЅРёРј.
         if not widgets.open_only_modal(self):
             existing = widgets.active_modal()
             self.destroy()
@@ -76,7 +76,7 @@ class Palette(tk.Toplevel):
         self.after(50, lambda: (self.entry.focus_set(), self.geometry("")))
 
     def _center(self) -> None:
-        """Розмістити палітру по центру батька, не виходячи за екран."""
+        """Р РѕР·РјС–СЃС‚РёС‚Рё РїР°Р»С–С‚СЂСѓ РїРѕ С†РµРЅС‚СЂСѓ Р±Р°С‚СЊРєР°, РЅРµ РІРёС…РѕРґСЏС‡Рё Р·Р° РµРєСЂР°РЅ."""
         widgets.place_window(self, width=640, height=380, center_on=self.master)
 
     def _render(self, query: str = "") -> None:
@@ -127,13 +127,13 @@ class Palette(tk.Toplevel):
 
 
 class SearchDialog(tk.Toplevel):
-    """Діалог пошуку/заміни в поточному файлі."""
+    """Р”С–Р°Р»РѕРі РїРѕС€СѓРєСѓ/Р·Р°РјС–РЅРё РІ РїРѕС‚РѕС‡РЅРѕРјСѓ С„Р°Р№Р»С–."""
 
     def __init__(self, master: tk.Misc, fonts: theme.Theme, editor) -> None:
         super().__init__(master)
         self.fonts = fonts
         self.editor = editor
-        self.title("Пошук у файлі")
+        self.title("РџРѕС€СѓРє Сѓ С„Р°Р№Р»С–")
         self.configure(bg=theme.BG_INPUT)
         self.resizable(False, False)
         self.transient(master)
@@ -150,57 +150,60 @@ class SearchDialog(tk.Toplevel):
         frame = tk.Frame(self, bg=theme.BG_INPUT, padx=12, pady=10)
         frame.pack(fill="both", expand=True)
 
-        tk.Label(frame, text="Знайти", bg=theme.BG_INPUT, fg=theme.FG_DIM, font=self.fonts.ui_small).grid(row=0, column=0, sticky="w")
+        tk.Label(frame, text="Р—РЅР°Р№С‚Рё", bg=theme.BG_INPUT, fg=theme.FG_DIM, font=self.fonts.ui_small).grid(row=0, column=0, sticky="w")
         self.find_entry = tk.Entry(frame, bg=theme.BG, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
                                    relief="flat", font=self.fonts.mono_small, width=34)
         self.find_entry.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(2, 6), ipady=3)
         self.find_entry.focus_set()
         self.find_entry.bind("<KeyRelease>", lambda _e: self._live_highlight())
 
-        tk.Label(frame, text="Замінити на", bg=theme.BG_INPUT, fg=theme.FG_DIM, font=self.fonts.ui_small).grid(row=2, column=0, sticky="w")
+        tk.Label(frame, text="Р—Р°РјС–РЅРёС‚Рё РЅР°", bg=theme.BG_INPUT, fg=theme.FG_DIM, font=self.fonts.ui_small).grid(row=2, column=0, sticky="w")
         self.replace_entry = tk.Entry(frame, bg=theme.BG, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
                                       relief="flat", font=self.fonts.mono_small, width=34)
         self.replace_entry.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(2, 8), ipady=3)
 
         self.case_var = tk.BooleanVar(value=False)
         self.regex_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, text="Врахувати регістр", variable=self.case_var,
+        ttk.Checkbutton(frame, text="Р’СЂР°С…СѓРІР°С‚Рё СЂРµРіС–СЃС‚СЂ", variable=self.case_var,
                         command=self._live_highlight).grid(row=4, column=0, sticky="w")
         ttk.Checkbutton(frame, text="Regex", variable=self.regex_var,
                         command=self._live_highlight).grid(row=4, column=1, sticky="w")
 
-        ttk.Button(frame, text="←", width=3, style="Icon.TButton",
+        ttk.Button(frame, text="в†ђ", width=3, style="Icon.TButton",
                    command=self.find_prev).grid(row=5, column=0, sticky="w", pady=(8, 0))
-        ttk.Button(frame, text="→", width=3, style="Icon.TButton",
+        ttk.Button(frame, text="в†’", width=3, style="Icon.TButton",
                    command=self.find_next).grid(row=5, column=1, sticky="w", pady=(8, 0))
-        ttk.Button(frame, text="Замінити", style="Flat.TButton",
+        ttk.Button(frame, text="Р—Р°РјС–РЅРёС‚Рё", style="Flat.TButton",
                    command=self.replace_one).grid(row=5, column=2, sticky="e", pady=(8, 0))
-        ttk.Button(frame, text="Усе", style="Accent.TButton",
+        ttk.Button(frame, text="РЈСЃРµ", style="Accent.TButton",
                    command=self.replace_all).grid(row=5, column=3, sticky="e", pady=(8, 0))
 
         self.info = tk.Label(frame, text="", bg=theme.BG_INPUT, fg=theme.FG_DIM, font=self.fonts.ui_small)
         self.info.grid(row=6, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
-    def _options(self) -> tuple[str, bool, bool]:
+    def _search_options(self) -> tuple[str, bool, bool]:
+        # Р†Рј'СЏ РќР• ``_options``: С†Рµ РІРЅСѓС‚СЂС–С€РЅС–Р№ РјРµС‚РѕРґ tkinter (``Misc._options``),
+        # С– РїРµСЂРµРєСЂРёС‚С‚СЏ Р№РѕРіРѕ Р· С–РЅС€РѕСЋ СЃРёРіРЅР°С‚СѓСЂРѕСЋ РІР°Р»РёС‚СЊ СЃС‚РІРѕСЂРµРЅРЅСЏ РґС–Р°Р»РѕРіСѓ Р·
+        # ``TypeError: SearchDialog._options() takes 1 positional argument``.
         return self.find_entry.get(), self.regex_var.get(), self.case_var.get()
 
     def _live_highlight(self) -> None:
-        needle, regex, case = self._options()
+        needle, regex, case = self._search_options()
         if not self.editor:
             return
         count = self.editor.highlight_all_matches(needle, regex=regex, case=case)
-        self.info.configure(text=f"Збігів: {count}" if needle else "")
+        self.info.configure(text=f"Р—Р±С–РіС–РІ: {count}" if needle else "")
 
     def find_next(self) -> None:
-        needle, regex, case = self._options()
+        needle, regex, case = self._search_options()
         if not needle:
             return
         if not self.editor.search(needle, regex=regex, case=case):
-            self.info.configure(text="Більше збігів немає")
+            self.info.configure(text="Р‘С–Р»СЊС€Рµ Р·Р±С–РіС–РІ РЅРµРјР°С”")
         self._live_highlight()
 
     def find_prev(self) -> None:
-        needle, regex, case = self._options()
+        needle, regex, case = self._search_options()
         if not needle:
             return
         self.editor.search(needle, backwards=True, regex=regex, case=case)
@@ -243,11 +246,11 @@ class SearchDialog(tk.Toplevel):
                 count = len(re.findall(re.escape(needle), content, re.IGNORECASE))
                 updated = re.sub(re.escape(needle), replacement.replace("\\", "\\\\"), content, flags=re.IGNORECASE)
         self.editor.set_text(updated)
-        self.info.configure(text=f"Замінено: {count}")
+        self.info.configure(text=f"Р—Р°РјС–РЅРµРЅРѕ: {count}")
 
 
 class ProjectSearch(ttk.Frame):
-    """Результати пошуку по проєкту (нижня панель)."""
+    """Р РµР·СѓР»СЊС‚Р°С‚Рё РїРѕС€СѓРєСѓ РїРѕ РїСЂРѕС”РєС‚Сѓ (РЅРёР¶РЅСЏ РїР°РЅРµР»СЊ)."""
 
     def __init__(self, master: tk.Misc, fonts: theme.Theme, root_provider: Callable[[], Optional[Path]]) -> None:
         super().__init__(master, style="Panel.TFrame")
@@ -265,7 +268,7 @@ class ProjectSearch(ttk.Frame):
         bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
         bar.columnconfigure(0, weight=1)
 
-        ttk.Label(bar, text="ПОШУК У ПРОЄКТІ", style="Header.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(bar, text="РџРћРЁРЈРљ РЈ РџР РћР„РљРўР†", style="Header.TLabel").grid(row=0, column=0, sticky="w")
 
         self.query_entry = tk.Entry(bar, bg=theme.BG_INPUT, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
                                     relief="flat", font=self.fonts.mono_small, width=28)
@@ -282,19 +285,19 @@ class ProjectSearch(ttk.Frame):
                                       style="Panel.TCheckbutton")
         regex_check.grid(row=0, column=3, padx=4)
         widgets.Tip(regex_check,
-                    "Шукати за регулярним виразом Python, а не за звичайним текстом")
+                    "РЁСѓРєР°С‚Рё Р·Р° СЂРµРіСѓР»СЏСЂРЅРёРј РІРёСЂР°Р·РѕРј Python, Р° РЅРµ Р·Р° Р·РІРёС‡Р°Р№РЅРёРј С‚РµРєСЃС‚РѕРј")
 
-        find_btn = ttk.Button(bar, text="Знайти", style="Icon.TButton",
+        find_btn = ttk.Button(bar, text="Р—РЅР°Р№С‚Рё", style="Icon.TButton",
                               command=self.run_search)
         find_btn.grid(row=0, column=4, padx=(4, 0))
         widgets.Tip(find_btn,
-                    "Знайти збіги в усіх файлах проєкту (Enter у полі запиту). "
-                    "Подвійний клік у результаті відкриває файл на цьому рядку")
+                    "Р—РЅР°Р№С‚Рё Р·Р±С–РіРё РІ СѓСЃС–С… С„Р°Р№Р»Р°С… РїСЂРѕС”РєС‚Сѓ (Enter Сѓ РїРѕР»С– Р·Р°РїРёС‚Сѓ). "
+                    "РџРѕРґРІС–Р№РЅРёР№ РєР»С–Рє Сѓ СЂРµР·СѓР»СЊС‚Р°С‚С– РІС–РґРєСЂРёРІР°С” С„Р°Р№Р» РЅР° С†СЊРѕРјСѓ СЂСЏРґРєСѓ")
 
         self.results = ttk.Treeview(self, columns=("file", "line", "text"), show="headings", height=6)
-        self.results.heading("file", text="Файл")
-        self.results.heading("line", text="Рядок")
-        self.results.heading("text", text="Текст")
+        self.results.heading("file", text="Р¤Р°Р№Р»")
+        self.results.heading("line", text="Р СЏРґРѕРє")
+        self.results.heading("text", text="РўРµРєСЃС‚")
         self.results.column("file", width=220, stretch=False)
         self.results.column("line", width=60, stretch=False, anchor="e")
         self.results.column("text", width=800, stretch=True)
@@ -332,7 +335,7 @@ class ProjectSearch(ttk.Frame):
             self.results.insert("", "end", values=(
                 ws.relative_to_root(root, hit.path), hit.line, hit.text,
             ))
-        self.summary.configure(text=f"Знайдено {len(hits)} збігів за «{needle}»")
+        self.summary.configure(text=f"Р—РЅР°Р№РґРµРЅРѕ {len(hits)} Р·Р±С–РіС–РІ Р·Р° В«{needle}В»")
 
     def _open_selected(self, _event=None) -> None:
         selection = self.results.selection()

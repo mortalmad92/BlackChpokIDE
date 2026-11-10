@@ -786,8 +786,13 @@ def do_ask_browser_ai(prompt: str, provider: str = "gemini") -> str:
     except Exception as e:
         return f"Помилка браузера: {type(e).__name__}: {e}"
     finally:
-        try: browser.close()
-        except: pass
+        # Голий ``except`` тут глушив і переривання, і SystemExit: закриття
+        # браузера не має ламати результат виклику, але й не має ковтати
+        # такі винятки мовчки.
+        try:
+            browser.close()
+        except Exception:  # noqa: BLE001 - прибирання не має кидати далі
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────

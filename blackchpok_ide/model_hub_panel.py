@@ -27,6 +27,8 @@ from . import runtime as rt
 from . import theme, widgets
 from .browser_panel import open_url as open_page
 
+LOG = __import__("logging").getLogger("blackchpok.modelhub")
+
 SOURCE_ORDER = ("huggingface", "github", "civitai")
 # Символи джерел для компактного списку.
 SOURCE_MARK = {"huggingface": "🤗", "github": "🐙", "civitai": "🎨", "tensorart": "🅣"}

@@ -372,8 +372,6 @@ def wants_deep_plan(text: str) -> bool:
     # Кілька різних вимог у змістовному тексті — привід спланувати.
     demands = sum(1 for hint in MANY_TASKS_HINTS if hint in low)
     return demands >= DEMAND_THRESHOLD
-    demands = sum(1 for hint in MANY_TASKS_HINTS if hint in low)
-    return len(sentences) >= 4 and demands >= 3
 
 
 def goal_from(text: str, *, limit: int = 240) -> str:

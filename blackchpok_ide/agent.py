@@ -1979,6 +1979,49 @@ class AgentRunner:
             })
         return schemas
 
+    def _forbidden_by_user_request(self, name: str, data: dict[str, Any]) -> str:
+        """Причина заборони, якщо користувач прямо заборонив цю дію.
+
+        Перевіряються лише ЯВНІ заборони з поточного кадру наміру
+        (``не запускай``, ``не читай``, ``не змінюй``). Без цього кроку
+        підказка «не запускати команди» лишалась побажанням у промпті, а
+        модель її регулярно порушувала — і агент запускав тести після
+        прохання їх не запускати.
+        """
+        intent = self.intent
+        if intent is None:
+            return ""
+        constraints = [str(item or "").lower()
+                       for item in (getattr(intent, "constraints", ()) or ())]
+        if not constraints:
+            return ""
+        for text in constraints:
+            if "не запускати команди" in text or "не запускати тести" in text:
+                if name in permissions.EXEC_TOOLS or self._looks_like_test_run(data):
+                    return "запуск команд і перевірок"
+            if "не читати файли проєкту" in text and name in (
+                    "read_file", "search_text", "find_files", "list_dir",
+                    "project_tree"):
+                return "читання файлів проєкту"
+            if "не змінювати наявні файли" in text and name in (
+                    "write_file", "edit_file", "append_file", "delete_file"):
+                return "зміна наявних файлів"
+            if "не видаляти наявні дані" in text and name in (
+                    "write_file", "edit_file", "append_file", "delete_file"):
+                return "видалення наявних даних"
+        return ""
+
+    @staticmethod
+    def _looks_like_test_run(data: dict[str, Any]) -> bool:
+        """Чи команда запускає тести (навіть якщо це ``run_command``)."""
+        command = str((data or {}).get("command") or "").lower()
+        if not command:
+            return False
+        markers = ("pytest", "unittest", "npm test", "npm run test", "yarn test",
+                   "go test", "cargo test", "tox", "nox", "run_tests",
+                   "manage.py test", "phpunit")
+        return any(marker in command for marker in markers)
+
     def call_tool(self, name: str, arguments: str | dict[str, Any]) -> ToolResult:
         """Виконати ОДИН виклик інструмента (єдина точка входу).
 
@@ -1996,6 +2039,14 @@ class AgentRunner:
         if not decision.allowed:
             self._emit("status", f"Заблоковано ({self.permission_mode}): {name}")
             return ToolResult(False, f"Заборонено режимом дозволів: {decision.reason}")
+        blocked = self._forbidden_by_user_request(name, data)
+        if blocked:
+            # Прохання «не запускай тести» має важити БІЛЬШЕ за ініціативу
+            # моделі. Підказка в промпті — не гарантія: локальні моделі її
+            # ігнорують, і агент запускав рівно те, що людина заборонила.
+            # Тепер заборона перевіряється на ЄДИНІЙ точці виконання.
+            self._emit("status", f"Пропущено на прохання користувача: {name}")
+            return ToolResult(False, f"Користувач заборонив цю дію: {blocked}")
         if decision.needs_confirmation and self.registry.command_guard is not None:
             command = str(data.get("command") or "")
             if command and not self.registry.command_guard(command):

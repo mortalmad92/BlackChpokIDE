@@ -185,6 +185,55 @@ class _RedactSecrets(logging.Filter):
         return True
 
 
+def _as_int(value: Any, default: int) -> int:
+    """Терпиме перетворення у ``int``: зіпсоване значення → типове.
+
+    ``settings.json`` можна відредагувати вручну, і там цілком законно
+    трапляється ``"max_steps": "багато"`` або ``"max_tokens": null``.
+    Раніше ``int(value)`` кидав ``ValueError`` прямо з ``from_dict``, тобто
+    IDE не запускалась узагалі — без вікна й без підказки. Тепер читаємо
+    файл завжди, а некоректне поле замінюємо типовим, лишивши попередження.
+
+    Відсутнє поле (``None``) — не помилка: це просто «не задано», тому
+    попередження не пишемо, щоб не засмічувати журнал на кожному старті.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        LOG.warning("Очікувалось ціле число, отримано %r — використано %s",
+                    value, default)
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    """Те саме, що :func:`_as_int`, але для ``float``."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        LOG.warning("Очікувалось число, отримано %r — використано %s",
+                    value, default)
+        return default
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    """Терпиме перетворення у ``bool`` (``"false"`` більше не стає True)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        clean = value.strip().lower()
+        if clean in ("1", "true", "yes", "так", "on"):
+            return True
+        if clean in ("0", "false", "no", "ні", "off", ""):
+            return False
+    return default
+
+
 def setup_logging(level: int = logging.INFO) -> Path:
     """Пише журнал у файл (у .exe stdout недоступний)."""
     log_file = app_data_dir() / "ide.log"
@@ -770,22 +819,22 @@ class Settings:
             api_key=cloud_key,
             base_url=str(cloud_data.get("base_url") or ""),
             model=str(cloud_data.get("model") or ""),
-            reasoning=bool(cloud_data.get("reasoning", True)),
-            max_tokens=max(256, min(200_000, int(cloud_data.get("max_tokens") or 8192))),
-            temperature=max(0.0, min(2.0, float(cloud_data.get("temperature") or 0.3))),
+            reasoning=_as_bool(cloud_data.get("reasoning", True), True),
+            max_tokens=max(256, min(200_000, _as_int(cloud_data.get("max_tokens"), 8192))),
+            temperature=max(0.0, min(2.0, _as_float(cloud_data.get("temperature"), 0.3))),
             last_check=str(cloud_data.get("last_check") or ""),
             last_status=secrets.redact(str(cloud_data.get("last_status") or "")),
         )
         voice_data = data.get("voice") if isinstance(data.get("voice"), dict) else {}
         voice = VoiceSettings(
-            enabled=bool(voice_data.get("enabled", True)),
-            auto_send=bool(voice_data.get("auto_send", True)),
-            speak_replies=bool(voice_data.get("speak_replies", False)),
+            enabled=_as_bool(voice_data.get("enabled", True), True),
+            auto_send=_as_bool(voice_data.get("auto_send", True), True),
+            speak_replies=_as_bool(voice_data.get("speak_replies"), False),
             language=str(voice_data.get("language") or "uk-UA"),
             whisper_dir=str(voice_data.get("whisper_dir") or ""),
             model_path=str(voice_data.get("model_path") or ""),
-            seconds=float(voice_data.get("seconds") or 5.0),
-            rate=max(-10, min(10, int(voice_data.get("rate") or 0))),
+            seconds=max(0.5, min(120.0, _as_float(voice_data.get("seconds"), 5.0))),
+            rate=max(-10, min(10, _as_int(voice_data.get("rate"), 0))),
         )
         social = SocialSettings()
         social_data = data.get("social") if isinstance(data.get("social"), dict) else {}
@@ -809,7 +858,7 @@ class Settings:
                     "key": key,
                     "value": value,
                     "said": str(entry.get("said") or ""),
-                    "when": float(entry.get("when") or 0.0),
+                    "when": _as_float(entry.get("when"), 0.0),
                 })
         return cls(
             workspace=str(data.get("workspace") or ""),
@@ -823,8 +872,8 @@ class Settings:
             voice=voice,
             shell=str(data.get("shell") or "cmd.exe /d /s /c"),
             recent=recent[:12],
-            first_run_done=bool(data.get("first_run_done")),
-            project_chosen=bool(data.get("project_chosen")),
+            first_run_done=_as_bool(data.get("first_run_done"), False),
+            project_chosen=_as_bool(data.get("project_chosen"), False),
             preferences=preferences,
         )
 

@@ -354,7 +354,19 @@ def answer_from_observations(
     if header:
         lines.append(header)
     else:
-        lines.append("Готово. Результат:" if len(parts) == 1 else "Готово. Результати:")
+        # Заголовок мусить відповідати ФАКТУ. Раніше крок, де ВСІ виклики
+        # впали, починався зі слова «Готово», і користувач читав «Готово» з
+        # переліком помилок нижче. Тепер це «Не вдалося», а частковий успіх
+        # чесно називається «Виконано частково».
+        any_ok = any(item.ok for item in rows)
+        all_ok = all(item.ok for item in rows)
+        if not any_ok:
+            lines.append("Не вдалося виконати.")
+        elif not all_ok:
+            lines.append("Виконано частково.")
+        else:
+            lines.append("Готово. Результат:" if len(parts) == 1
+                         else "Готово. Результати:")
     lines.append("")
     lines.append("\n\n".join(parts))
 

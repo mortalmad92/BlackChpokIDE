@@ -179,6 +179,10 @@ class PulseDot(tk.Canvas):
         self._size = max(8, int(size))
         self._bg = bg
         self._colour = colour or self._COLOURS.get(state, theme.SUCCESS)
+        #: Копія кольорів на екземпляр: ``set_colour`` переписує її, і без
+        #: копії змінений колір однієї крапки змінював би ВСІ крапки
+        #: застосунку (словник оголошено на класі).
+        self._COLOURS = dict(type(self)._COLOURS)
         self._state = state
         self._ring = self.create_oval(0, 0, 0, 0, outline=self._colour, width=1,
                                       state="hidden")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import Callable, Optional
 
 from . import browser_panel, cloud_agents, secrets, social, theme, voice, widgets
@@ -1324,18 +1324,104 @@ class SettingsDialog(tk.Toplevel):
 
     # ── збереження ─────────────────────────────────────────────────────────
     def _save(self) -> None:
+        """Зберегти налаштування. Помилку показуємо, а не ковтаємо.
+
+        Тут був тихий збій: ``float(self.temp_var.get())`` і подібні рядки
+        кидали ``ValueError``, якщо користувач вписав у поле «0,3» з комою
+        або взагалі текст. Callback Tk падав, діалог лишався відкритим, і
+        НІЧОГО не зберігалось — без жодного слова про причину. Тепер
+        значення перевіряються заздалегідь, а некоректне поле називається
+        користувачу разом із очікуваним форматом.
+        """
+        bad = self._first_bad_number()
+        if bad is not None:
+            label, value, hint = bad
+            messagebox.showerror(
+                "Налаштування",
+                f"Поле «{label}» містить «{value}».\nОчікується {hint}.",
+                parent=self)
+            return
+        try:
+            self._apply_fields()
+        except Exception as exc:                     # noqa: BLE001
+            LOG.warning("Збереження налаштувань упало: %s", exc, exc_info=True)
+            messagebox.showerror(
+                "Налаштування",
+                f"Не вдалось зберегти налаштування: {exc}",
+                parent=self)
+            return
+        self.destroy()
+
+    def _number_fields(self) -> list[tuple[str, str, str, str]]:
+        """(підпис, ім'я змінної, вид, підказка) для числових полів.
+
+        Один список на всі поля: і перевірка, і збереження беруть його,
+        тому додати нове поле достатньо в одному місці.
+        """
+        return [
+            ("Температура", "temp_var", "float", "число від 0 до 2, напр. 0.3"),
+            ("Максимум токенів", "tokens_var", "int", "ціле число, напр. 4096"),
+            ("Тайм-аут", "timeout_var", "int", "ціле число секунд"),
+            ("Розмір шрифту", "size_var", "int", "ціле число, напр. 11"),
+            ("Ширина табуляції", "tab_var", "int", "ціле число, напр. 4"),
+            ("Кроків агента", "steps_var", "int", "ціле число, напр. 12"),
+            ("Хмарні токени", "cloud_tokens", "int", "ціле число, напр. 8192"),
+            ("Температура хмари", "cloud_temp", "float", "число від 0 до 2"),
+            ("Секунд запису", "voice_seconds", "float", "число, напр. 5"),
+            ("Швидкість мовлення", "voice_rate", "int", "ціле від -10 до 10"),
+        ]
+
+    def _first_bad_number(self) -> tuple[str, str, str] | None:
+        """Перше числове поле з непридатним значенням (або ``None``)."""
+        for label, attribute, kind, hint in self._number_fields():
+            widget = getattr(self, attribute, None)
+            if widget is None:
+                continue
+            try:
+                raw = str(widget.get()).strip()
+            except (AttributeError, tk.TclError):
+                continue
+            if not raw:
+                continue                      # порожнє поле — беремо типове
+            # Кома як десятковий розділ — звична для української клавіатури.
+            candidate = raw.replace(",", ".") if kind == "float" else raw
+            try:
+                float(candidate) if kind == "float" else int(float(candidate))
+            except (TypeError, ValueError):
+                return label, raw, hint
+        return None
+
+    def _number(self, attribute: str, kind: str, default: float) -> float:
+        """Прочитати число з поля; некоректне значення → типове."""
+        widget = getattr(self, attribute, None)
+        try:
+            raw = str(widget.get()).strip() if widget is not None else ""
+        except (AttributeError, tk.TclError):
+            raw = ""
+        if not raw:
+            return default
+        candidate = raw.replace(",", ".") if kind == "float" else raw
+        try:
+            return float(candidate) if kind == "float" else int(float(candidate))
+        except (TypeError, ValueError):
+            LOG.warning("Поле %s: «%s» не число — використано %s",
+                        attribute, raw, default)
+            return default
+
+    def _apply_fields(self) -> None:
+        """Перенести значення полів у ``settings`` (без запису на диск)."""
         s = self.settings
         s.llm.base_url = self.url_entry.get().strip()
         s.llm.api_key = self.key_entry.get().strip()
         s.llm.model = self.model_combo.get().strip()
-        s.llm.temperature = float(self.temp_var.get())
-        s.llm.max_tokens = int(self.tokens_var.get())
-        s.llm.timeout = int(self.timeout_var.get())
+        s.llm.temperature = self._number("temp_var", "float", 0.3)
+        s.llm.max_tokens = int(self._number("tokens_var", "int", 4096))
+        s.llm.timeout = int(self._number("timeout_var", "int", 120))
         s.llm.normalise()
 
-        s.ui.font_size = int(self.size_var.get())
+        s.ui.font_size = int(self._number("size_var", "int", 11))
         s.ui.font_family = self.font_combo.get()
-        s.ui.tab_size = int(self.tab_var.get())
+        s.ui.tab_size = int(self._number("tab_var", "int", 4))
         s.ui.word_wrap = bool(self.wrap_var.get())
         s.ui.show_line_numbers = bool(self.numbers_var.get())
         s.ui.highlight_current_line = bool(self.current_line_var.get())
@@ -1345,7 +1431,7 @@ class SettingsDialog(tk.Toplevel):
         s.agent.system_prompt = self.prompt_text.get("1.0", "end-1c").strip()
         s.agent.confirm_commands = bool(self.confirm_cmd_var.get())
         s.agent.offline_fallback = bool(self.offline_var.get())
-        s.agent.max_steps = int(self.steps_var.get())
+        s.agent.max_steps = int(self._number("steps_var", "int", 12))
         s.agent.use_skills = bool(self.skills_var.get())
         s.agent.queue_auto_run = bool(self.autorun_var.get())
         s.agent.stream = bool(self.stream_var.get())
@@ -1425,15 +1511,15 @@ class SettingsDialog(tk.Toplevel):
         s.cloud.base_url = cloud_agents.normalise_base_url(self.cloud_url.get().strip())
         s.cloud.model = self.cloud_model.get().strip()
         s.cloud.reasoning = bool(self.cloud_reasoning.get())
-        s.cloud.max_tokens = int(self.cloud_tokens.get())
-        s.cloud.temperature = float(self.cloud_temp.get())
+        s.cloud.max_tokens = int(self._number("cloud_tokens", "int", 8192))
+        s.cloud.temperature = self._number("cloud_temp", "float", 0.3)
 
         # ── голос
         s.voice.enabled = bool(self.voice_enabled.get())
         s.voice.auto_send = bool(self.voice_auto.get())
         s.voice.speak_replies = bool(self.voice_speak.get())
-        s.voice.seconds = float(self.voice_seconds.get())
-        s.voice.rate = int(self.voice_rate.get())
+        s.voice.seconds = self._number("voice_seconds", "float", 5.0)
+        s.voice.rate = int(self._number("voice_rate", "int", 0))
 
         # ── соцмережі
         for key, entries in self.social_entries.items():
@@ -1443,4 +1529,3 @@ class SettingsDialog(tk.Toplevel):
         s.save()
         if self.on_saved:
             self.on_saved()
-        self.destroy()

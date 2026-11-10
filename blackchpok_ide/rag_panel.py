@@ -153,6 +153,12 @@ class RagPanel(tk.Frame):
         """Оновити стан індексу у фоні (відкриття панелі не має гальмувати)."""
         if self._busy:
             return
+        if self.service is None:
+            # Без сервісу фоновий потік падав би з AttributeError у тихому
+            # місці, і панель назавжди лишалась би з написом «Перевіряю…».
+            self.status_label.configure(text="Пошук по проєкту недоступний.",
+                                        fg=theme.FG_FAINT)
+            return
         self._start()
 
         def work() -> None:
@@ -184,6 +190,9 @@ class RagPanel(tk.Frame):
     def run_index(self, force: bool = False) -> None:
         if self._busy:
             self._notify("Індексація вже виконується.")
+            return
+        if self.service is None:
+            self._notify("Індексація недоступна: немає сервісу пошуку.")
             return
         self._busy = True
         self._start()
@@ -223,6 +232,9 @@ class RagPanel(tk.Frame):
         query = self.entry.get().strip()
         if not query:
             self.entry.focus_set()
+            return
+        if self.service is None:
+            self.set_results([], message="Пошук по проєкту недоступний.", error=True)
             return
         self._start()
         self.set_results([], message="Шукаю…")
