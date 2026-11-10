@@ -839,6 +839,17 @@ class LocalServer:
         self.process: subprocess.Popen | None = None
         self.log_path = runtime_dir() / "server.log"
         self._log_handle: Any = None
+        # ── Watchdog ───────────────────────────────────────────────────────
+        # Раніше смерть llama-server помічалась лише за наступною помилкою
+        # запиту: користувач бачив «немає з'єднання» замість причини.
+        # Тепер окремий потік стежить за процесом і повідомляє про смерть.
+        self._watchdog: threading.Thread | None = None
+        self._watchdog_stop = threading.Event()
+        #: Хто отримає звістку про смерть процесу (підпис, деталі).
+        self.on_died: Callable[[str], None] | None = None
+        #: Остання причина смерті — щоб панель могла її показати.
+        self.died_reason = ""
+        self._died_reported = False
 
     @property
     def base_url(self) -> str:
@@ -931,7 +942,66 @@ class LocalServer:
             time.sleep(1.0)
         return False, f"Сервер не відповів за {timeout:.0f} с.\n{self.tail_log(20)}"
 
+    # ── Watchdog ──────────────────────────────────────────────────────────
+    def start_watchdog(self, interval: float = 2.0) -> None:
+        """Стежити за процесом і повідомити, якщо він помре.
+
+        ``AUTOMATIC_RUNTIME.md`` §7: «Якщо ``llama-server`` помре під час
+        роботи, IDE це помітить лише за наступною помилкою запиту.
+        Автоматичного перезапуску немає». Перезапуск лишаємо користувачу
+        (він може хотіти іншу модель), але **факт смерті** тепер видно
+        одразу: панель отримує причину й хвіст журналу.
+
+        Потік — демон, тому не тримає застосунок живим; ``stop()`` його
+        зупиняє. Повторних повідомлень немає (``_died_reported``).
+        """
+        if self._watchdog is not None and self._watchdog.is_alive():
+            return
+        process = self.process
+        if process is None:
+            return
+        self._watchdog_stop.clear()
+        self._died_reported = False
+        self.died_reason = ""
+
+        def _watch() -> None:
+            while not self._watchdog_stop.wait(interval):
+                try:
+                    code = process.poll()
+                except OSError:
+                    return
+                if code is None:
+                    continue
+                if self._died_reported:
+                    return          # уже повідомили
+                self._died_reported = True
+                tail = self.tail_log(15)
+                reason = (f"Рушій завершився сам (код {code}). "
+                          f"Модель більше не відповідатиме.")
+                self.died_reason = reason
+                LOG.warning("%s\n%s", reason, tail)
+                callback = self.on_died
+                if callback is not None:
+                    try:
+                        callback(reason)
+                    except Exception:  # noqa: BLE001 - звіт не має ламати потік
+                        LOG.debug("on_died впав", exc_info=True)
+                return
+
+        self._watchdog = threading.Thread(
+            target=_watch, name="llama-watchdog", daemon=True)
+        self._watchdog.start()
+
+    def stop_watchdog(self) -> None:
+        """Зупинити стеження (викликається зі ``stop()``)."""
+        self._watchdog_stop.set()
+        thread = self._watchdog
+        self._watchdog = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
     def stop(self, timeout: float = 10.0) -> None:
+        self.stop_watchdog()
         process = self.process
         pid = int(process.pid) if process is not None else 0
         if process is not None and process.poll() is None:
@@ -1230,6 +1300,10 @@ class AutoLauncher:
                 self.error = detail
                 self.server.stop()
                 return False
+            # Стеження за процесом: якщо рушій помре під час роботи, панель
+            # дізнається про це одразу, а не за наступною помилкою запиту.
+            self.server.on_died = self._on_server_died
+            self.server.start_watchdog()
             self.base_url = self.server.base_url
             self._status(f"Модель готова: {self.base_url}")
             return True
@@ -1245,6 +1319,14 @@ class AutoLauncher:
     def stop(self) -> None:
         if self.server:
             self.server.stop()
+
+    def _on_server_died(self, reason: str) -> None:
+        """Рушій помер сам — сказати користувачу причину, а не «немає з'єднання»."""
+        self.error = reason
+        self.base_url = ""
+        self._status(
+            f"{reason} Натисни «Запустити модель», щоб підняти її знову."
+        )
 
     def _status(self, text: str) -> None:
         LOG.info("%s", text)
