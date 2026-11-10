@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "blackchpok-ai": {
+      "command": "C:\\AI\\blackchpock_ai\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\AI\\blackchpock_ai\\server.py"
+      ],
+      "cwd": "C:\\AI\\blackchpock_ai",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "MCP_LOG_LEVEL": "INFO",
+        "MCP_WORKSPACE": "C:\\AI\\blackchpock_ai",
+        "MCP_LLM_BACKEND": "local",
+        "MCP_LOCAL_URL": "http://127.0.0.1:8080/v1",
+        "MCP_LOCAL_MODEL": "",
+        "MCP_LOCAL_API_KEY": "local",
+        "MCP_DB_PATH": "C:\\AI\\blackchpock_ai\\.mcp_rag\\memoria_infinita.db",
+        "MCP_RAG_EMBEDDINGS_URL": "http://127.0.0.1:8080/v1/embeddings",
+        "MCP_RAG_EMBEDDINGS_MODEL": "",
+        "MCP_NUM_CTX": "32768",
+        "MCP_TEMPERATURE": "0.15"
+      }
+    }
+  }
+}

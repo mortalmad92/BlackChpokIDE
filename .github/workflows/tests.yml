@@ -1,0 +1,73 @@
+name: tests
+
+# Автоперевірка BlackChpok IDE.
+# Мета: жодна регресія не доходить до користувача. Тести швидкі
+# (усі разом ~16 с без GUI), тож прогін на кожен push дешевий.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core:
+    name: Тести ядра (Linux, без графіки)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Мінімальні залежності
+        run: |
+          python -m pip install --upgrade pip
+          pip install pygments
+
+      - name: Компіляція пакета
+        run: python -m compileall -q blackchpok_ide
+
+      - name: Стиль коду
+        run: python tests/check_style.py
+
+      - name: Самоперевірка ядра
+        run: python main.py --selftest
+
+      - name: Юніт-тести (без віконних)
+        env:
+          PYTHONIOENCODING: utf-8
+          BLACKCHPOK_HOME: ${{ github.workspace }}/.buildtmp/ci-home
+        run: |
+          python -m unittest discover -s tests -v
+
+  gui:
+    name: Тести інтерфейсу (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Залежності
+        run: |
+          python -m pip install --upgrade pip
+          pip install pygments pillow numpy
+
+      - name: Живий прогін кнопок
+        env:
+          PYTHONIOENCODING: utf-8
+          BLACKCHPOK_HOME: ${{ github.workspace }}/.buildtmp/ci-gui
+        run: python tests/live_every_button.py
+
+      - name: Повний набір через run_all
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python tests/run_all.py

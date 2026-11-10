@@ -1,0 +1,572 @@
+"""Розумний вибір інструментів: звичайна фраза → конкретна дія.
+
+Агент має не «розмовляти» про задачу, а виконувати її. Цей модуль перетворює
+українську (і англійську) фразу на впевнений набір викликів інструментів —
+навіть коли модель не здогадалась покликати інструмент сама.
+
+Працює у два шари:
+
+1. **vibe_router** з репозиторію — великий набір правил MCP-сервера;
+2. **власні правила IDE** — для дій, яких у роутері немає (скіли, черга,
+   статистика контексту, робота з вкладкою).
+
+Модуль не залежить від tkinter і не робить жодного вводу-виводу.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Модель результату
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Наскільки впевнено фраза вказує на дію.
+HIGH = "high"        # явний наказ («покажи файли», «запусти тести»)
+MEDIUM = "medium"    # схоже на дію, але є сумнів
+LOW = "low"          # здогад — не виконуємо автоматично
+
+
+@dataclass
+class ToolHint:
+    """Одна рекомендована дія."""
+
+    tool: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    confidence: str = MEDIUM
+    reason: str = ""
+    source: str = "ide"          # ide | vibe_router
+
+    @property
+    def is_confident(self) -> bool:
+        return self.confidence == HIGH
+
+    def describe(self) -> str:
+        args = ", ".join(f"{k}={v}" for k, v in self.arguments.items()
+                         if str(v).strip())
+        return f"{self.tool}({args})" if args else self.tool
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Каталог можливостей — його бачить і модель, і користувач
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: (назва, коли використовувати, приклад фрази)
+TOOL_CATALOG: tuple[tuple[str, str, str], ...] = (
+    ("read_file", "прочитати вміст файлу", "покажи main.py"),
+    ("write_file", "створити або перезаписати файл", "створи файл notes.txt"),
+    ("edit_file", "точково виправити фрагмент", "виправ друкарську помилку"),
+    ("append_file", "дописати в кінець файлу, не затираючи наявне",
+     "додай рядок у кінець файлу"),
+    ("list_dir", "показати вміст папки", "покажи файли"),
+    ("search_text", "знайти текст у коді проєкту", "знайди master_agent_router"),
+    ("find_files", "знайти файли за шаблоном", "знайди всі .py"),
+    ("run_command", "виконати команду в терміналі", "запусти тести"),
+    ("git_status", "стан репозиторію", "що змінилось"),
+    ("git_diff", "різниця змін", "покажи diff"),
+    ("project_tree", "дерево проєкту", "дерево проєкту"),
+    ("python_check", "перевірити синтаксис", "перевір синтаксис main.py"),
+    # ── інтернет: завжди доступний, без MCP ────────────────────────────────
+    # Без цих рядків модель не знала, що МОЖЕ піти в мережу, і вигадувала
+    # свіжі дані (ціни, курси, версії) з пам'яті.
+    ("search_web", "пошук в інтернеті: ціни, курси, погода, новини, документація",
+     "скільки коштує біткоїн сьогодні"),
+    ("fetch_url", "прочитати вебсторінку за адресою",
+     "прочитай https://docs.python.org/3/whatsnew/3.14.html"),
+    ("web_open", "показати сторінку людині у вбудованому браузері",
+     "відкрий мені цю сторінку"),
+    ("web_api", "HTTP-запит до API (перевірити ендпоінт)",
+     "перевір http://127.0.0.1:8000/api/health"),
+    ("internet_status", "чи є доступ до інтернету", "перевір з'єднання"),
+    ("list_skills", "перелік скілів агента", "які є скіли"),
+    ("read_skill", "прочитати інструкцію скіла", "покажи скіл tests"),
+    # ── живе тестування застосунку ────────────────────────────────────────
+    # Без цих рядків модель не знала, що вміє запускати й перевіряти сам
+    # застосунок проєкту, і «подивись, як виглядає сайт» зводилось до
+    # вгадування замість реального скриншота.
+    ("app_start", "запустити застосунок проєкту", "запусти застосунок"),
+    ("app_stop", "зупинити застосунок проєкту", "зупини застосунок"),
+    ("app_restart", "перезапустити застосунок", "перезапусти застосунок"),
+    ("app_screenshot", "зробити знімок застосунку", "покажи, як виглядає сторінка"),
+    ("project_screenshot", "знімок вікна проєкту (живий сайт)",
+     "подивись, як зараз виглядає мій сайт"),
+    ("app_windows", "перелік вікон для знімка", "які вікна відкриті"),
+    ("window_screenshot", "знімок будь-якого вікна Windows",
+     "подивись на вікно редактора"),
+    ("app_logs", "журнал запуску застосунку", "чому застосунок не запускається"),
+    ("app_click", "клікнути в застосунку", "натисни кнопку Вхід"),
+    ("app_type", "ввести текст у застосунку", "введи логін у поле"),
+    ("app_key", "натиснути клавішу в застосунку", "натисни Enter у формі"),
+    ("app_status", "стан застосунку", "застосунок запущено?"),
+    # ── живий браузер: сторінка як дані ────────────────────────────────────
+    # Без цих рядків модель не знала, що може ПРОЧИТАТИ сторінку: вона
+    # вгадувала причину помилки й координати елементів замість того, щоб
+    # подивитись консоль і DOM.
+    ("web_url", "адреса сторінки у вбудованому браузері", "яка адреса відкрита"),
+    ("web_console", "помилки сторінки: JS, ресурси, HTTP", "що в консолі браузера"),
+    ("web_inspect", "параметри елемента сторінки", "який це елемент і які в нього стилі"),
+    ("web_screenshot", "знімок сторінки", "покажи як виглядає сторінка"),
+    ("web_audit", "перевірка сторінки на проблеми", "перевір сторінку на помилки"),
+    ("web_responsive", "перевірка адаптивності", "перевір на телефоні й планшеті"),
+    ("web_click", "клік по елементу сторінки", "натисни кнопку Купити"),
+    ("web_type", "введення тексту в поле сторінки", "введи email у формі"),
+    # ── DOM-міст: структура сторінки як дані ───────────────────────────────
+    # Без цих рядків модель бачила лише ЗОБРАЖЕННЯ сторінки й не знала, що
+    # може спитати в DOM: який селектор у кнопки, які в неї стилі, що в
+    # консолі. Саме це й потрібно, щоб виправити компонент, а не вгадати.
+    ("dom_tree", "дерево DOM сторінки з координатами",
+     "покажи структуру сторінки"),
+    ("dom_find_text", "знайти елемент за текстом на сторінці",
+     "де на сторінці напис «Купити»"),
+    ("dom_styles", "обчислені стилі елемента за селектором",
+     "які стилі в .header"),
+    ("dom_console", "помилки сторінки у структурованому вигляді",
+     "що за помилки на сторінці"),
+    # ── зір: знімки як ДАНІ (розміри, координати, ділянки, різниця) ─────────
+    ("capture_screen", "зняти екран (можна область)",
+     "зніми екран і подивись на проблему"),
+    ("capture_region", "зняти прямокутну область екрана",
+     "зніми область 300×200 у точці 100,100"),
+    ("crop_screenshot", "вирізати область зі знімка без масштабування",
+     "збільш цю частину скріншота"),
+    ("inspect_screenshot_regions",
+     "нарізати великий скріншот на перекривні ділянки",
+     "роздивись дрібний текст на екрані 3440×1440"),
+    ("compare_screenshots", "порахувати різницю між двома знімками",
+     "що змінилось після правки"),
+    ("analyze_visual_difference", "знайти ділянки змін і вирізати «до/після»",
+     "покажи, що саме змінилось на сторінці"),
+    ("get_image_dimensions", "розмір зображення в пікселях",
+     "який розмір цього скріншота"),
+    ("get_screenshot_metadata", "метадані знімка й історія файлу",
+     "коли зроблено цей знімок"),
+    ("list_screenshots", "останні знімки з історії",
+     "покажи останні скріншоти"),
+)
+
+#: Дії, які виконує MCP-сервер (доступні як mcp__<сервер>__master_agent_router).
+MCP_CATALOG: tuple[tuple[str, str, str], ...] = (
+    ("search_web", "пошук в інтернеті", "знайди в інтернеті новини про Python"),
+    ("memory_search", "згадати, про що говорили раніше", "що ти пам'ятаєш про проєкт"),
+    ("save_rule", "запам'ятати правило назавжди", "запам'ятай: відповідай українською"),
+    ("index_project", "проіндексувати проєкт для RAG", "проіндексуй проєкт"),
+    ("analyze_project", "огляд і аналіз проєкту", "проаналізуй проєкт"),
+    ("night_shift", "працювати над задачами вночі", "працюй вночі 4 години"),
+    ("todo_write", "додати задачу в список", "додай задачу перевірити тести"),
+    ("todo_list", "показати список задач", "які в мене задачі"),
+    ("db_schema", "схема бази SQLite", "покажи схему бази"),
+    ("review_code", "оглянути код на проблеми", "перевір код на помилки"),
+    ("fetch_url", "завантажити сторінку", "прочитай https://example.com"),
+    ("run_and_repair", "запустити й виправити помилку", "запусти і виправ"),
+)
+
+
+def catalog_text(include_mcp: bool = True) -> str:
+    """Текстовий каталог для системного промпта."""
+    lines = ["Доступні дії IDE:"]
+    for name, when, example in TOOL_CATALOG:
+        lines.append(f"- {name} — {when} (напр. «{example}»)")
+    if include_mcp:
+        lines.append("")
+        lines.append("Додаткові дії MCP-сервера (через master_agent_router):")
+        for name, when, example in MCP_CATALOG:
+            lines.append(f"- {name} — {when} (напр. «{example}»)")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Власні правила IDE
+# ───────────────────────────────────────────────────────────────────────────────
+
+_PATH_RE = re.compile(
+    r"((?:[\w.\-]+[\\/])*[\w.\-]+\.(?:py|pyi|js|ts|tsx|jsx|json|md|txt|html|css|"
+    r"yml|yaml|toml|ini|sql|ps1|bat|cmd|cfg|cpp|c|h|go|rs|java|cs))",
+    re.IGNORECASE,
+)
+
+_QUOTED = re.compile(r"[«\"'`]([^»\"'`]{2,})[»\"'`]")
+
+
+def _path_in(text: str) -> str:
+    match = _PATH_RE.search(text or "")
+    if not match:
+        return ""
+    return match.group(1).strip("`\"'").replace("\\", "/")
+
+
+def _quoted(text: str) -> str:
+    match = _QUOTED.search(text or "")
+    return match.group(1).strip() if match else ""
+
+
+def _paths_in(text: str) -> list[str]:
+    """Усі згадані файли у фразі, без повторів, у порядку згадки.
+
+    Потрібно для фраз із кількома файлами: «додай у calc.py множення, а в
+    notes.txt запиши». Раніше роутер бачив лише перший, і агент виконував
+    половину прохання.
+    """
+    seen: list[str] = []
+    for match in _PATH_RE.finditer(text or ""):
+        name = match.group(1).strip("`\"'").replace("\\", "/")
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
+def _has(low: str, *needles: str) -> bool:
+    return any(needle in low for needle in needles)
+
+
+def _word(text: str, stem: str) -> bool:
+    """Чи є ``stem`` ОКРЕМИМ словом (з українськими закінченнями).
+
+    Навіщо не ``in``: «скіл» є початком слова «скільки», тому
+    «Скільки Python-файлів?» маршрутизувалось у ``read_skill`` — агент
+    читав інструкцію скіла замість того, щоб порахувати файли.
+
+    Перевіряємо і межу ПЕРЕД основою, і межу ПІСЛЯ неї. Закінчення
+    перелічені явно: «скіл», «скіла», «скіли», «скілів» — це та сама дія,
+    а «скільки» (де після «скіл» стоїть «ь») — ні.
+    """
+    return bool(re.search(
+        rf"(?<![\w\u0400-\u04FF]){re.escape(stem)}"
+        rf"(?:а|и|у|ів|ом|ами|ах|ям|ями|ях)?(?![\w\u0400-\u04FF])",
+        text))
+
+
+def _ide_rules(phrase: str) -> list[ToolHint]:
+    """Правила, які стосуються саме IDE (скіли, черга, вкладки)."""
+    low = (phrase or "").lower().strip()
+    if not low:
+        return []
+    hints: list[ToolHint] = []
+    path = _path_in(phrase)
+
+    if _has(low, "які є скіли", "які скіли", "список скілів", "перелік скілів",
+            "покажи скіли"):
+        hints.append(ToolHint("list_skills", {}, HIGH, "запит про скіли"))
+    elif _word(low, "скіл"):
+        name = _quoted(phrase)
+        if not name:
+            match = re.search(r"скіл[а-яіїєґ]*\s+([\w\-]+)", low)
+            name = match.group(1) if match else ""
+        hints.append(ToolHint("read_skill", {"name": name} if name else {},
+                              HIGH if name else MEDIUM, "згадано скіл"))
+
+    # ── Підрахунок файлів ─────────────────────────────────────────────────
+    # «Скільки .py файлів?» — це запит про реальний стан теки, і
+    # правильний інструмент тут ``list_dir`` (або ``find_files`` для
+    # підтек). Без цього правила роутер не давав жодної підказки, і
+    # модель відповідала вигадкою.
+    if _has(low, "скільки файл", "скільки .py", "скільки py", "скільки python",
+            "скільки тест", "кількість файл", "скільки модул"):
+        target = path or ""
+        if _has(low, "підтек", "рекурсив", "у всіх", "всюди"):
+            hints.append(ToolHint("find_files", {"pattern": "*.py"}, HIGH,
+                                  "просили порахувати файли з підтек"))
+        else:
+            hints.append(ToolHint("list_dir", {"path": target} if target else {},
+                                  HIGH, "просили порахувати файли"))
+
+    if _has(low, "дерево проєкту", "дерево проекту", "структура проєкту",
+            "структура проекту", "project tree"):
+        hints.append(ToolHint("project_tree", {"depth": 3}, HIGH, "просили дерево"))
+
+    if _has(low, "перевір синтаксис", "перевір код на помилки", "чи компілюється"):
+        if path:
+            hints.append(ToolHint("python_check", {"path": path}, HIGH, "перевірка синтаксису"))
+
+    # Нічна робота — окремий режим MCP-сервера.
+    if _has(low, "вночі", "нічна зміна", "поки я сплю", "працюй до ранку",
+            "нічний режим", "night shift"):
+        hours = _hours(phrase)
+        hints.append(ToolHint("mcp:night_shift",
+                              {"request": phrase, "query": str(hours)},
+                              HIGH, "нічний режим", source="vibe_router"))
+
+    # Забути/згадати розмову — це RAG-пам'ять.
+    if _has(low, "що ти пам'ятаєш", "що пам'ятаєш", "згадай", "пам'ятаєш про",
+            "про що ми говорили", "наша розмова", "що я казав"):
+        hints.append(ToolHint("mcp:memory_search", {"query": phrase}, HIGH,
+                              "запит до пам'яті", source="vibe_router"))
+
+    if _has(low, "проіндексуй", "онови індекс", "створи індекс", "вивчи проєкт"):
+        hints.append(ToolHint("mcp:index_project", {"file_path": "."}, HIGH,
+                              "індексація для RAG", source="vibe_router"))
+
+    if _has(low, "проаналізуй проєкт", "огляд проєкту", "що за проєкт"):
+        hints.append(ToolHint("mcp:analyze_project", {}, HIGH, "аналіз проєкту",
+                              source="vibe_router"))
+
+    return hints
+
+
+def _hours(phrase: str) -> int:
+    """Скільки годин працювати вночі (типово 6)."""
+    match = re.search(r"(\d+)\s*(?:год|годин|hour)", phrase or "", re.I)
+    if not match:
+        return 6
+    return max(1, min(int(match.group(1)), 8))
+
+
+def _python() -> str:
+    import sys
+
+    return sys.executable or "python"
+
+
+def _read_rules(phrase: str) -> list[ToolHint]:
+    low = (phrase or "").lower().strip()
+    if not low:
+        return []
+    path = _path_in(phrase)
+    hints: list[ToolHint] = []
+
+    # ── Мережа: перевіряємо ПЕРЕД пошуком по коду, інакше «знайди в
+    # інтернеті…» пішло б у search_text і шукало фразу в репозиторії.
+    #
+    # ВАЖЛИВО: підказка вказує на ВБУДОВАНИЙ ``search_web``, а не на
+    # ``mcp:search_web``. Раніше роутер підказував MCP-маршрут, і без
+    # підключеного MCP агент отримував «дія недоступна» — хоча інтернет у
+    # IDE працює завжди.
+    if _has(low, "в інтернеті", "в мережі", "у мережі", "в гуглі", "google",
+            "погугли", "новини", "курс ", "погода", "search web", "в браузері",
+            "ціна", "коштує", "скільки коштує", "price"):
+        query = _web_query(phrase)
+        hints.append(ToolHint("search_web", {"query": query}, HIGH,
+                              "пошук у мережі", source="vibe_router"))
+        return hints
+
+    url = re.search(r"https?://[^\s'\"<>]+", phrase or "")
+    if url:
+        hints.append(ToolHint("fetch_url", {"url": url.group(0)}, HIGH,
+                              "завантажити сторінку", source="vibe_router"))
+        return hints
+
+    if _has(low, "що змінилось", "стан git", "git status", "стан репозиторію"):
+        hints.append(ToolHint("git_status", {}, HIGH, "стан репозиторію"))
+    elif _has(low, "git diff", "покажи диф", "різниця git", "покажи diff"):
+        hints.append(ToolHint("git_diff", {}, HIGH, "різниця змін"))
+
+    if _has(low, "покажи файли", "список файлів", "що в папці", "вміст папки",
+            "ls", "dir ", "що тут є"):
+        hints.append(ToolHint("list_dir", {"path": path or "."}, HIGH, "просили список файлів"))
+
+    if _has(low, "знайди файли", "які файли", "find files", "пошук файлів"):
+        pattern = _quoted(phrase) or ""
+        match = re.search(r"(\*[\w.*?/\-]+|[\w\-]+\.(?:py|js|ts|json|md|txt))", phrase, re.I)
+        pattern = match.group(1) if match else (pattern or "*.py")
+        hints.append(ToolHint("find_files", {"pattern": pattern}, HIGH, "пошук файлів"))
+
+    if _has(low, "запусти тести", "прожени тести", "виконай тести", "перевір тестами"):
+        hints.append(ToolHint("run_command",
+                              {"command": f'"{_python()}" -m unittest discover -s tests -v'},
+                              HIGH, "просили тести"))
+    elif _has(low, "запусти", "виконай", "run "):
+        command = _command_after(low)
+        if command:
+            hints.append(ToolHint("run_command", {"command": command}, HIGH, "просили команду"))
+
+    if _has(low, "знайди", "пошукай", "search", "grep", "де використовується",
+            "де оголошено", "де знаходиться", "хто викликає", "вживається"):
+        needle = _quoted(phrase)
+        if not needle:
+            # «де використовується launch» — беремо слово після питального звороту.
+            match = re.search(
+                r"(?:де\s+використовується|де\s+оголошено|де\s+знаходиться|"
+                r"хто\s+викликає|знайди|пошукай|search|grep)\s+"
+                r"(?:текст\s+|у файлах\s+|в коді\s+)?([^\n]+)",
+                phrase, re.I)
+            needle = match.group(1).strip(" .,:;«»\"'?!") if match else ""
+        # «знайди файли» — це пошук файлів, а не тексту.
+        if needle and not _has(low, "файли", "files"):
+            hints.append(ToolHint("search_text", {"query": needle}, HIGH, "пошук по коду"))
+
+    # ── Правка названого файлу ─────────────────────────────────────────────
+    # «у файлі calc.py додай функцію множення»: файл названо, і просять
+    # змінити його ВМІСТ. Без цього правила роутер не бачив наказу зовсім
+    # (``_read_rules`` лише читає), і модель відповідала «зрозуміло, буду
+    # використовувати інструменти» замість роботи — саме так стався провал
+    # у живому прогоні.
+    #
+    # ПЕРЕВІРЯЄМО ПЕРШИМ: далі стоїть ланцюжок ``elif`` для читання, і
+    # правило правки мусить мати свій шанс раніше за нього.
+    if path and _has(low, "додай", "додати", "добав", "встав", "вставити",
+                     "зміни", "змінит", "поміняй", "заміни", "перероби",
+                     "виправ", "онови", "прибери", "перепиши", "зроби в"):
+        # Підказка — лише «прочитати файл»: модель сама має побачити код і
+        # взяти точний фрагмент. Цього досить, щоб агент почав діяти, а не
+        # говорити; сама правка йде через edit_file з її ж аргументами.
+        #
+        # Читаємо ВСІ названі файли, не лише перший: у фразі «додай у
+        # calc.py множення, а в notes.txt запиши» їх два, і без другого
+        # агент бачив лише половину роботи.
+        for one in _paths_in(phrase):
+            hints.append(ToolHint("read_file", {"path": one}, HIGH,
+                                  "спершу прочитати файл перед правкою"))
+    elif path and _has(low, "прочитай", "покажи", "відкрий", "read", "що робить"):
+        hints.append(ToolHint("read_file", {"path": path}, HIGH, "просили файл"))
+    elif path and not hints:
+        hints.append(ToolHint("read_file", {"path": path}, MEDIUM, "названо файл"))
+    elif not path and _has(low, "що в цьому файлі", "що в файлі", "що тут",
+                           "що в цьому коді", "покажи файл", "що за файл"):
+        # Файл названо неявно («в цьому файлі») — читаємо той, що відкритий
+        # у редакторі. Без цього правила фраза не давала жодного наміру, і
+        # агент відповідав балачкою замість того, щоб подивитись код.
+        # Порожній шлях означає «активний файл» — його підставить агент.
+        #
+        # Confidence HIGH: сумнівів немає, що людина хоче побачити код.
+        # MEDIUM не проходив у ``confident()``, і правило мовчки ігнорувалось.
+        hints.append(ToolHint("read_file", {"path": ""}, HIGH,
+                              "читання відкритого файлу"))
+
+    return hints
+
+
+def _web_query(phrase: str) -> str:
+    """Прибрати з фрази «знайди в інтернеті», лишивши суть запиту."""
+    text = (phrase or "").strip()
+    text = re.sub(r"^(знайди|пошукай|подивись|перевір)\s+(в|у)\s+(інтернеті|мережі|гуглі)\s*",
+                  "", text, flags=re.I)
+    text = re.sub(r"^(погугли|google|search web)\s*", "", text, flags=re.I)
+    text = re.sub(r"^(мені|будь ласка|please)\s+", "", text, flags=re.I)
+    text = text.strip(" .,:;—")
+    return text or (phrase or "").strip()
+
+
+_COMMAND_RE = re.compile(r"(?:запусти|виконай|run)\s+(?:команду\s+)?[«\"']?(.+?)[»\"']?$",
+                         re.IGNORECASE)
+
+
+def _command_after(text: str) -> str:
+    match = _COMMAND_RE.search(text.strip())
+    if not match:
+        return ""
+    command = match.group(1).strip(" `\"'")
+    # Фраза українською — це не команда.
+    if not command or re.search(r"[А-Яа-яІіЇїЄєҐґ]{4,}", command):
+        return ""
+    return command
+
+
+def _vibe_rules(phrase: str) -> list[ToolHint]:
+    """Скористатись великим набором правил MCP-сервера, якщо він поруч."""
+    try:
+        import sys
+
+        repo_root = Path(__file__).resolve().parent.parent
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        import vibe_router  # type: ignore
+    except Exception:  # noqa: BLE001 - роутер необов'язковий
+        return []
+    try:
+        decision = vibe_router.classify(phrase)
+    except Exception:  # noqa: BLE001
+        return []
+    intent = str(getattr(decision, "intent", "") or "")
+    if intent in {"", "auto", "talk"}:
+        return []
+    arguments: dict[str, Any] = {}
+    query = str(getattr(decision, "query", "") or "")
+    path = str(getattr(decision, "file_path", "") or "")
+    extra = str(getattr(decision, "extra", "") or "")
+    if query:
+        arguments["query"] = query
+    if path:
+        arguments["path"] = path
+    if extra:
+        arguments["extra"] = extra
+    return [ToolHint(f"mcp:{intent}", arguments, HIGH, "правило vibe_router",
+                     source="vibe_router")]
+
+
+#: Пари «MCP-інтент → IDE-інструмент», які роблять те саме.
+#: Якщо IDE-версія вже спрацювала, MCP-дубль не потрібен.
+_SAME_AS_IDE: dict[str, str] = {
+    "read_file": "read_file",
+    "read_files": "list_dir",     # «покажи файли» — це огляд вмісту, не читання
+    "list_dir": "list_dir",
+    "glob_files": "find_files",
+    "grep": "search_text",
+    "find_symbol": "search_text",
+    "run_tests": "run_command",
+    "run_shell": "run_command",
+    "git_context": "git_status",
+    "git_diff": "git_diff",
+    "project_tree": "project_tree",
+    "diagnostics": "python_check",
+    "index_symbols": "project_tree",
+    # Мережа тепер вбудована в IDE, тож MCP-дублі не потрібні: без цього
+    # модель отримувала І вбудований search_web, І ``mcp:search_web`` —
+    # другий падав із «MCP не підключено», і агент витрачав крок даремно.
+    "search_web": "search_web",
+    "fetch_url": "fetch_url",
+    "analyze_project": "project_tree",
+}
+
+
+def route(text: str) -> list[ToolHint]:
+    """Усі дії, які фраза просить виконати (найвпевненіші — першими)."""
+    phrase = (text or "").strip()
+    if not phrase:
+        return []
+    ide_hints = _ide_rules(phrase) + _read_rules(phrase)
+    used = {hint.tool for hint in ide_hints}
+    hints: list[ToolHint] = []
+    seen: set[tuple[str, str]] = set()
+    for hint in ide_hints + _vibe_rules(phrase):
+        # MCP-дубль уже покритої дії пропускаємо.
+        if hint.tool.startswith("mcp:"):
+            intent = hint.tool[4:]
+            if _SAME_AS_IDE.get(intent) in used:
+                continue
+        # Ключ — інструмент РАЗОМ із головним аргументом. Раніше ключем був
+        # лише інструмент, і «прочитати calc.py» витісняло «прочитати
+        # notes.txt»: у фразі з двома файлами агент бачив один.
+        key = (hint.tool, str(hint.arguments.get("path")
+                              or hint.arguments.get("query") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        hints.append(hint)
+    order = {HIGH: 0, MEDIUM: 1, LOW: 2}
+    hints.sort(key=lambda h: order.get(h.confidence, 3))
+    return hints
+
+
+def confident(text: str) -> list[ToolHint]:
+    """Лише ті дії, які можна виконувати без перепитування."""
+    return [hint for hint in route(text) if hint.is_confident]
+
+
+def is_actionable(text: str) -> bool:
+    """Чи просить фраза щось зробити (а не просто поговорити)."""
+    return bool(confident(text))
+
+
+def describe_route(text: str) -> str:
+    """Для журналу й тестів: що роутер зрозумів у фразі."""
+    hints = route(text)
+    if not hints:
+        return "дій не знайдено"
+    return "; ".join(f"{h.describe()} [{h.confidence}]" for h in hints[:6])
+
+
+__all__ = [
+    "HIGH",
+    "LOW",
+    "MEDIUM",
+    "MCP_CATALOG",
+    "TOOL_CATALOG",
+    "ToolHint",
+    "catalog_text",
+    "confident",
+    "describe_route",
+    "is_actionable",
+    "route",
+]
