@@ -73,12 +73,39 @@ def is_reasoning_model(model: str) -> bool:
     return False
 
 
-def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
+def _tool_names(tools: list[dict[str, Any]] | None) -> set[str]:
     names: set[str] = set()
-    for tool in tools:
+    for tool in tools or ():
         function = tool.get("function") if isinstance(tool, dict) else None
         if isinstance(function, dict) and function.get("name"):
             names.add(str(function["name"]))
+    return names
+
+
+def _recover_names(tools: list[dict[str, Any]] | None,
+                   known: Iterable[str] | None) -> set[str]:
+    """Імена для РОЗПІЗНАВАННЯ виклику в тексті.
+
+    Навіщо окремо від ``tools``. У лінивому режимі агент передає моделі
+    лише 17 «ядерних» схем із 50, а решту тримає доступними через
+    ``run_tool``. Модель при цьому цілком може написати виклик
+    інструмента, якого серед переданих схем немає:
+
+        {"name": "search_web", "arguments": {"query": "ціна соняш"}}
+
+    Раніше ``extract_tool_calls`` будував список імен ЛИШЕ з переданих
+    схем, не знаходив ``search_web`` і повертав ``[]``. Далі агент бачив
+    «порожню відповідь» і писав користувачу «Модель повернула порожню
+    відповідь» — хоч модель насправді дала цілком осмислений виклик.
+
+    Тепер розпізнавання спирається на ПОВНИЙ перелік відомих імен
+    (``known``), а ``tools`` лишається тим, що реально пішло моделі.
+    """
+    names = _tool_names(tools)
+    for name in known or ():
+        text = str(name or "").strip()
+        if text:
+            names.add(text)
     return names
 
 
@@ -120,17 +147,23 @@ def _looks_like_tool_json(text: str, names: set[str]) -> bool:
     return any(f'"{name}"' in head for name in names)
 
 
-def extract_tool_calls(content: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def extract_tool_calls(content: str, tools: list[dict[str, Any]],
+                       known_names: Iterable[str] | None = None
+                       ) -> list[dict[str, Any]]:
     """Витягти виклики інструментів із тексту відповіді.
 
     Малі моделі (1.5B–7B) часто ігнорують нативний формат і пишуть щось на
     кшталт ``{"name": "read_file", "arguments": {"path": "main.py"}}`` або
     ``<tool_call>{"name": ...}</tool_call>``. Розбираємо обидва варіанти й
     повертаємо у тому ж форматі, що й справжні tool_calls.
+
+    ``known_names`` — ПОВНИЙ перелік імен інструментів, які взагалі існують.
+    Потрібен для лінивого режиму: моделі передають частину схем, а викликати
+    вона може будь-який інструмент (див. :func:`_recover_names`).
     """
     if not content:
         return []
-    names = _tool_names(tools)
+    names = _recover_names(tools, known_names)
     if not names:
         return []
 
@@ -713,6 +746,7 @@ class LLMClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         stream_callback: Callable[[str], None] | None = None,
+        known_tools: Iterable[str] | None = None,
     ) -> ChatResult:
         if not self.model:
             raise LLMError("Модель не вибрана. Відкрий Налаштування → Модель і натисни «Оновити список».")
@@ -781,7 +815,7 @@ class LLMClient:
             # (```json {"name": ..., "arguments": {...}} ```) замість
             # поля tool_calls. Без цього розбору агент просто «говорив би»
             # замість того, щоб працювати.
-            recovered = extract_tool_calls(content, tools)
+            recovered = extract_tool_calls(content, tools, known_tools)
             if recovered:
                 normalised = recovered
                 LOG.info("Виклик інструмента відновлено з тексту: %s",
@@ -1132,6 +1166,7 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        known_tools: Iterable[str] | None = None,
     ) -> "ChatResult":
         """Запит до ``/v1/messages`` Anthropic (справжній протокол)."""
         payload = provider_adapters.anthropic_payload(
@@ -1153,7 +1188,7 @@ class LLMClient:
         # Якщо модель не має нативного виклику — пробуємо текстовий розбір,
         # як і для OpenAI-сумісних: локальність протоколу тут не важлива.
         if not calls and tools and content:
-            recovered = extract_tool_calls(content, tools)
+            recovered = extract_tool_calls(content, tools, known_tools)
             if recovered:
                 calls = recovered
                 content = strip_tool_json(content, tools)
@@ -1173,6 +1208,7 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        known_tools: Iterable[str] | None = None,
     ) -> "ChatResult":
         """Запит до нативного ``generateContent`` Gemini."""
         payload = provider_adapters.gemini_payload(
@@ -1191,7 +1227,7 @@ class LLMClient:
         content, calls, stop = provider_adapters.gemini_result(data)
         usage = provider_adapters.gemini_usage(data)
         if not calls and tools and content:
-            recovered = extract_tool_calls(content, tools)
+            recovered = extract_tool_calls(content, tools, known_tools)
             if recovered:
                 calls = recovered
                 content = strip_tool_json(content, tools)
@@ -1214,6 +1250,7 @@ class LLMClient:
         on_text: Callable[[str], None] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        known_tools: Iterable[str] | None = None,
     ) -> "ChatResult":
         """Стрімінг відповіді через SSE (``stream: true``).
 
@@ -1417,7 +1454,7 @@ class LLMClient:
                 },
             })
         if not normalised and tools and content:
-            recovered = extract_tool_calls(content, tools)
+            recovered = extract_tool_calls(content, tools, known_tools)
             if recovered:
                 normalised = recovered
                 content = strip_tool_json(content, tools)

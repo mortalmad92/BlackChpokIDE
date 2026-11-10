@@ -1034,10 +1034,18 @@ class AgentRunner:
     active_path_provider: Any = None
     #: Чи передавати знімки моделі як ЗОБРАЖЕННЯ (а не лише шлях).
     #:
-    #: Вмикається вікном, коли сервер запущено з ``--mmproj``: без
-    #: візуального проєктора модель картинку не читає, а сервер може
-    #: відхилити запит із ``image_url``.
-    vision_enabled: bool = True
+    #: Типово **False**, і це принципово. Раніше стояло ``True``: агент
+    #: надсилав зображення навіть тоді, коли візуального проєктора немає.
+    #: Rушій відповідав
+    #:   ``HTTP 500: image input is not supported — hint: … provide the mmproj``
+    #: і користувач бачив «модель не відповідає», хоч модель працювала —
+    #: їй просто надіслали те, чого вона не вміє читати.
+    #:
+    #: Увімкнення — обов'язок того, хто СПРАВДІ приєднав проєктор:
+    #: ``main_window`` ставить ``agent.vision_enabled = bool(projector)``
+    #: після автозапуску моделі. Без вікна (черга, тести, агент із коду)
+    #: проєктора ніхто не приєднує, тож і надсилати нічого.
+    vision_enabled: bool = False
     #: Файли, які агент створив або змінив ЗА ЦЕЙ хід.
     #:
     #: Значення на рівні класу, а не лише в ``__init__``: тести й черга
@@ -2886,6 +2894,46 @@ class AgentRunner:
             LOG.debug("Повторна спроба впала", exc_info=True)
             return False
 
+    def _known_tool_names(self) -> list[str]:
+        """УСІ імена інструментів, які взагалі існують для цього агента.
+
+        Не те саме, що ``tool_schemas()``: у лінивому режимі моделі
+        передається лише частина схем, але викликати вона може будь-який
+        інструмент. Розпізнавання текстового виклику має знати ПОВНИЙ
+        перелік, інакше виклик відомого інструмента вважається «службовим
+        текстом» і відповідь виходить порожньою.
+        """
+        names: list[str] = []
+        seen: set[str] = set()
+        sources = (
+            getattr(self, "_specs", None),
+            TOOL_SCHEMAS,
+        )
+        for source in sources:
+            for name in (source or {}):
+                text = str(name or "").strip()
+                if text and text not in seen:
+                    seen.add(text)
+                    names.append(text)
+        for schema in getattr(self, "_specs_schemas", None) or ():
+            function = schema.get("function") if isinstance(schema, dict) else None
+            if isinstance(function, dict) and function.get("name"):
+                text = str(function["name"]).strip()
+                if text and text not in seen:
+                    seen.add(text)
+                    names.append(text)
+        # MCP-інструменти та інструменти памʼяті теж можуть бути викликані.
+        source = getattr(self, "_all_schemas", None)
+        if isinstance(source, list):
+            for schema in source:
+                function = schema.get("function") if isinstance(schema, dict) else None
+                if isinstance(function, dict) and function.get("name"):
+                    text = str(function["name"]).strip()
+                    if text and text not in seen:
+                        seen.add(text)
+                        names.append(text)
+        return names
+
     def _ask(self, client: LLMClient, messages: list[dict[str, Any]],
              schemas: list[dict[str, Any]]) -> ChatResult:
         """Спитати модель — зі стрімінгом, якщо він увімкнений у налаштуваннях.
@@ -2904,8 +2952,18 @@ class AgentRunner:
         caps = self.model_caps
         if tools_arg and caps is not None and not caps.native_tools:
             tools_arg = None
+        # ── Імена для РОЗПІЗНАВАННЯ виклику в тексті ────────────────────────
+        # У лінивому режимі моделі передають лише «ядерні» схеми (17 із 50),
+        # а викликати вона може БУДЬ-ЯКИЙ інструмент — решта доступна через
+        # ``run_tool``. Якщо розпізнавати текст лише за переданими схемами,
+        # виклик відомого інструмента (напр. ``search_web``) не впізнається,
+        # текст викидається як «службовий», і користувач бачить
+        # «Модель повернула порожню відповідь» — хоч модель відповіла
+        # цілком осмислено. Тому передаємо ПОВНИЙ перелік відомих імен.
+        known = self._known_tool_names()
         if not getattr(self.agent_settings, "stream", True):
-            return client.chat(messages, tools=tools_arg, tool_choice="auto")
+            return client.chat(messages, tools=tools_arg, tool_choice="auto",
+                               known_tools=known)
 
         def on_text(piece: str) -> None:
             self._emit("token", piece)
@@ -2921,6 +2979,7 @@ class AgentRunner:
                 on_text=on_text,
                 on_reasoning=on_reasoning,
                 should_stop=self._cancel.is_set,
+                known_tools=self._known_tool_names(),
             )
         except LLMError as exc:
             # ── Відкат на звичайний запит, а не здача ────────────────────
