@@ -457,9 +457,21 @@ def test_mcp_end_to_end() -> None:
 
         ok6, text6 = manager.call("mcp__blackchpok_ai__master_agent_router",
                                   {"intent": "git_context"})
-        check("MCP: відсутній git дає зрозумілу підказку",
-              "не встановлено" in text6.lower() or "недоступний" in text6.lower()
-              or "clean" in text6.lower(), text6[:100].replace("\n", " "))
+        # Два різні стани, які раніше були змішані в одній перевірці:
+        #   · git немає → підказка «не встановлено / недоступний»;
+        #   · git є     → реальний статус (гілка, чисте дерево або список змін).
+        # Раніше перевірка очікувала підказку або слово «clean», тому після
+        # встановлення git на машині з брудним деревом вона хибно падала:
+        # статус був справжній, але жодного з трьох слів у ньому не було.
+        if shutil.which("git"):
+            has_content = bool(text6.strip()) and "Traceback" not in text6
+            check("MCP: git є — git_context віддає справжній стан",
+                  has_content, text6[:100].replace("\n", " "))
+        else:
+            check("MCP: без git git_context дає зрозумілу підказку",
+                  "не встановлено" in text6.lower()
+                  or "недоступний" in text6.lower(),
+                  text6[:100].replace("\n", " "))
     finally:
         manager.stop_all()
 

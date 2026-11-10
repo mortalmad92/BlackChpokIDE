@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import tempfile
 import time
 import unittest.mock
 import uuid
@@ -330,7 +331,12 @@ def test_backup_changes() -> None:
 
 def test_detect_changes() -> None:
     """Без git працює джерело 'backup'; порожня тека дає порожній набір."""
-    folder = temp_dir("detect")
+    # Тека ПОЗА репозиторієм: раніше тут був temp_dir(), а він створює теку
+    # в .buildtmp, тобто ВСЕРЕДИНІ цього ж репозиторію. Поки git не було,
+    # різниці не було; після встановлення git тека успадкувала репозиторій
+    # вище й джерелом ставав 'git' (а .buildtmp ще й у .gitignore, тому
+    # змін було нуль). Тепер перевіряємо саме те, що заявлено, — роботу без git.
+    folder = Path(tempfile.mkdtemp(prefix="dstats-detect-"))
     try:
         empty = ds.detect_changes(folder)
         check("detect_changes: порожня тека -> is_empty", empty.is_empty, str(len(empty.files)))
