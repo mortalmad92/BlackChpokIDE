@@ -159,6 +159,21 @@ class WebApiCase(unittest.TestCase):
         self.assertNotIn("[fonts]", out.lower(),
                          "вдалось прочитати файл через web_api")
 
+    def test_network_policy_is_documented(self) -> None:
+        """Політика «інтернет доступний повністю» має бути в docs.
+
+        Це не формальність: без документа наступний агент або розробник
+        може «виправити» вільний доступ, вважаючи його вразливістю, і
+        зламати web_api — інструмент, чиє призначення саме в тому, щоб
+        перевіряти власний локальний бекенд.
+        """
+        policy = ROOT / "docs" / "NETWORK_POLICY.md"
+        self.assertTrue(policy.exists(),
+                        "немає docs/NETWORK_POLICY.md — рішення не зафіксоване")
+        text = policy.read_text(encoding="utf-8")
+        self.assertIn("ПОСУТНОСТІ", text)
+        self.assertIn("не на блокуванні адрес", text)
+
 
 class InternetModuleCase(unittest.TestCase):
     """Прямі перевірки модуля internet."""
