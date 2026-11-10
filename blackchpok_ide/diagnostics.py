@@ -212,12 +212,41 @@ def run(*, settings: Any, engine_log_tail: Callable[[int], str] | None = None,
     except Exception:  # noqa: BLE001
         busy = False
     responds = False
+    embedded = False
+    embedded_ready = False
     if configured:
         try:
-            responds = runtime.server_responds(configured, api_key=api_key)
+            embedded = runtime.embedded_url(configured)
+        except Exception:  # noqa: BLE001
+            embedded = False
+        try:
+            # Вбудований рушій не має ні порту, ні HTTP, тому питаємо сам
+            # рушій. ``server_responds`` для ``native://`` гарантовано давала
+            # ``False`` й діагностика радила «запусти модель» про працюючу.
+            if embedded:
+                embedded_ready = runtime.embedded_engine_available()
+                responds = runtime.embedded_model_loaded()
+            else:
+                responds = runtime.model_answers(configured, api_key=api_key)
         except Exception:  # noqa: BLE001
             responds = False
-    if responds:
+            embedded_ready = False
+    if embedded:
+        # Адреса ``native://blackchpok`` правильна, якщо рушій узагалі є:
+        # модель підніме перший же запит. Окремо позначаємо, чи вона вже в
+        # пам'яті — це різні речі, і плутанина між ними давала суперечність
+        # «ніхто не слухає» + «Відповідь моделі: «Тест»» в одному звіті.
+        if embedded_ready:
+            report.checks.append(Check(
+                "Адреса з налаштувань", PASS,
+                f"{configured} — вбудований рушій, мережа не потрібна"
+                + ("" if responds else " (модель підніметься на перший запит)")))
+        else:
+            report.checks.append(Check(
+                "Адреса з налаштувань", FAIL,
+                f"{configured} — вбудований рушій не встановлено",
+                "відкрий «Хаб моделей» → «Встановити рушій»"))
+    elif responds:
         report.checks.append(Check("Адреса з налаштувань", PASS, configured))
     elif busy:
         owner = _who_listens(port)
@@ -241,6 +270,15 @@ def run(*, settings: Any, engine_log_tail: Callable[[int], str] | None = None,
     if lives:
         described = ", ".join(f"{item['port']} (pid {item['pid']})" for item in lives)
         report.checks.append(Check("Живі рушії", PASS, described))
+    elif embedded and embedded_ready:
+        # Вбудований рушій не породжує окремого процесу — він у ЦЬОМУ
+        # процесі. Раніше цей пункт писав «рушій не запущено», і це
+        # суперечило рядку нижче, де модель відповідала.
+        report.checks.append(Check(
+            "Живі рушії", PASS if responds else WARN,
+            ("вбудований рушій у процесі IDE · модель у пам'яті" if responds
+             else "вбудований рушій у процесі IDE · модель ще не завантажена"),
+            "" if responds else "надішли будь-який запит — модель підніметься сама"))
     else:
         # ── Простій: найчастіша причина «модель не працює» ───────────────
         # Модель вивантажується через простій (це правильно — інакше
@@ -258,26 +296,51 @@ def run(*, settings: Any, engine_log_tail: Callable[[int], str] | None = None,
 
     # 5. Пошук робочої адреси ───────────────────────────────────────────────
     found = ""
-    try:
-        found = runtime.discover_server_url(configured, api_key=api_key)
-    except Exception:  # noqa: BLE001
-        found = ""
-    if found:
-        same = found.rstrip("/") == configured.rstrip("/")
-        report.checks.append(Check(
-            "Робочий порт",
-            PASS if same else WARN,
-            f"{found}" + ("" if same else f" (у налаштуваннях {configured})"),
-            "" if same else "натисни «Виправити адресу» — IDE перемкнеться"))
-        report.working_url = found
+    if embedded:
+        # Вбудований рушій: «порт» тут не існує. Інакше діагностика писала б
+        # «жоден локальний порт не відповідає» про працюючу модель — саме це
+        # й бачив користувач.
+        if embedded_ready:
+            report.checks.append(Check(
+                "Робочий порт", PASS,
+                f"вбудований рушій ({configured}) — порт не потрібен"
+                + ("" if responds else " · модель підніметься на перший запит")))
+            report.working_url = configured
+        else:
+            report.checks.append(Check(
+                "Робочий порт", FAIL,
+                "вбудований рушій не встановлено",
+                "відкрий «Хаб моделей» → «Встановити рушій»"))
     else:
-        report.checks.append(Check(
-            "Робочий порт", FAIL, "жоден локальний порт не відповідає",
-            "запусти модель; якщо вона вже запущена — подивись лог рушія нижче"))
+        try:
+            found = runtime.discover_server_url(configured, api_key=api_key)
+        except Exception:  # noqa: BLE001
+            found = ""
+        if found:
+            same = found.rstrip("/") == configured.rstrip("/")
+            report.checks.append(Check(
+                "Робочий порт",
+                PASS if same else WARN,
+                f"{found}" + ("" if same else f" (у налаштуваннях {configured})"),
+                "" if same else "натисни «Виправити адресу» — IDE перемкнеться"))
+            report.working_url = found
+        else:
+            report.checks.append(Check(
+                "Робочий порт", FAIL, "жоден локальний порт не відповідає",
+                "запусти модель; якщо вона вже запущена — подивись лог рушія нижче"))
 
     # 6. Реальний запит ─────────────────────────────────────────────────────
-    if probe_inference and found and model:
-        answered, detail = _probe_model(found, model, api_key, timeout=timeout)
+    probe_url = found or (configured if embedded else "")
+    if probe_inference and probe_url and model:
+        if embedded:
+            # Вбудований рушій: запитуємо рушій напряму, без HTTP. Раніше тут
+            # будувалась адреса ``native://blackchpok/v1/chat/completions``,
+            # ``urllib`` на ній падав, і діагностика писала «модель не дала
+            # відповіді» про модель, яка відповідала.
+            answered, detail = _probe_model_embedded(model)
+        else:
+            answered, detail = _probe_model(probe_url, model, api_key,
+                                            timeout=timeout)
         report.checks.append(Check(
             "Відповідь моделі",
             PASS if answered else FAIL,
@@ -304,8 +367,33 @@ def run(*, settings: Any, engine_log_tail: Callable[[int], str] | None = None,
         except OSError:
             report.engine_log = ""
 
-    report.verdict = _verdict(report, configured, found, model)
+    report.verdict = _verdict(report, configured, found, model,
+                              embedded=embedded)
+
+    # ── Лог рушія не показуємо для вбудованого рушія ───────────────────────
+    # ``server.log`` пише ``llama-server``, якого при вбудованому рушії не
+    # запускали. Раніше цей чужий (часто старий) лог завжди додавався до
+    # звіту, і користувач бачив «model loaded / listening on :8080» —
+    # рядки про процес, якого в цьому запуску не було.
+    if embedded:
+        report.engine_log = ""
     return report
+
+
+def _probe_model_embedded(model: str) -> tuple[bool, str]:
+    """РЕАЛЬНИЙ запит до вбудованого рушія (без HTTP і без мережі)."""
+    try:
+        from .llm_client import LLMClient
+
+        client = LLMClient("native://blackchpok", model=model,
+                           api_key="local", timeout=120, max_tokens=8)
+        result = client.chat([{"role": "user", "content": "Скажи одне слово: тест"}])
+    except Exception as exc:  # noqa: BLE001 - причина йде у звіт
+        return False, f"запит до вбудованого рушія не пройшов: {exc}"
+    text = str(getattr(result, "content", "") or "").strip()
+    if not text:
+        return False, "вбудований рушій відповів порожнім текстом"
+    return True, f"«{text[:40]}»"
 
 
 def _probe_model(base_url: str, model: str, api_key: str, *,
@@ -346,7 +434,8 @@ def _probe_model(base_url: str, model: str, api_key: str, *,
         return False, f"запит не пройшов: {exc}"
 
 
-def _verdict(report: Report, configured: str, found: str, model: str) -> str:
+def _verdict(report: Report, configured: str, found: str, model: str,
+             *, embedded: bool = False) -> str:
     """Головний висновок людською мовою."""
     failed = {item.name for item in report.failures}
     if not failed:
@@ -358,6 +447,15 @@ def _verdict(report: Report, configured: str, found: str, model: str) -> str:
         return "Рушій llama.cpp не встановлено — модель запустити неможливо."
     if "Файл моделі" in failed:
         return "Файл моделі відсутній — вибери іншу модель у «Хабі моделей»."
+    # Вбудований рушій: «порт» і «сервер» тут не існують, тому порада
+    # «шукай робочий порт» була б неправдою. Кажемо про справжню причину.
+    if embedded:
+        if "Відповідь моделі" in failed:
+            return ("Вбудований рушій не дав відповіді. Найчастіше це "
+                    "завеликий контекст або модель не влізла у відеопам'ять — "
+                    "подробиці в журналі IDE («Діагностика» → лог).")
+        return ("Вбудований рушій не готовий: "
+                + "; ".join(sorted(failed)) + ".")
     if "Робочий порт" in failed and "Адреса з налаштувань" in failed:
         return ("Жоден локальний порт не відповідає: рушій не запущено або "
                 "він упав під час завантаження. Найчастіше модель просто "

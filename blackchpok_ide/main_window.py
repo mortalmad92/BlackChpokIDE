@@ -2401,10 +2401,17 @@ class BlackChpokIDE(tk.Tk):
         def work() -> None:
             alive = False
             try:
-                from .llm_client import LLMClient
+                # Для вбудованого рушія ``list_models()`` показує ФАЙЛИ на
+                # диску, а не завантажену модель: вона повертала «живий» навіть
+                # тоді, коли модель не в пам'яті. ``model_answers`` для
+                # ``native://`` питає саме рушій.
+                if runtime.embedded_url(base_url):
+                    alive = runtime.embedded_model_loaded()
+                else:
+                    from .llm_client import LLMClient
 
-                LLMClient(base_url, api_key=api_key, timeout=4).list_models()
-                alive = True
+                    LLMClient(base_url, api_key=api_key, timeout=4).list_models()
+                    alive = True
             except Exception:  # noqa: BLE001 - сервер може бути відсутній
                 alive = False
             finally:
@@ -2635,7 +2642,11 @@ class BlackChpokIDE(tk.Tk):
         url = str(self.settings.llm.base_url or "")
         key = str(self.settings.llm.api_key or "")
         try:
-            online = runtime.server_responds(url, api_key=key, timeout=1.5)
+            # ``model_answers``, а не ``server_responds``: для вбудованого
+            # рушія (``native://blackchpok``) HTTP-перевірки не існує, і
+            # саме через це шапка показувала «● МОДЕЛЬ ОФЛАЙН» на живій
+            # моделі (заміряно: engine.loaded=True, ctx 32768, GPU 48).
+            online = runtime.model_answers(url, api_key=key, timeout=1.5)
         except Exception:  # noqa: BLE001 - перевірка не має ламати старт
             online = False
         try:
@@ -3750,6 +3761,11 @@ class BlackChpokIDE(tk.Tk):
         інтерфейс малюється одразу, адреса узгоджується за секунду-дві.
         """
         configured = str(self.settings.llm.base_url or "")
+        # Вбудований рушій: порту немає й «плавати» нічому. Раніше тут
+        # виконувався пошук по 8 портах, і для ``native://blackchpok``
+        # шукати було нічого — лише гаяно час.
+        if runtime.embedded_url(configured):
+            return
         low = configured.lower()
         if configured and not any(marker in low for marker in
                                   ("127.0.0.1", "localhost", "0.0.0.0")):

@@ -3045,6 +3045,11 @@ class AgentRunner:
             return configured
         if not configured:
             return configured
+        # Вбудований рушій: адреса не містить порту, «плавати» нічому.
+        # Раніше перевірка йшла нижче, у гілку «не 127.0.0.1 → не чіпаємо»,
+        # і це рятувало випадково. Тепер це явно: жодних мережевих проб.
+        if runtime.embedded_url(configured):
+            return configured
         low = configured.lower()
         # Хмарні й зовнішні адреси не чіпаємо: там порт не «плаває».
         if not any(marker in low for marker in

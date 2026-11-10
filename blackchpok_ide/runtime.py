@@ -638,6 +638,83 @@ _SERVER_RESPONDS_TTL = 20.0
 _SERVER_RESPONDS_LOCK = threading.Lock()
 
 
+def embedded_url(base_url: str) -> bool:
+    """Чи це псевдо-адреса ВБУДОВАНОГО рушія (``native://blackchpok``).
+
+    Вбудований рушій живе в цьому ж процесі: у нього немає ні порту, ні
+    HTTP. Тому будь-яка перевірка «чи відповідає адреса» мусить питати
+    сам рушій, а не мережу.
+    """
+    low = (base_url or "").strip().lower()
+    return low.startswith(("native://", "inproc://", "blackchpok://"))
+
+
+def embedded_model_loaded() -> bool:
+    """Чи ЗАВАНТАЖЕНА модель у вбудований рушій (тобто відповість одразу).
+
+    ЗАМІРЯНО (дефект, який бачив користувач): після автозапуску власного
+    рушія модель завантажена — ``engine.loaded is True``, ``context_actual``
+    32768, GPU-шарів 48 — а шапка показувала «● МОДЕЛЬ ОФЛАЙН». Причина:
+    статус ставився за ``server_responds("native://blackchpok")``, яка
+    робить HTTP-запит на адресу без порту й завжди повертає ``False``.
+
+    Тут ми питаємо РУШІЙ, а не мережу. ``bridge.ping()`` для цього не
+    годиться: він повертає ``True`` навіть коли модель не в пам'яті («рушій
+    готовий»), і тоді шапка казала б «онлайн» про модель, якої немає.
+    ``engine.loaded`` — це саме «модель у пам'яті й готова відповідати»,
+    те саме джерело, що й ``_model_summary`` для підпису моделі.
+    """
+    try:
+        from .native import bridge
+
+        return bool(bridge.runtime().engine.loaded)
+    except Exception:  # noqa: BLE001 - статус не має ламати інтерфейс
+        LOG.debug("Стан вбудованого рушія не прочитано", exc_info=True)
+        return False
+
+
+def embedded_engine_available() -> bool:
+    """Чи ВСТАНОВЛЕНО вбудований рушій (``llama.dll``) і його можна вживати.
+
+    Це третє, окреме питання, і його не можна змішувати з двома іншими:
+
+    * ``embedded_engine_available()`` — рушій є, ним можна скористатись;
+    * :func:`embedded_model_loaded` — модель УЖЕ в пам'яті (відповість одразу);
+    * :func:`model_answers` — інтерфейсне «онлайн».
+
+    Різниця принципова для діагностики: адреса ``native://blackchpok``
+    правильна сама по собі, навіть коли модель ще не завантажена — її
+    підніме перший же запит. Раніше діагностика валила цю перевірку з
+    текстом «ніхто не слухає» (порту ж немає), хоч нижче, у пункті
+    «Відповідь моделі», та сама модель відповідала «Тест».
+    """
+    try:
+        from .native import bridge
+
+        return bool(bridge.runtime().engine.available)
+    except Exception:  # noqa: BLE001 - статус не має ламати інтерфейс
+        LOG.debug("Наявність вбудованого рушія не прочитано", exc_info=True)
+        return False
+
+
+def model_answers(base_url: str, *, api_key: str = "",
+                  timeout: float = 1.5, level: int = 2,
+                  use_cache: bool = True) -> bool:
+    """Чи ГОТОВА модель за цією адресою (вбудований рушій АБО HTTP-сервер).
+
+    Це та перевірка, яку має викликати інтерфейс, коли показує «онлайн чи
+    офлайн»: вона однаково правильно поводиться для обох рушіїв. Раніше
+    інтерфейс скрізь викликав :func:`server_responds`, і для вбудованого
+    рушія це був гарантований ``False`` — звідси «МОДЕЛЬ ОФЛАЙН» на живій
+    моделі, червона крапка в чаті й порада «запусти сервер», хоч нічого
+    запускати не треба.
+    """
+    if embedded_url(base_url):
+        return embedded_model_loaded()
+    return server_responds(base_url, api_key=api_key, timeout=timeout,
+                           level=level, use_cache=use_cache)
+
+
 def server_responds(base_url: str, *, api_key: str = "",
                     timeout: float = 1.5, level: int = 2,
                     use_cache: bool = True) -> bool:
@@ -700,9 +777,16 @@ def _server_responds_uncached(url: str, *, api_key: str, timeout: float,
     except ValueError:
         return False
     if level <= 0:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            return sock.connect_ex((hostname, port)) == 0
+        # ``socket.gaierror`` на неіснуючому/псевдо-хості (``native://…`` →
+        # ім'я ``blackchpok``) — це нормальна відповідь «там нікого немає»,
+        # а не збій. Раніше виняток летів назовні, хоч функція обіцяє ``bool``,
+        # і кожен її виклик мусив мати власний try/except — хтось забуде.
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                return sock.connect_ex((hostname, port)) == 0
+        except (OSError, ValueError, UnicodeError):
+            return False
     headers = {"User-Agent": USER_AGENT}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

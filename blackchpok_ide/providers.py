@@ -276,6 +276,21 @@ class ProviderProbe:
     def _probe(self, key: str, url: str, kind: str) -> None:
         if self._cancelled:
             return
+        # Вбудований рушій не має адреси в мережі: ``native://blackchpok``.
+        # ``LLMClient.list_models()`` для нього повертає СПИСОК ФАЙЛІВ на
+        # диску навіть тоді, коли модель не завантажена. Тому питаємо рушій
+        # напряму — щоб «онлайн» означало «модель у пам'яті й відповість».
+        try:
+            from . import runtime
+
+            if runtime.embedded_url(url):
+                loaded = runtime.embedded_model_loaded()
+                detail = ("модель у пам'яті" if loaded
+                          else "рушій готовий, модель не завантажена")
+                self.results.put(ProbeOutcome(key, loaded, detail, [], url))
+                return
+        except Exception:  # noqa: BLE001 - проба не має падати
+            pass
         api_key = "local" if kind == LOCAL else ""
         try:
             client = LLMClient(url, api_key=api_key or "local", timeout=self.timeout)
@@ -319,6 +334,12 @@ def probe_targets(settings: Any) -> list[tuple[str, str, str]]:
 
 
 def _kind_of(base_url: str) -> str:
+    # ``native://blackchpok`` — вбудований рушій, тобто найлокальніше з
+    # можливого. Без цієї гілки адреса без «api.» вважалась локальною лише
+    # випадково, а з префіксом ``blackchpok://`` — ще й невідомо чим.
+    if (base_url or "").strip().lower().startswith(
+            ("native://", "inproc://", "blackchpok://")):
+        return LOCAL
     return CLOUD if (base_url.startswith("https://") or "api." in base_url) else LOCAL
 
 
