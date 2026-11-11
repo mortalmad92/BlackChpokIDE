@@ -2009,6 +2009,11 @@ class BlackChpokIDE(tk.Tk):
             "<Control-Alt-q>": lambda e: self.add_queue_dialog(),
             "<Control-Alt-j>": lambda e: self.show_side("queue"),
             "<Control-Alt-c>": lambda e: self.terminal.interrupt(),
+            # Ctrl+L — «очистити термінал», як у справжній консолі.
+            # Команда ``run.terminal_clear`` існувала в реєстрі й показувала
+            # цю комбінацію в палітрі, але прив'язки не було: клавіша не
+            # працювала (знайдено ``tools/audit_keys_consistency.py``).
+            "<Control-l>": lambda e: self.terminal.clear(),
             "<Control-Alt-w>": lambda e: self.show_bottom("tasks"),
             "<Control-Alt-s>": lambda e: self.stop_plan(),
             "<Control-Alt-k>": lambda e: self.show_side("skills"),
@@ -7739,13 +7744,40 @@ class BlackChpokIDE(tk.Tk):
         return None
 
     def _editor_event(self, sequence: str) -> None:
+        """Виконати дію редагування в поточному редакторі.
+
+        ``event_generate("<Control-z>")`` НЕ працює: у Tk клас ``Text`` на
+        Windows не має прив'язки ``<Control-z>`` (є лише віртуальна
+        ``<<Undo>>``). Тобто «Скасувати» з меню й палітри мовчки нічого не
+        робило — перевірено в живому вікні. Тому відомі дії виконуємо
+        прямими методами ``Text``, а невідомі передаємо як віртуальні події.
+        """
         editor = self.tabs.current()
         if not editor:
             return
+        widget = getattr(editor, "text", None)
+        if widget is None:
+            return
+        mapping = {
+            "<Control-z>": lambda: widget.edit_undo(),
+            "<<Undo>>": lambda: widget.edit_undo(),
+            "<Control-y>": lambda: widget.edit_redo(),
+            "<<Redo>>": lambda: widget.edit_redo(),
+            "<<Copy>>": lambda: widget.event_generate("<<Copy>>"),
+            "<<Cut>>": lambda: widget.event_generate("<<Cut>>"),
+            "<<Paste>>": lambda: widget.event_generate("<<Paste>>"),
+            "<<SelectAll>>": lambda: widget.event_generate("<<SelectAll>>"),
+        }
+        action = mapping.get(str(sequence or ""))
         try:
-            editor.text.event_generate(sequence)
+            if action is not None:
+                action()
+                return
+            widget.event_generate(sequence)
         except tk.TclError:
             pass
+        except Exception:  # noqa: BLE001 - «нічого скасовувати» не помилка
+            LOG.debug("Дія редагування %s не виконалась", sequence, exc_info=True)
 
     def on_close(self) -> None:
         """Закрити застосунок рівно один раз.

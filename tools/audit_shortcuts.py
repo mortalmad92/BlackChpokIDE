@@ -8,6 +8,7 @@ from __future__ import annotations
 import collections
 import os
 import pathlib
+import re
 import sys
 import tempfile
 
@@ -34,6 +35,40 @@ def normalise(binding: str) -> str:
             {"ctrl", "control", "alt", "shift", "cmd", "super"}]
     mods = ["ctrl" if m == "control" else m for m in mods]
     return "+".join(mods + keys)
+
+
+def to_tk(binding: str) -> str:
+    """Перетворити «Ctrl+Alt+J» у Tk-послідовність ``<Control-Alt-j>``.
+
+    ``command_registry`` зберігає людський запис, а вікно прив'язує
+    Tk-запис. Без цього перетворення аудитор шукав рядок «Ctrl+Alt+J»
+    серед прив'язок і не знаходив нічого.
+    """
+    raw = (binding or "").strip()
+    if not raw:
+        return ""
+    parts = [p for p in re.split(r"[+\-]", raw) if p.strip()]
+    mods: list[str] = []
+    key = ""
+    for part in parts:
+        low = part.strip().lower()
+        if low in {"ctrl", "control"}:
+            mods.append("Control")
+        elif low == "alt":
+            mods.append("Alt")
+        elif low == "shift":
+            mods.append("Shift")
+        elif low in {"cmd", "super", "meta", "win"}:
+            mods.append("Meta")
+        else:
+            key = part.strip()
+    if not key:
+        return ""
+    # Односимвольні клавіші Tk приймає в нижньому регістрі (інакше
+    # ``<Control-Shift-P>`` і ``<Control-Shift-p>`` — різні прив'язки).
+    if len(key) == 1 and key.isalpha():
+        key = key.lower() if not any(m == "Shift" for m in mods) else key.upper()
+    return "<" + "-".join([*mods, key]) + ">"
 
 
 def main() -> int:
@@ -76,23 +111,33 @@ def main() -> int:
     check("позначення клавіш коректні", not weird, str(weird[:6]))
 
     # Кожна клавіша справді прив'язана у вікні.
+    #
+    # ВАЖЛИВО: вікно прив'язує клавіші через ``bind_all`` (щоб вони діяли
+    # незалежно від того, який віджет у фокусі), а не через ``bind``.
+    # Раніше аудитор питав лише ``bind`` і тому оголошував «не знайденими»
+    # УСІ 43 клавіші — сигнал, який нічого не означав.
     unbound: list[str] = []
     for canon, key, raw in rows:
+        sequence = to_tk(raw)
         found = False
-        for sequence in (raw, f"<{raw}>"):
-            try:
-                if root.bind(sequence) or app.bind(sequence):
-                    found = True
-                    break
-            except tk.TclError:
-                continue
-        # Не всі прив'язки йдуть через bind вікна — не вважаємо це помилкою,
-        # лише збираємо статистику.
+        for probe in (sequence, f"<{sequence}>"):
+            for binder in (root.bind_all, root.bind, app.bind):
+                try:
+                    if binder(probe):
+                        found = True
+                        break
+                except (tk.TclError, AttributeError):
+                    continue
+            if found:
+                break
         if not found:
             unbound.append(key)
 
     print(f"клавіш, не знайдених серед прив'язок вікна: {len(unbound)}")
     if unbound:
+        # Це НЕ провал: частину клавіш вішає редактор або сама система
+        # (Alt+F4), частину Tk обслуговує віртуальними подіями. Точну
+        # перевірку робить ``tools/audit_keys_consistency.py``.
         print("   " + ", ".join(unbound[:12]))
 
     app.on_close()

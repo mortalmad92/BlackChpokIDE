@@ -32,6 +32,13 @@ work = pathlib.Path(tempfile.mkdtemp(prefix="bchk_m_"))
 ok, err = [], []
 def fake(*a, **k):
     return True
+# ``simpledialog`` імпортується ВСЕРЕДИНІ методів (``from tkinter import
+# simpledialog``), тому патчити треба сам модуль, а не імʼя у вікні: інакше
+# ``create_project_folder`` та ``open_url_dialog`` чекали на ввід і прогін
+# «висі́в» на таймауті — хоч у програмі це нормальні діалоги.
+import tkinter.simpledialog as _sd
+_sd.askstring = lambda *a, **k: None
+_sd.askinteger = lambda *a, **k: None
 with mock.patch.object(mw.messagebox, "showerror", fake), \
      mock.patch.object(mw.messagebox, "showinfo", fake), \
      mock.patch.object(mw.messagebox, "showwarning", fake), \
