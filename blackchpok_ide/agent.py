@@ -3615,6 +3615,21 @@ class AgentRunner:
                     name, arguments, observation.ok,
                     observation.output or observation.error)
                 count, tired, hopeless = repeat.observe(fingerprint)
+                # ── Повтор УСПІШНОГО виклику — не привід кидати роботу ────
+                # Модель часто перепитує ``python_check`` або ``list_dir``
+                # з тим самим результатом, уже досягнувши мети кроку. Раніше
+                # це вважалось «зацикленням» і крок падав із «модель
+                # зациклилась», хоч файл був створений і синтаксис ок
+                # (перевірено ``tools/check_full_cycle.py``: «Python_check:
+                # синтаксис ок» як причина збою). Тепер успішний повтор лише
+                # просить змінити підхід, а роботу припиняємо тільки коли
+                # выклик СПРАВДІ не вдається.
+                if hopeless and observation.ok:
+                    self._emit(
+                        "status",
+                        f"Модель повторює «{name}», хоч результат уже "
+                        f"отримано — завершую хід із тим, що є.")
+                    break
                 if hopeless:
                     self._last_answer = self._repeat_report(
                         repeat, name, ToolResult(observation.ok,
