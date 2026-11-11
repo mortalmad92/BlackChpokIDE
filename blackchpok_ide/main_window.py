@@ -4954,16 +4954,29 @@ class BlackChpokIDE(tk.Tk):
             now = time.time()
             running_task = self.task_queue.get(self.task_queue.running_id) \
                 if self.task_queue.running_id else None
-            if (running_task is not None and not self.agent.busy
-                    and not self._plan_step_active
-                    and not self.executor.busy):
+            if running_task is not None and not self.agent.busy:
                 started = float(running_task.started_at or 0.0)
-                if started and (now - started) > self.STALE_STEP_SECONDS:
-                    stale = self.task_queue.requeue_running()
-                    if stale is not None:
-                        LOG.info("Завислий крок %s повернуто в чергу "
-                                 "(активний %.0f с)", stale.id, now - started)
-                        self._update_queue_badge()
+                stale_for = (now - started) if started else 0.0
+                if stale_for > self.STALE_STEP_SECONDS:
+                    # ── Застряглий прапорець кроку ─────────────────────────
+                    # ``_plan_step_active`` скидається в ``_on_agent_finished``.
+                    # Якщо агент завершився, а колбек не дійшов (виняток у
+                    # потоці, скасування посеред ходу), прапорець лишався
+                    # True — і умова нижче НІКОЛИ не виконувалась: крок
+                    # висів активним, черга стояла. У живому прогоні так
+                    # завмер крок 2 на 150 с, а крок 1 при цьому вже
+                    # створив файл.
+                    if self._plan_step_active:
+                        LOG.info("Прапорець кроку застряг (%.0f с) — скидаю",
+                                 stale_for)
+                        self._plan_step_active = False
+                        self._running_task_id = ""
+                    if not self.executor.busy:
+                        stale = self.task_queue.requeue_running()
+                        if stale is not None:
+                            LOG.info("Завислий крок %s повернуто в чергу "
+                                     "(активний %.0f с)", stale.id, stale_for)
+                            self._update_queue_badge()
         except Exception:  # noqa: BLE001 - прибирання не має ламати вікно
             LOG.debug("Не вдалось перевірити завислий крок", exc_info=True)
         try:
