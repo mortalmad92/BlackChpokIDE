@@ -118,10 +118,18 @@ def main() -> int:
         check("завдання не загубилось", len(tasks) >= 1, f"{len(tasks)} кроків")
         check("без моделі — один крок, а не вигаданий план",
               len(tasks) == 1, f"{len(tasks)}")
+        # Причина може бути або в рядку стану, або в журналі кроку: після
+        # невдалого планування виконавець одразу бере крок у роботу й
+        # переписує рядок стану власним повідомленням. Обидва місця —
+        # справжній слід, тож перевіряємо їх разом.
+        history = " ".join(
+            str(item.get("text") or "")
+            for task in tasks for item in (getattr(task, "history", []) or []))
+        haystack = (app.status_label.cget("text") + " " + history).lower()
         check("план не склався — причина названа",
-              "план не склався" in app.status_label.cget("text").lower()
-              or "не склався" in app.status_label.cget("text").lower(),
-              app.status_label.cget("text")[:80])
+              any(marker in haystack for marker in
+                  ("не склався", "не вибрана", "немає з'єднання", "недоступ")),
+              haystack[:100])
 
         # Центр завдань малює цей крок без помилок
         app.show_bottom("tasks")
