@@ -224,7 +224,7 @@ def register_all(window) -> None:
         level=commands.PALETTE, enabled=window.has_project))
     register(commands.Command(
         "run.terminal_interrupt", "Термінал: перервати команду", "Вигляд",
-        lambda: window.terminal.interrupt(), "Ctrl+C", level=commands.PALETTE))
+        lambda: window.terminal.interrupt(), "Ctrl+Alt+C", level=commands.PALETTE))
     register(commands.Command(
         "run.terminal_restart", "Термінал: перезапустити сесію", "Вигляд",
         lambda: window.terminal.restart(), level=commands.PALETTE))
@@ -282,7 +282,7 @@ def register_all(window) -> None:
         lambda: window.show_side("tools"), "Ctrl+Alt+T", level=commands.PALETTE))
     register(commands.Command(
         "view.queue", "Черга завдань", "Завдання",
-        lambda: window.show_side("queue"), "Ctrl+Alt+Q", level=commands.PALETTE))
+        lambda: window.show_side("queue"), "Ctrl+Alt+J", level=commands.PALETTE))
     register(commands.Command(
         "view.mcp", "MCP-сервери", "Вигляд", lambda: window.show_side("mcp"),
         level=commands.PALETTE))

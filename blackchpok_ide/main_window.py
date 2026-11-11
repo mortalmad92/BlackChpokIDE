@@ -140,7 +140,7 @@ WELCOME_TEXT = """# BlackChpok IDE
 | `Ctrl+F` / `Ctrl+Shift+F` | пошук у файлі / у проєкті |
 | `Ctrl+S` / `Ctrl+W` | зберегти / закрити вкладку |
 | `Ctrl+B` / `Ctrl+Alt+B` / `Ctrl+`` ` | провідник / агент / термінал |
-| `Ctrl+Alt+K` / `Ctrl+Alt+Q` | скіли / черга завдань |
+| `Ctrl+Alt+K` / `Ctrl+Alt+J` | скіли / черга завдань |
 | `F5` / `Ctrl+F5` | запустити файл / тести |
 """
 
@@ -638,7 +638,7 @@ class BlackChpokIDE(tk.Tk):
                               command=lambda: self.show_side("rag"))
         view_menu.add_command(label="Інструменти агента", accelerator="Ctrl+Alt+T",
                               command=lambda: self.show_side("tools"))
-        view_menu.add_command(label="Черга завдань", accelerator="Ctrl+Alt+Q", command=lambda: self.show_side("queue"))
+        view_menu.add_command(label="Черга завдань", accelerator="Ctrl+Alt+J", command=lambda: self.show_side("queue"))
         view_menu.add_command(label="MCP-сервери", command=lambda: self.show_side("mcp"))
         view_menu.add_separator()
         view_menu.add_command(label="Хаб моделей…", accelerator="Ctrl+Shift+M", command=self.open_model_hub)
@@ -2007,6 +2007,8 @@ class BlackChpokIDE(tk.Tk):
             "<Control-minus>": lambda e: self.zoom(-1),
             "<Control-Alt-Return>": lambda e: self.send_file_to_agent(),
             "<Control-Alt-q>": lambda e: self.add_queue_dialog(),
+            "<Control-Alt-j>": lambda e: self.show_side("queue"),
+            "<Control-Alt-c>": lambda e: self.terminal.interrupt(),
             "<Control-Alt-w>": lambda e: self.show_bottom("tasks"),
             "<Control-Alt-s>": lambda e: self.stop_plan(),
             "<Control-Alt-k>": lambda e: self.show_side("skills"),
@@ -7615,9 +7617,9 @@ class BlackChpokIDE(tk.Tk):
             "Ctrl+B          бічна панель\n"
             "Ctrl+Alt+B      панель агента\n"
             "Ctrl+Alt+K      скіли агента\n"
-            "Ctrl+Alt+Q      черга завдань\n"
+            "Ctrl+Alt+J      черга завдань\n"
             "Ctrl+`          термінал\n"
-            "Ctrl+C          перервати команду в терміналі\n"
+            "Ctrl+Alt+C      перервати команду в терміналі\n"
             "Ctrl+= / Ctrl+- розмір шрифту\n"
             "Ctrl+Alt+Enter  надіслати файл агенту\n"
             "F5              запустити файл\n"
