@@ -104,6 +104,11 @@ def _balanced_json_spans(text: str) -> list[tuple[int, int]]:
 def _looks_like_call_payload(chunk: str) -> bool:
     """Чи це JSON-виклик інструмента (а не приклад даних у відповіді)."""
     low = chunk.lower()
+    # ``tool_calls`` / ``tool_call_id`` — типова форма OpenAI-протоколу.
+    # Без них модель із «сирим» викликом показувала користувачу службовий
+    # JSON замість відповіді.
+    if any(marker in low for marker in _PROTOCOL_MARKERS):
+        return True
     return ('"name"' in low or '"tool"' in low or '"arguments"' in low) and (
         '"function"' in low or '"arguments"' in low or '"tool"' in low)
 
@@ -397,8 +402,24 @@ _PROMISE_MARKERS: tuple[str, ...] = (
 )
 
 
+#: Ствердження про ВЖЕ виконане — без доказу це така сама обіцянка.
+#: «Я створив файл app.py і все працює» звучить як звіт, але якщо жоден
+#: інструмент не викликався, файлу на диску немає. Користувач шукав його
+#: й не знаходив — саме тому ці звороти перевіряються нарівні з майбутнім.
+_DONE_MARKERS: tuple[str, ...] = (
+    "я створив", "я створила", "я створив", "я додав", "я додала",
+    "я виправив", "я виправила", "я змінив", "я змінила", "я написав",
+    "я написала", "я видалив", "я видалила", "я запустив", "я запустила",
+    "я перевірив", "я перевірила", "я встановив", "я встановила",
+    "файл створено", "файл записано", "файл оновлено", "успішно створено",
+    "успішно виконано", "все працює", "усе працює", "готово, файл",
+    "i created", "i added", "i fixed", "i updated", "i wrote",
+    "successfully created", "it works",
+)
+
+
 def promises_action(text: str) -> bool:
-    """Чи це лише обіцянка дії, а не її результат.
+    """Чи це лише обіцянка дії або звіт без доказу.
 
     Довга відповідь із кодом або списком — це вже результат, навіть якщо
     в ній трапляється «перевірю». Обіцянка — коротка репліка без доказу.
@@ -409,7 +430,7 @@ def promises_action(text: str) -> bool:
     if "```" in body or body.startswith(("-", "•", "1.", "2.", "**")):
         return False
     low = body.lower()
-    return any(marker in low for marker in _PROMISE_MARKERS)
+    return any(marker in low for marker in _PROMISE_MARKERS + _DONE_MARKERS)
 
 
 def evidence_lines(observations: Sequence[Observation]) -> list[str]:
@@ -449,6 +470,16 @@ def final_answer(
     """
     del ask_model
     cleaned = clean_for_chat(model_text)
+    # ── Дії впали — слово моделі не робить їх успішними ────────────────────
+    # Раніше перевірявся лише «протокол» і «обіцянка», а провал інструмента
+    # не враховувався: на «Готово, файл створено» з `write_file → Відмовлено
+    # в доступі` користувач бачив саме «Готово». Тепер провал перекриває
+    # будь-яке твердження моделі про успіх.
+    rows = [item for item in observations or () if item is not None]
+    failed = [item for item in rows if not item.ok and not item.duplicate]
+    produced = [item for item in rows if item.ok and item.output.strip()]
+    if failed and not produced:
+        return explain_failure(cleaned, observations)
     if cleaned and not looks_like_raw_protocol(cleaned) and not promises_action(cleaned):
         return cleaned
     draft = answer_from_observations(observations)
@@ -461,6 +492,37 @@ def final_answer(
     if fallback:
         return cleaned if not cleaned else fallback
     return explain_failure("", observations)
+
+
+_TRACEBACK_RE = re.compile(
+    r"^\s*(?:Traceback \(most recent call last\)|File \"[^\"]+\", line \d+|"
+    r"\s+[\w.]+(?:Error|Exception|Warning):|During handling of the above)")
+
+
+def _human_reason(reason: str) -> str:
+    """Причина людською мовою: стектрейс згортаємо до суті.
+
+    Користувачу не потрібні «File "x.py", line 12» — потрібна суть. Раніше
+    стектрейс цілком потрапляв у відповідь, і замість причини людина
+    читала п'ять рядків службового тексту.
+    """
+    text = (reason or "").strip()
+    if not text:
+        return "причина не вказана"
+    if "Traceback (most recent call last)" not in text:
+        return text
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # 1. Рядок-виняток: «ValueError: щось» — без «File…» і без «Traceback…».
+    for line in reversed(lines):
+        if line.startswith(("Traceback", "File ", "During handling", "The above")):
+            continue
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception|Interrupt|Exit)\b", line):
+            return line
+    # 2. Будь-який останній змістовний рядок.
+    for line in reversed(lines):
+        if not line.startswith(("Traceback", "File ", "During handling", "The above")):
+            return line
+    return "внутрішня помилка інструмента"
 
 
 def explain_failure(model_text: str, observations: Sequence[Observation]) -> str:
@@ -478,6 +540,7 @@ def explain_failure(model_text: str, observations: Sequence[Observation]) -> str
         for item in failed[:5]:
             reason = next((line.strip() for line in
                            (item.error or "").splitlines() if line.strip()), "")
+            reason = _human_reason(reason)
             lines.append(f"- **{item.name}** — {clean_for_chat(reason, limit=200)}")
         lines.append("")
     if not rows:
