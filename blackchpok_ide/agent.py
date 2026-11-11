@@ -2712,8 +2712,14 @@ class AgentRunner:
         if not text:
             return False
         info = task_plan.understand(text)
+        # ``DOCS`` теж змінює файли: «напиши в README.md як користуватись
+        # калькулятором» — це створення/допис документації. Раніше цей
+        # намір не входив у список, тож агент прочитав файл, показав
+        # «Готово. Результат: read_file» і зупинився, не написавши нічого
+        # (перевірено ``tools/eval_agent.py``: README не з'являвся).
         return info.primary in (task_plan.EDIT, task_plan.CREATE,
-                                task_plan.REFACTOR, task_plan.DEBUG)
+                                task_plan.REFACTOR, task_plan.DEBUG,
+                                task_plan.DOCS)
 
     def _emit(self, kind: str, text: str = "", **data: Any) -> None:
         self.events.put(AgentEvent(kind, text, data))

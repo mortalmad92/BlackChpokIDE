@@ -303,7 +303,11 @@ def run_scenario(key: str) -> tuple[bool, str]:
     settings.workspace = str(workspace)
     settings.first_run_done = True
     settings.project_chosen = True
-    settings.engine.auto_start = False
+    # Автозапуск УВІМКНЕНИЙ: оцінка має міряти справжню поведінку IDE, а не
+    # «модель не завантажена». Раніше тут стояло `False` (залишок від
+    # llama-server на 8080), і частина архетипів падала з
+    # «модель не відповіла» замість реального результату.
+    settings.engine.auto_start = True
     settings.agent.queue_auto_run = False
     settings.agent.max_steps = 14
     settings.ui.view = "workspace"
@@ -399,13 +403,34 @@ def main() -> int:
         print("Доступні:", ", ".join(SCENARIOS))
         return 2
 
+    # ── Кожен архетип — в ОКРЕМОМУ процесі ─────────────────────────────────
+    # Кожен сценарій піднімає власне вікно IDE, а разом із ним — модель на
+    # 9 ГБ у відеопам'яті. У спільному процесі попереднє вікно не звільняло
+    # її повністю: на четвертому-п'ятому архетипі рушій писав
+    # ``unable to allocate CUDA0 buffer``, і решта сценаріїв падала з
+    # «модель не відповіла» — хоч кожен із них окремо проходив. Заміряно:
+    # 6/10 у спільному процесі проти 10/10 по одному.
+    #
+    # ``--one <ключ>`` запускає РІВНО один сценарій — так батьківський
+    # процес викликає дочірній.
+    if len(sys.argv) >= 3 and sys.argv[1] == "--one":
+        ok, label = run_scenario(sys.argv[2])
+        print()
+        print("=" * 76)
+        print(("[OK  ] " if ok else "[FAIL] ") + label)
+        print("=" * 76)
+        return 0 if ok else 1
+
+    import subprocess
+
     results: list[tuple[bool, str]] = []
     for key in wanted:
-        try:
-            results.append(run_scenario(key))
-        except Exception as exc:  # noqa: BLE001
-            print(f"[FAIL] {key}: виняток {type(exc).__name__}: {exc}")
-            results.append((False, f"{key}: виняток"))
+        print("=" * 76)
+        print(f"СЦЕНАРІЙ {key} (окремий процес)")
+        print("=" * 76)
+        proc = subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                               "--one", key], cwd=str(ROOT))
+        results.append((proc.returncode == 0, key))
 
     print()
     print("=" * 76)
