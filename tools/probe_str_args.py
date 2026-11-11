@@ -20,8 +20,11 @@ CASES = [
     ("open_path", "рядок"),
     ("send_file_to_agent", "рядок"),
     ("show_diff_for", "рядок"),
-    ("set_workspace", "рядок"),
-    ("open_recent_folder", "рядок"),
+    # ``set_workspace`` приймає ТЕКУ, і на шляху до файлу чесно показує
+    # модальне «Не існує», яке чекає натискання. Це не дефект, тому
+    # перевіряємо його текою, а не файлом — інакше прогін «висі́в».
+    ("set_workspace", "тека"),
+    ("open_recent_folder", "тека"),
     ("show_ast_tree", "рядок"),
     ("show_symbols_report", "рядок"),
     ("reveal_file", "рядок"),
@@ -43,10 +46,9 @@ func = getattr(app, method, None)
 if func is None:
     print(json.dumps({"status": "missing"}))
     sys.exit(0)
-arg = str(sample)
+arg = str(work) if kind == "тека" else str(sample)
 try:
     func(arg)
-    root.update_idletasks()
     print(json.dumps({"status": "ok"}))
 except Exception as exc:
     print(json.dumps({"status": "error", "type": type(exc).__name__, "msg": str(exc)[:200]}))

@@ -2904,11 +2904,18 @@ class BlackChpokIDE(tk.Tk):
         self.settings.save()
         self.set_status(f"Тему збережено: {'темна' if theme.current_mode() == 'dark' else 'світла'}.")
 
-    def show_ast_tree(self) -> None:
-        """Показати сире AST-дерево поточного файлу."""
+    def show_ast_tree(self, path: Path | str | None = None) -> None:
+        """Показати сире AST-дерево поточного файлу.
+
+        ``path`` — необовʼязковий: так само, як ``open_path``, метод
+        приймає шлях від палітри, дерева файлів і контекстного меню.
+        Раніше виклик зі шляхом падав ``TypeError`` (перевірено
+        ``tools/probe_str_args.py``): усі публічні входи мусять розуміти
+        рядок, бо саме рядки приходять із JSON і віджетів.
+        """
         from . import ast_index
 
-        editor = self.tabs.current()
+        editor = self._editor_for(path)
         if editor is None:
             self.set_status("Спочатку відкрий файл.")
             return
@@ -2928,11 +2935,11 @@ class BlackChpokIDE(tk.Tk):
             lines.append(f"{'  ' * depth}{name}" + (f"  {snippet}" if snippet else ""))
         self.show_text_window(f"AST · {editor.filename}", "\n".join(lines))
 
-    def show_symbols_report(self) -> None:
+    def show_symbols_report(self, path: Path | str | None = None) -> None:
         """Повний звіт про символи: підписи, доку, декоратори."""
         from . import ast_index
 
-        editor = self.tabs.current()
+        editor = self._editor_for(path)
         if editor is None:
             return
         result = ast_index.analyse(editor.get_text())
@@ -3390,13 +3397,32 @@ class BlackChpokIDE(tk.Tk):
             self.chat.input.insert("1.0", text)
             self.chat.input.focus_set()
 
-    def send_file_to_agent(self) -> None:
-        editor = self.tabs.current()
-        path = self.tabs.current_path()
+    def _editor_for(self, path: Path | str | None = None):
+        """Редактор для дії: або відкритий файл за шляхом, або поточний.
+
+        Публічні дії (AST, символи, надсилання агенту) викликають і з
+        палітри, і з дерева файлів, і з контекстного меню — тобто зі
+        шляхом. Раніше кожен такий метод брав лише ``self.tabs.current()``,
+        і виклик зі шляхом падав ``TypeError``.
+        """
+        if path in (None, ""):
+            return self.tabs.current()
+        try:
+            target = Path(path)
+        except TypeError:
+            return self.tabs.current()
+        opened = self.tabs.open_file(target)
+        return self.tabs.current() if opened else None
+
+    def send_file_to_agent(self, path: Path | str | None = None) -> None:
+        editor = self._editor_for(path)
+        current = self.tabs.current_path()
+        path_obj = Path(path) if path not in (None, "") else current
         if not editor:
             return
-        name = path.name if path else "поточний файл"
-        relative = ws.relative_to_root(Path(self.settings.workspace), path) if path else name
+        name = path_obj.name if path_obj else "поточний файл"
+        relative = (ws.relative_to_root(Path(self.settings.workspace), path_obj)
+                    if path_obj else name)
         self.send_to_agent(
             f"Прочитай файл {relative} інструментом read_file і поясни, що він робить."
         )
@@ -6710,7 +6736,14 @@ class BlackChpokIDE(tk.Tk):
             self._place_bottom(False)
 
     def zoom(self, delta: int) -> None:
-        size = max(8, min(30, self.settings.ui.font_size + delta))
+        # ``delta`` може прийти зі зворотного виклику без аргументу (меню
+        # передає ``None``): тоді рахування ``font_size + delta`` падало
+        # ``TypeError``, і кнопка «збільшити шрифт» не працювала зовсім.
+        try:
+            step = int(delta) if delta is not None else 1
+        except (TypeError, ValueError):
+            step = 1
+        size = max(8, min(30, self.settings.ui.font_size + step))
         self.settings.ui.font_size = size
         self.theme.set_family(self.settings.ui.font_family, size)
         self.tabs.apply_settings()
