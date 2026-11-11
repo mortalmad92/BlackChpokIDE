@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import re
 import threading
@@ -24,6 +25,8 @@ from typing import Any, Callable, Iterable, Optional
 
 from . import cloud_agents, model_hub
 from .llm_client import KNOWN_ENDPOINTS, LLMClient, LLMError
+
+LOG = logging.getLogger("blackchpok.providers")
 
 LOCAL = "local"
 CLOUD = "cloud"
@@ -369,6 +372,42 @@ def current_entry(settings: Any) -> ModelEntry:
     model = (getattr(settings.llm, "model", "") or "").strip()
     base_url = (getattr(settings.llm, "base_url", "") or "").strip()
     key, kind = detect_provider_key(base_url)
+    # ── Вбудований рушій: модель може бути не названа, але вона Є ─────────
+    # Для ``native://blackchpok`` порожня назва — нормальний стан: рушій
+    # бере локальний GGUF сам. Раніше такий стан показувався як «модель не
+    # вибрана» з ``online=False``, хоч шапка поруч показувала справжню назву
+    # й модель відповідала — інтерфейс суперечив сам собі (перевірено
+    # ``tools/check_model_labels.py``).
+    if not model:
+        try:
+            from . import runtime
+
+            if runtime.embedded_url(base_url):
+                from .native import bridge
+
+                engine = bridge.runtime().engine
+                loaded = str(getattr(engine, "model_path", "") or "")
+                if not loaded:
+                    # Модель ще не в пам'яті — беремо ту, яку рушій ПІДНІМЕ:
+                    # спершу збережений вибір, інакше найбільший локальний
+                    # GGUF (так само робить автозапуск).
+                    loaded = str(getattr(settings.engine, "native_model", "") or "")
+                # ``Path(...).stem`` тут НЕ годиться: назва моделі містить
+                # крапки («qwen2.5-coder-14b»), і stem обрізав би її до
+                # «qwen2». Відрізаємо лише розширення.
+                name = Path(loaded).name if loaded else ""
+                for suffix in (".gguf", ".GGUF"):
+                    if name.endswith(suffix):
+                        name = name[: -len(suffix)]
+                        break
+                if not name:
+                    entries = bridge.runtime().manager.local_models()
+                    if entries:
+                        name = max(entries, key=lambda item: item.size_gb).key
+                if name:
+                    model = name
+        except Exception:  # noqa: BLE001 - підпис не має падати
+            LOG.debug("Назву моделі рушія не прочитано", exc_info=True)
     if kind == CLOUD:
         provider = cloud_agents.get(key)
         label = provider.label if provider else "Хмара"
