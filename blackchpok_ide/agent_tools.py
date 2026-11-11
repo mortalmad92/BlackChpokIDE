@@ -1457,7 +1457,20 @@ def _missing_command_hint(command: str, code: int, body: str = "") -> str:
     """
     if code == 0:
         return ""
-    low = f"{command} {body}".lower()
+    # ── Нуль тестів — це не «інструмента немає», але це теж глухий кут ────
+    # ``python -m unittest discover`` у теці без тестів повертає код 5 і
+    # «NO TESTS RAN». Модель бачила ненульовий код, вважала це збоєм і
+    # повторювала ту саму команду, поки запобіжник не зупиняв крок
+    # (перевірено ``tools/check_full_cycle.py``). Пояснюємо, що робити.
+    low_body = (body or "").lower()
+    if code == 5 and ("no tests ran" in low_body or "ran 0 tests" in low_body):
+        return (
+            "ПРИЧИНА: тестів не знайдено — команда відпрацювала, але "
+            "перевіряти нічого. Це НЕ помилка коду.\n"
+            "Що зробити: створи файл тестів (напр. test_<назва>.py з "
+            "`import unittest` і класом `class T(unittest.TestCase)`), і "
+            "запусти `python -m unittest discover -v`. Не повторюй ту саму "
+            "команду — результат не зміниться.")
     if not any(marker.lower() in low for marker in _MISSING_MARKERS):
         return ""
     name = (command or "").strip().split()[0] if (command or "").strip() else ""
