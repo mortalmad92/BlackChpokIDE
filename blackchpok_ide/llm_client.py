@@ -915,6 +915,11 @@ class LLMClient:
                 tools=tools,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                # Тайм-аут із налаштувань МУСИТЬ доходити до рушія: без нього
+                # діяла типова стеля 600 с, і одна застрягла генерація
+                # тримала потік агента десять хвилин (заміряно
+                # ``tools/check_stability.py``).
+                timeout=float(self.timeout or 0) or None,
             )
         except Exception as exc:                    # noqa: BLE001 - єдиний тип помилки
             raise LLMError(f"Вбудований рушій: {exc}") from exc

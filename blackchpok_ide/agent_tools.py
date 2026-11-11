@@ -1457,6 +1457,9 @@ def _missing_command_hint(command: str, code: int, body: str = "") -> str:
     """
     if code == 0:
         return ""
+    # ``low`` — команда РАЗОМ із виводом: ознаки «не знайдено» трапляються і
+    # в самій команді, і у відповіді оболонки.
+    low = f"{command} {body or ''}".lower()
     # ── Нуль тестів — це не «інструмента немає», але це теж глухий кут ────
     # ``python -m unittest discover`` у теці без тестів повертає код 5 і
     # «NO TESTS RAN». Модель бачила ненульовий код, вважала це збоєм і
@@ -1471,6 +1474,23 @@ def _missing_command_hint(command: str, code: int, body: str = "") -> str:
             "`import unittest` і класом `class T(unittest.TestCase)`), і "
             "запусти `python -m unittest discover -v`. Не повторюй ту саму "
             "команду — результат не зміниться.")
+    # ── Модуль Python, а не команда ───────────────────────────────────────
+    # ``py -m pip install x`` із відсутнім пакетом дає «No module named», і
+    # назвати причиною «немає команди python» було б неправдою: команда є,
+    # немає МОДУЛЯ. Це різна порада, тому перевіряємо раніше за загальний
+    # пошук «не знайдено».
+    if "no module named" in low and "-m" in low:
+        module = ""
+        parts = (command or "").split("-m", 1)
+        if len(parts) == 2:
+            module = parts[1].strip().split()[0] if parts[1].strip() else ""
+        return (
+            f"ПРИЧИНА: модуля «{module or '?'}» немає в цьому Python. "
+            "Команда python працює — бракує саме пакета.\n"
+            "Що зробити замість цього: встанови його "
+            "(`python -m pip install <пакет>`) АБО зроби те саме засобами "
+            "стандартної бібліотеки. Не повторюй ту саму команду — "
+            "результат не зміниться.")
     if not any(marker.lower() in low for marker in _MISSING_MARKERS):
         return ""
     name = (command or "").strip().split()[0] if (command or "").strip() else ""

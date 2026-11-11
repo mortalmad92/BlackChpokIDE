@@ -105,6 +105,7 @@ def chat(
     temperature: float | None = None,
     max_tokens: int | None = None,
     should_stop: Callable[[], bool] | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """Блокуюча генерація у форматі відповіді OpenAI.
 
@@ -112,6 +113,12 @@ def chat(
     ``rt.engine``: так працюють черга (``_pending``), ``busy()``,
     тайм-аут і телеметрія ``_record``. Прямий виклик рушія обходив усе це,
     тому ``bridge.busy()`` не бачив роботи взагалі.
+
+    ``timeout`` — СТЕЛЯ одного ходу. Раніше параметра не було взагалі, і
+    завжди діяла типова 600 с із ``NativeRuntime.generate``: одна застрягла
+    генерація тримала потік агента десять хвилин, і крок «висів» активним
+    (заміряно ``tools/check_stability.py``: 600 і 855 с із ``active 1``).
+    Тепер виклик передає власний тайм-аут із налаштувань.
     """
     rt = _ensure_loaded(model)
     started = time.perf_counter()
@@ -120,6 +127,7 @@ def chat(
         params=_params(temperature, max_tokens),
         tools=tools,
         should_stop=should_stop,
+        timeout=float(timeout) if timeout and timeout > 0 else 0.0,
     )
     text = payload_in.get("text") or ""
     tool_calls = payload_in.get("tool_calls") or []

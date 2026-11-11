@@ -4986,6 +4986,19 @@ class BlackChpokIDE(tk.Tk):
         ніколи не завершувався б.
         """
         try:
+            # ── Кроки без власника дістають активний чат ────────────────────
+            # План складається в момент, коли чату ще немає: ``_after_split``
+            # бере ``_active_chat_id()``, а він порожній, бо чат створюється
+            # першим повідомленням. Такі кроки лишаються «сиротами», і
+            # ``QueueExecutor.next_task()`` (який тепер передає свій
+            # ``chat_id``) їх не бачить — черга стояла назавжди: 8 кроків
+            # «очікує», 0 активних, 0 помилок (заміряно
+            # ``.buildtmp/probe_next_task.py``).
+            #
+            # ``_adopt_orphan_tasks`` існував, але ніхто його не кликав.
+            if (not self.task_queue.running_id and not self.agent.busy
+                    and self._active_chat_id()):
+                self._adopt_orphan_tasks()
             if (self.settings.agent.queue_auto_run and not self.task_queue.paused
                     and not self._autonomous_stop_pending
                     and self.autonomous_engine.state != autonomous.STATE_STOPPING
