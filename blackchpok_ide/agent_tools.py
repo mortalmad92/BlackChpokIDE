@@ -675,6 +675,16 @@ class ToolRegistry:
         body = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
         if len(body) > 12_000:
             body = body[:12_000] + "\n… вивід обрізано"
+        # ── Підказка, коли команди просто НЕ ІСНУЄ ─────────────────────────
+        # Модель регулярно кличе ``pytest`` у проєкті, де встановлено лише
+        # ``unittest``. Кожен такий виклик повертав голий
+        # ``'pytest' is not recognized…``, модель не розуміла причини й
+        # повторювала те саме — запобіжник повторів зупиняв крок із
+        # «модель зациклилась» (перевірено ``tools/check_full_cycle.py``).
+        # Явна підказка дає їй наступний крок замість циклу.
+        hint = _missing_command_hint(command, proc.returncode, body)
+        if hint:
+            body = (body + "\n\n" + hint).strip()
         return f"$ {command}\nexit={proc.returncode}\n{body}".rstrip()
 
     def git_status(self) -> str:
@@ -1426,6 +1436,58 @@ def _shell_env() -> dict[str, str]:
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUNBUFFERED", "1")
     return env
+
+
+#: Ознаки того, що команда не знайдена (різні оболонки кажуть по-різному).
+_MISSING_MARKERS = (
+    "is not recognized",          # cmd.exe
+    "not found",                  # bash / sh
+    "не является внутренней",     # російський cmd
+    "не знайдено",                # українська оболонка
+    "No module named",            # python -m <модуль>
+    "command not found",
+)
+
+
+def _missing_command_hint(command: str, code: int, body: str = "") -> str:
+    """Пояснити моделі, ЩО робити, коли інструмента немає в системі.
+
+    Повертає порожній рядок, якщо все гаразд. Текст — для моделі, не для
+    людини: він має підказати ІНШУ дію, щоб та не повторювала ту саму.
+    """
+    if code == 0:
+        return ""
+    low = f"{command} {body}".lower()
+    if not any(marker.lower() in low for marker in _MISSING_MARKERS):
+        return ""
+    name = (command or "").strip().split()[0] if (command or "").strip() else ""
+    lines = [
+        f"ПРИЧИНА: команди «{name}» немає в цій системі (або її не видно з "
+        f"поточної теки).",
+        "ЦЕ НЕ привід повторювати ту саму команду — результат не зміниться.",
+    ]
+    if "pytest" in low:
+        lines += [
+            "Що зробити замість цього:",
+            "• запустити тести вбудованим засобом: "
+            "`python -m unittest discover -s tests -v`;",
+            "• для одного файлу: `python -m unittest tests.test_модуль -v`;",
+            "• якщо тестів ще немає — створи їх через write_file і запусти "
+            "`python -m unittest discover`.",
+        ]
+    elif "pip" in low or "No module named" in body:
+        lines += [
+            "Що зробити замість цього: встанови залежність "
+            "(`python -m pip install <пакет>`) або використай те, що вже є "
+            "в стандартній бібліотеці — без сторонніх пакетів.",
+        ]
+    else:
+        lines += [
+            "Що зробити замість цього: перевір, чи є інший інструмент для "
+            "цієї дії (напр. python_check для синтаксису, list_dir для "
+            "файлів), або поясни користувачу, чого не вистачає.",
+        ]
+    return "\n".join(lines)
 
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
