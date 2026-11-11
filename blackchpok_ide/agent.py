@@ -1883,10 +1883,31 @@ class AgentRunner:
         """
         router = getattr(self, "_lazy_router", None)
         if router is None:
+            # Скільки схем показати моделі одразу, залежить від вікна: на
+            # малому вікні 48 повних схем з'їдали майже все, і на історію
+            # лишалось 163 токени — агент «забував», що вже зробив.
             router = tool_lazy.LazyToolRouter(priority=SCHEMA_PRIORITY,
+                                             max_eager=self._eager_tool_limit(),
                                              emit=self._emit)
             self._lazy_router = router
         return router
+
+    def _eager_tool_limit(self) -> int:
+        """Скільки інструментів показати повністю за поточного вікна.
+
+        Малий контекст (8192) не вміщає 48 схем: кожна в середньому ~110
+        токенів, разом ~2100, плюс система ~3000 — і на розмову майже нічого
+        не лишається. Тому кількість прив'язана до вікна; решта доступна
+        через ``find_tools``/``load_tools``, тож нічого не втрачається.
+        """
+        limit = int(getattr(self.session, "context_limit", 0) or 0)
+        if limit <= 0:
+            return tool_lazy.MAX_EAGER_TOOLS
+        if limit < 12_288:
+            return len(tool_lazy.CORE_TOOLS) + len(tool_lazy.CONTROL_TOOLS)
+        if limit < 24_576:
+            return 28
+        return tool_lazy.MAX_EAGER_TOOLS
 
     def invalidate_tool_cache(self, reason: str = "") -> None:
         """Скинути кеш схем інструментів після зміни реєстру.
