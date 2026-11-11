@@ -3891,9 +3891,19 @@ class BlackChpokIDE(tk.Tk):
             # запитом, інакше агент стукає в зайнятий порт і дістає 404.
             self._reconcile_server_url()
             return
-        if getattr(self.settings.llm, "base_url", "").strip() and \
-                "127.0.0.1" not in self.settings.llm.base_url and \
-                "localhost" not in self.settings.llm.base_url:
+        # ── Вбудований рушій — теж ЛОКАЛЬНИЙ ─────────────────────────────
+        # Перевірка нижче шукає ``127.0.0.1``/``localhost`` в адресі, щоб не
+        # чіпати зовнішній сервер. Але ``native://blackchpok`` не містить
+        # жодного з цих маркерів, тож вбудований рушій вважався «зовнішнім»,
+        # і модель НІКОЛИ не підхоплювалась: у налаштуваннях лишалось
+        # порожнє поле, шапка показувала «модель не вибрана», а агент падав
+        # із «Модель не вибрана» — хоч на диску лежало сім GGUF-файлів
+        # (перевірено ``tools/check_server_adopt.py`` й живим прогоном).
+        embedded = runtime.embedded_url(str(getattr(self.settings.llm, "base_url", "") or ""))
+        if not embedded \
+                and getattr(self.settings.llm, "base_url", "").strip() \
+                and "127.0.0.1" not in self.settings.llm.base_url \
+                and "localhost" not in self.settings.llm.base_url:
             return          # зовнішній сервер — модель визначає він
         try:
             local = [p for p in hub.local_models() if p.suffix.lower() == ".gguf"]
@@ -3904,8 +3914,21 @@ class BlackChpokIDE(tk.Tk):
         chosen = self.settings.engine.model_path
         path = Path(chosen) if chosen and Path(chosen).exists() else None
         if path is None:
-            path = max(local, key=lambda p: p.stat().st_size if p.exists() else 0)
+            preferred = str(getattr(self.settings.engine, "native_model", "") or "")
+            match = next((p for p in local if preferred and
+                          (p.name == preferred or p.stem == preferred)), None)
+            path = match or max(local, key=lambda p: p.stat().st_size if p.exists() else 0)
         self.settings.llm.model = path.stem
+        if embedded:
+            # Адресу вбудованого рушія НЕ переписуємо на HTTP: це той самий
+            # рушій у цьому процесі, і підміна на ``http://127.0.0.1:8080``
+            # змусила б агента шукати неіснуючий сервер.
+            self.settings.engine.model_path = str(path)
+            if not str(getattr(self.settings.engine, "native_model", "") or ""):
+                self.settings.engine.native_model = path.stem
+            safe.call_quiet(self.settings.save, where="збереження вибраної моделі")
+            self.set_status(f"Модель: {path.stem}")
+            return
         # URL і ключ мають відповідати рушію, який обслуговує цю модель:
         # інакше агент стукає в LM Studio на 1234 і мовчки йде в офлайн-роутер.
         port = int(getattr(self.settings.engine, "port", 0) or 0) or runtime.DEFAULT_PORT

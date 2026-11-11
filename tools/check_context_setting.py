@@ -19,8 +19,14 @@ sys.path.insert(0, str(ROOT))
 # СПРАВЖНІЙ конфіг користувача (%APPDATA%\BlackChpokIDE\settings.json) —
 # саме так у ньому опинялись тестові значення, зокрема вимкнений автозапуск
 # локальної моделі. Ізолюємо ДО імпорту пакета.
+#
+# ``BLACKCHPOK_NO_SAVE`` тут НЕ ставимо: ця перевірка саме й перевіряє, що
+# значення ДОХОДИТЬ до файлу. З цим прапорцем ``Settings.save()`` свідомо
+# нічого не пише, і перевірка «значення збережено» падала на робочому коді
+# (перевірено: у пам'яті 32768, на диску 0). Достатньо ізольованої теки —
+# вона й захищає справжній конфіг.
 os.environ.setdefault("BLACKCHPOK_HOME", tempfile.mkdtemp(prefix="bchp-ctx-"))
-os.environ["BLACKCHPOK_NO_SAVE"] = "1"
+os.environ.pop("BLACKCHPOK_NO_SAVE", None)
 
 failures = 0
 

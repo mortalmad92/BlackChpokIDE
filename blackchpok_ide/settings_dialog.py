@@ -1455,6 +1455,11 @@ class SettingsDialog(tk.Toplevel):
         s.mcp.auto_load_workspace = bool(self.mcp_auto_var.get())
 
         # ── контекст локальної моделі (0 = авто)
+        # Запам'ятовуємо ЗАВАНТАЖЕНЕ значення ДО будь-яких змін: нижче
+        # ``s`` — це той самий об'єкт налаштувань, тож після присвоєння
+        # ``s.engine.ctx_size`` старе значення вже втрачене, і порівняння
+        # «чи змінено» завжди давало хибний висновок.
+        loaded_ctx = int(getattr(self.settings.engine, "ctx_size", 0) or 0)
         try:
             want = int(self.ctx_var.get())
         except (TypeError, ValueError, tk.TclError):
@@ -1463,6 +1468,22 @@ class SettingsDialog(tk.Toplevel):
         s.engine.ctx_size = 0 if want <= 0 else max(2048, min(131072, want))
 
         # ── вбудований рушій (вкладка «AI Runtime»)
+        # УВАЖНО з ``native_ctx``: поле на цій вкладці читається з налаштувань
+        # на момент ВІДКРИТТЯ діалогу. Якщо користувач змінив контекст на
+        # головній вкладці (або поставив «авто» = 0), старе значення звідси
+        # перезаписувало щойно введене — «авто» ніколи не зберігалось
+        # (перевірено ``tools/check_context_setting.py``: ставимо 0, а на
+        # диску лишається 32768).
+        #
+        # Головніше поле — те, що на вкладці контексту: саме його бачить
+        # користувач. ``native_ctx`` застосовуємо ЛИШЕ коли воно справді
+        # змінене відносно завантаженого значення.
+        try:
+            native_ctx = int(self.native_ctx_var.get())
+        except (TypeError, ValueError, tk.TclError):
+            native_ctx = 0
+        if native_ctx > 0 and native_ctx != loaded_ctx:
+            s.engine.ctx_size = max(2048, min(131072, native_ctx))
         s.engine.native = bool(getattr(self, "native_enabled_var", None)
                                and self.native_enabled_var.get())
         # ── АДРЕСА МУСИТЬ ВІДПОВІДАТИ ПРАПОРЦЮ ────────────────────────────
@@ -1495,14 +1516,9 @@ class SettingsDialog(tk.Toplevel):
         s.engine.native_gpu_layers = max(-1, min(999, layers))
         cache_choice = str(self.native_cache_var.get()).strip().lower()
         s.engine.native_cache_type = "" if cache_choice in ("", "авто") else cache_choice
-        try:
-            native_ctx = int(self.native_ctx_var.get())
-        except (TypeError, ValueError, tk.TclError):
-            native_ctx = 0
-        # Вкладка «AI Runtime» має власне поле контексту; воно головніше за
-        # загальне, бо стосується саме вбудованого рушія.
-        if native_ctx > 0:
-            s.engine.ctx_size = max(2048, min(131072, native_ctx))
+        # Контекст уже застосовано вище. Друге читання ``native_ctx_var`` тут
+        # перезаписувало вибір користувача з вкладки контексту (зокрема
+        # «авто» = 0) — саме через цей дубль значення не зберігалось.
 
         # ── хмарні агенти
         provider = self._current_provider()

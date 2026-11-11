@@ -43,6 +43,7 @@ def main() -> int:
     mb.showerror = lambda *a, **k: None
     fd.askdirectory = lambda *a, **k: ""
 
+    from blackchpok_ide import runtime
     from blackchpok_ide.config import Settings, setup_logging
 
     setup_logging()
@@ -64,7 +65,15 @@ def main() -> int:
         app.hide_welcome()
         pump(app, 0.6)
 
-        check("сервер моделі відповідає", app._server_alive())
+        # Вбудований рушій (`native://blackchpok`) не має HTTP-адреси:
+        # питаємо його, а не мережу. Раніше тут перевірявся лише
+        # `_server_alive` — і перевірка падала на робочому рушії, який
+        # ще не завантажив модель (вона вантажиться на перший запит).
+        alive = app._server_alive(fresh=True) or (
+            runtime.embedded_url(app.settings.llm.base_url)
+            and runtime.embedded_engine_available())
+        check("модель готова відповідати", alive,
+              "рушій підніме на перший запит")
         check("IDE не підняла власний процес",
               getattr(app, "_managed_server", None) is None,
               str(getattr(app, "_managed_server", None)))
