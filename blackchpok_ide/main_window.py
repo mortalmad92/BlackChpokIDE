@@ -5017,6 +5017,25 @@ class BlackChpokIDE(tk.Tk):
             now = time.time()
             running_task = self.task_queue.get(self.task_queue.running_id) \
                 if self.task_queue.running_id else None
+            # ── Виконавець «зайнятий» кроком, якого агент уже не виконує ──
+            # ``QueueExecutor.busy`` — це «``current_id`` вказує на активну
+            # задачу». Якщо колбек завершення не дійшов, ``current_id``
+            # лишається виставленим, ``busy`` — True, ``next_task()``
+            # повертає None, і черга стоїть НАЗАВЖДИ: жоден із запобіжників
+            # нижче не спрацьовує (вони всі під ``not self.executor.busy``).
+            # Заміряно ``tools/check_stability.py``: прогін 3 із 3 завмер
+            # на 150 с із «active 1, pending 5».
+            if (running_task is not None and not self.agent.busy
+                    and self.executor.current_id
+                    and self.executor.current_id == running_task.id):
+                started = float(running_task.started_at or 0.0)
+                stuck_for = (now - started) if started else 0.0
+                if stuck_for > self.STALE_STEP_SECONDS:
+                    LOG.info("Виконавець застряг на кроці %s (%.0f с) — "
+                             "звільняю", running_task.id, stuck_for)
+                    self.executor.current_id = ""
+                    self._plan_step_active = False
+                    self._running_task_id = ""
             if running_task is not None and not self.agent.busy:
                 started = float(running_task.started_at or 0.0)
                 stale_for = (now - started) if started else 0.0
