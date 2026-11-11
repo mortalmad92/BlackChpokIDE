@@ -962,6 +962,10 @@ class LLMClient:
                 on_text=on_text,
                 on_reasoning=on_reasoning,
                 should_stop=should_stop,
+                # Повний перелік назв: рушій інакше не розпізнає виклик,
+                # написаний моделлю ТЕКСТОМ, якщо інструмента немає серед
+                # переданих схем (лінивий режим передає ≈15 із 50+).
+                known_tools=known_tools,
             )
         except Exception as exc:                    # noqa: BLE001
             raise LLMError(f"Вбудований рушій: {exc}") from exc

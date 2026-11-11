@@ -26,7 +26,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from ..hardware import HardwareProfile, detect as detect_hardware
 from . import inspect as inspect_mod
@@ -261,7 +261,8 @@ class NativeRuntime:
                         params: dict | SamplingParams | None = None,
                         tools: list[dict] | None = None,
                         timeout: float = DEFAULT_TIMEOUT,
-                        should_stop: Callable[[], bool] | None = None
+                        should_stop: Callable[[], bool] | None = None,
+                        known_tools: Iterable[str] | None = None
                         ) -> Iterator[dict[str, Any]]:
         """Потокова генерація; кожен елемент — словник для JSON-відповіді.
 
@@ -291,7 +292,8 @@ class NativeRuntime:
         finished = False
         try:
             for chunk in self.engine.generate_stream(
-                    messages, params=settings, tools=tools, should_stop=_stop):
+                    messages, params=settings, tools=tools, should_stop=_stop,
+                    known_tools=known_tools):
                 if chunk.done:
                     finished = True
                     self._generation = GenerationResult(

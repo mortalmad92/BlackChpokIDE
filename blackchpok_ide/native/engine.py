@@ -30,7 +30,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from . import _abi, gguf, inspect as inspect_mod
 from ._bindings import LlamaLibrary, NativeUnavailable, load_library
@@ -705,8 +705,16 @@ class NativeEngine:
                         params: SamplingParams | None = None,
                         tools: list[dict] | None = None,
                         should_stop: Callable[[], bool] | None = None,
-                        stop: tuple[str, ...] | None = None) -> Iterator["StreamChunk"]:
-        """Потокова генерація: кожен виклик ``next`` дає новий фрагмент."""
+                        stop: tuple[str, ...] | None = None,
+                        known_tools: Iterable[str] | None = None) -> Iterator["StreamChunk"]:
+        """Потокова генерація: кожен виклик ``next`` дає новий фрагмент.
+
+        ``known_tools`` — ПОВНИЙ перелік назв, які існують у реєстрі. Рушій
+        інакше знає лише ті схеми, що передані в ``tools``, а в лінивому
+        режимі їх ≈15 із 50+. Через це виклик, написаний моделлю ТЕКСТОМ
+        (``{"tool": "write_file", …}``), не розпізнавався: імені не було в
+        ``known``, текст вважався відповіддю, і файл не створювався.
+        """
         model = self.model
         context = self.context
         if model is None or context is None:
@@ -781,16 +789,23 @@ class NativeEngine:
 
             decoder = StreamingDecoder(tokenizer, skip_special=True)
             matcher = StopMatcher(settings.stop)
-            # Прибирає сирий JSON виклику з того, що бачить користувач.
             # ``known`` обмежує розбір відомими назвами інструментів, інакше
             # будь-яка фігурна дужка у відповіді вважалась би викликом.
+            #
+            # Беремо І схеми цього запиту, І ПОВНИЙ перелік реєстру
+            # (``known_tools``). Друге критичне: у лінивому режимі схем ≈15
+            # із 50+, тому ``write_file`` міг бути ПОЗА ними — і виклик,
+            # написаний моделлю текстом, відкидався як «невідомий інструмент»
+            # (файл не створювався взагалі).
             from .chatfmt import ToolCallParser
 
-            known_tools = {
+            schema_names = {
                 str(item.get("function", {}).get("name") or "")
                 for item in (tools or []) if isinstance(item, dict)
             } - {""}
-            tool_parser = ToolCallParser(known=known_tools or None)
+            if known_tools:
+                schema_names |= {str(name) for name in known_tools if str(name).strip()}
+            tool_parser = ToolCallParser(known=schema_names or None)
             produced: list[int] = []
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

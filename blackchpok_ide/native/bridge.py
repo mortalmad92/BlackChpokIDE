@@ -169,6 +169,7 @@ def chat_stream(
     on_text: Callable[[str], None] | None = None,
     on_reasoning: Callable[[str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    known_tools: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Потокова генерація: ``on_text`` викликається на кожен фрагмент.
 
@@ -177,6 +178,13 @@ def chat_stream(
     ``busy()``, ні телеметрія ``_record``. Раніше ``busy()`` **завжди**
     повертав ``False``, бо лічильник збільшувався лише в ``api.py``, а
     агент ходить саме сюди.
+
+    ``known_tools`` — ПОВНИЙ перелік назв інструментів, які взагалі існують.
+    Рушій будує його лише з переданих схем, а в лінивому режимі схем мало
+    (≈15 із 50+). Через це виклик ``write_file``, написаний моделлю ТЕКСТОМ,
+    не розпізнавався як виклик: імені не було в ``known``, текст вважався
+    звичайною відповіддю, і файл не створювався (заміряно: «створи файл
+    hello.py…» → 11 с, порожня тека, у чаті сирий JSON).
     """
     rt = _ensure_loaded(model)
     del on_reasoning                       # рушій поки не відділяє «думки»
@@ -187,7 +195,7 @@ def chat_stream(
     started = time.perf_counter()
     for chunk in rt.generate_stream(
             messages, params=_params(temperature, max_tokens), tools=tools,
-            should_stop=should_stop):
+            should_stop=should_stop, known_tools=known_tools):
         if chunk.get("done"):
             stats = chunk.get("stats")
             tool_calls = chunk.get("tool_calls") or []
