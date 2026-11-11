@@ -2639,8 +2639,10 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Автозапуск моделі не вдався: %s", exc, exc_info=True)
             return f"автозапуск не вдався: {exc}"
 
-    def chat_panel_choice(self, path: Path):
+    def chat_panel_choice(self, path: Path | str):
         """Оцінити модель за назвою файлу (для параметрів запуску)."""
+        # Публічний метод: сюди можуть прийти рядки з налаштувань і панелей.
+        path = Path(path)
         name = path.name.lower()
         for token, params, layers in (("0.5b", 0.5, 24), ("1.5b", 1.5, 28), ("3b", 3.0, 36),
                                       ("4b", 4.0, 36), ("7b", 7.0, 28), ("8b", 8.0, 32),
@@ -5876,6 +5878,19 @@ class BlackChpokIDE(tk.Tk):
         відкритих файлів, чатів і черги — це компонування, а не стан роботи.
         """
         if profile is None:
+            return
+        # Публічний метод: рядок або словник (з JSON налаштувань) не має
+        # валити вікно з ``'str' object has no attribute 'sidebar_width'``.
+        if isinstance(profile, str):
+            profile = getattr(layout_profiles, profile.upper(), None)
+        if isinstance(profile, dict):
+            # Неповний словник (з JSON) не має валити вікно: LayoutProfile
+            # вимагає ще key/label/tip, які для застосування не потрібні.
+            try:
+                profile = layout_profiles.LayoutProfile(**profile)
+            except TypeError:
+                return
+        if profile is None or not hasattr(profile, "sidebar_width"):
             return
         ui = self.settings.ui
         if profile.sidebar_width:
