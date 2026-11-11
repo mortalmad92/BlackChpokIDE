@@ -16,10 +16,10 @@ SKIP_DIRS = {".venv", "userdata", ".git", "node_modules", ".buildtmp", ".quarant
              "__pycache__", "dist", "build", ".mypy_cache", ".pytest_cache"}
 
 # Символи cp1251, яких немає в українській мові.
-IMPOSSIBLE = "\u0402\u0403\u0405\u0408\u0409\u040a\u040b\u040c\u040e\u040f" \
-             "\u0452\u0453\u0455\u0458\u0459\u045a\u045b\u045c\u045e\u045f" \
-             "\u0401\u0451\u0454\u0457"  # Ё ё — трапляються, але рідко; Є Ї нормальні
-IMPOSSIBLE = IMPOSSIBLE[:-2]  # прибираємо Є/Ї з переліку — вони нормальні
+# Ё ё Є Ї навмисно НЕ входять: вони нормальні в українських текстах, і
+# додавання їх давало хибні сигнали на кожному «Є» в реченні.
+IMPOSSIBLE = ("\u0402\u0403\u0405\u0408\u0409\u040a\u040b\u040c\u040e\u040f"
+              "\u0452\u0453\u0455\u0458\u0459\u045a\u045b\u045c\u045e\u045f")
 
 # Пари, що виникають лише з побиття: С + пунктуація/знак.
 MOJI_PAIRS = ("\u0421\u2013", "\u0421\u201a", "\u0421\u0453", "\u0421\u0402",
@@ -35,11 +35,20 @@ def score(text: str) -> tuple[int, int]:
 
 def main() -> int:
     root = pathlib.Path(".")
+    # Цей файл МІСТИТЬ неможливі символи навмисно — у власному переліку й
+    # у прикладах документації. Без винятку детектор знаходив би самого
+    # себе й показував хибний «підозрілий файл».
+    itself = pathlib.Path(__file__).resolve()
     rows = []
     for path in sorted(root.rglob("*.py")):
         parts = set(path.parts)
         if parts & SKIP_DIRS:
             continue
+        try:
+            if path.resolve() == itself:
+                continue
+        except OSError:
+            pass
         try:
             text = path.read_text("utf-8")
         except OSError as exc:
