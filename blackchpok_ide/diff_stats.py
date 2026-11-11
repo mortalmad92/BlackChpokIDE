@@ -263,9 +263,17 @@ def read_text_safe(path: Path, limit_bytes: int = 2_000_000) -> str | None:
     Повертає ``None``, якщо файл бінарний (є NUL у перших 4096 байтах),
     недоступний для читання, не існує або більший за ``limit_bytes``.
     Кодування: спершу UTF-8, потім CP1251 (типові українські файли з Windows).
+
+    ``None`` повертається й тоді, коли ``path`` — не шлях (число, список,
+    словник): панель дифів кличе цю функцію з тим, що є в даних, і назва
+    «_safe» мусить бути правдою, інакше ``TypeError`` з ``Path()`` летів
+    у потік інтерфейсу.
     """
     try:
         path = Path(path)
+    except (TypeError, ValueError):
+        return None
+    try:
         if not path.is_file():
             return None
         if path.stat().st_size > limit_bytes:

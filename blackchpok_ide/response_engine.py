@@ -119,7 +119,14 @@ def strip_protocol(text: str) -> str:
     Робимо ЦЕ ДО показу в чаті: користувач не має бачити
     ``{"name": "read_file", "arguments": {...}}`` замість відповіді.
     """
-    body = text or ""
+    # ``text`` приходить просто з моделі, і локальні моделі здатні віддати
+    # число або об'єкт замість рядка (напр. коли ``content`` у відповіді
+    # сервера не рядок). Без приведення тут падало ``AttributeError``
+    # просто в шляху показу відповіді — користувач бачив порожнечу.
+    # ``text`` приходить з моделі; приведення — щоб числове ``content``
+    # не валило обробку відповіді (див. коментар у :func:`clean_for_chat`).
+    text = text if isinstance(text, str) else ("" if text is None else str(text))
+    body = text if isinstance(text, str) else ("" if text is None else str(text))
     if not body.strip():
         return ""
     # 1. Службові теги моделей.

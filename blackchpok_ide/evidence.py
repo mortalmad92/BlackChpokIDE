@@ -409,6 +409,11 @@ def needs_tools_for(question: str) -> bool:
     """Чи вимагає запит фактів про проєкт (а не думки)."""
     if not question:
         return False
+    # Приведення типу: ``question`` може прийти з моделі чи JSON не рядком
+    # (локальні моделі здатні віддати число). Без нього тут падало
+    # ``AttributeError`` у шляху перевірки доказів.
+    if not isinstance(question, str):
+        question = str(question)
     low = question.lower().strip()
     # Питання про свіжі дані з мережі — окремий шлях, не проєкт.
     if any(word in low for word in ("погода", "курс", "ціна", "новини", "коштує")):

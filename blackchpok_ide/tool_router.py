@@ -757,7 +757,12 @@ _SAME_AS_IDE: dict[str, str] = {
 
 def route(text: str) -> list[ToolHint]:
     """Усі дії, які фраза просить виконати (найвпевненіші — першими)."""
-    phrase = (text or "").strip()
+    # Приведення типу: ``route`` кличеться на КОЖНЕ повідомлення, а
+    # ``text`` може прийти не рядком (панель передає те, що є в даних).
+    # ``(3.14 or "").strip()`` падало ``AttributeError`` у гарячому шляху.
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+    phrase = text.strip()
     if not phrase:
         return []
     ide_hints = _ide_rules(phrase) + _read_rules(phrase)
