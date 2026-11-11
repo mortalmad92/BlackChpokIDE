@@ -809,12 +809,18 @@ class TaskQueue:
         task = self.get(task_id)
         if task is None:
             return False
-        if task.active:
-            return False
+        # Активну задачу теж можна скасувати. Раніше тут стояло
+        # ``if task.active: return False``, і кнопка «Скасувати» для
+        # поточної задачі просто НІЧОГО не робила: задача лишалась
+        # «виконується» назавжди, а користувач не міг її прибрати.
+        # Зупиняти сам потік агента — справа вікна (``agent.cancel``);
+        # тут ми лише знімаємо задачу з виконання.
         task.status = CANCELLED
         task.finished_at = time.time()
         task.current_step = ""
         task.add_history("cancelled", "скасовано")
+        if self.running_id == task_id:
+            self.running_id = ""
         self._changed()
         return True
 
