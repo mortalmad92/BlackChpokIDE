@@ -137,6 +137,21 @@ def strip_protocol(text: str) -> str:
             body = body[:start] + body[end:]
     # 4. Порожні блоки коду, що лишились від вирізаного виклику.
     body = re.sub(r"```[a-zA-Z]*\s*```", "", body)
+    # 5. Обірвана «огорожа» коду: модель починає блок (```json) і
+    # обривається, не закривши його. У чаті це виглядало як окреме
+    # повідомлення «```json» без жодного змісту (заміряно живим прогоном).
+    #
+    # Прибираємо ЛИШЕ непарну огорожу: закритий блок коду — це справжній
+    # вміст відповіді, його чіпати не можна (інакше з відповіді зникає код,
+    # який користувач просив показати).
+    lines = body.splitlines()
+    fences = [index for index, line in enumerate(lines)
+              if line.strip().startswith("```")]
+    if len(fences) % 2:
+        # Остання огорожа не має пари — вона й обірвана.
+        drop = fences[-1]
+        lines = lines[:drop] + lines[drop + 1:]
+        body = "\n".join(lines)
     body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip()
 

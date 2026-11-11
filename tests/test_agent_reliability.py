@@ -192,9 +192,29 @@ class TestRouterEditCommand(unittest.TestCase):
         self.assertEqual(hints[0].tool, "read_file")
 
     def test_creation_still_routes(self) -> None:
-        from blackchpok_ide import tool_router
+        """Створення файлу не має вести до НЕІСНУЮЧОГО інструмента.
 
-        self.assertTrue(tool_router.confident("створи файл app.py"))
+        Раніше тут перевірялось, що ``confident("створи файл app.py")``
+        непорожній — але єдина підказка вела в ``router:build_project``,
+        якого немає ні в реєстрі інструментів, ні серед дій MCP-роутера.
+        Агент викликав його, діставав «Інструмента немає в реєстрі» й
+        витрачав на це єдиний крок: файл не створювався (перевірено
+        живим прогоном: 10 с і порожня тека).
+
+        Тепер контракт інший і чесніший:
+        * підказка ``build_project`` не з'являється взагалі;
+        * намір усе одно «створити», тож розмовний шлях не спрацьовує і
+          роботу виконує модель зі ``write_file``.
+        """
+        from blackchpok_ide import intent_engine, tool_router
+
+        hints = tool_router.confident("створи файл app.py")
+        self.assertFalse(
+            [h for h in hints if "build_project" in h.tool],
+            "підказка веде до неіснуючого інструмента")
+        # Головне: це НЕ балачка — агент мусить працювати інструментами.
+        frame = intent_engine.frame("створи файл app.py")
+        self.assertEqual(frame.intent_type, intent_engine.CREATE)
 
     def test_all_named_files_are_routed(self) -> None:
         """Фраза з двома файлами дає підказки для ОБОХ.
