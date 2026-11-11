@@ -112,7 +112,10 @@ class TestEngineFlagSwitchesAddress(unittest.TestCase):
         """Вкладка «AI Runtime» перемикає адресу при збереженні."""
         from blackchpok_ide import settings_dialog
 
-        source = inspect.getsource(settings_dialog.SettingsDialog._save)
+        # Значення полів застосовує ``_apply_fields``, а ``_save`` лише
+        # перевіряє числа й показує помилку. Раніше перевірка дивилась у
+        # ``_save`` — і «падала» на робочому коді після перенесення логіки.
+        source = inspect.getsource(settings_dialog.SettingsDialog._apply_fields)
         self.assertIn("EMBEDDED_URL", source,
                       "збереження має ставити native://blackchpok")
         self.assertIn("auto_start", source,

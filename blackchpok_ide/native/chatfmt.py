@@ -370,30 +370,58 @@ class ToolCallParser:
         self._inside = False
 
     def feed(self, chunk: str) -> str:
-        """Повернути безпечний текст, який можна показати користувачу."""
+        """Повернути безпечний текст, який можна показати користувачу.
+
+        Ховаємо ЛИШЕ те, що справді є викликом інструмента. Раніше
+        приховувався будь-який JSON-об'єкт: відповідь моделі «ось план:
+        ``[{"title": "a"}, {"title": "b"}]```» перетворювалась на
+        ``[, ]`` — тобто вміст зникав, а дужки лишались. Саме через це
+        планувальник отримував порожній масив від вбудованого рушія.
+        """
         if not chunk:
             return ""
         self._buffer += chunk
-        if self._inside:
-            self.text += chunk
-            self._close_if_complete()
-            return ""
-        position = self._buffer.find("{")
-        if position < 0:
-            # Хвіст може бути початком JSON — тримаємо один символ.
-            if self._buffer.endswith("`") or self._buffer.endswith("{"):
-                return ""
-            safe, self._buffer = self._buffer, ""
-            self._buffer = ""
-            return safe
-        head, rest = self._buffer[:position], self._buffer[position:]
-        self._buffer = rest
-        self._inside = True
-        self.text += rest
-        self._close_if_complete()
-        return head
+        return self._drain()
 
-    def _close_if_complete(self) -> None:
+    def _drain(self) -> str:
+        """Віддати все, що вже точно не є викликом інструмента."""
+        visible: list[str] = []
+        while True:
+            if self._inside:
+                closed = self._close_if_complete()
+                if closed is None:
+                    break            # об'єкт ще не завершено — чекаємо
+                self._inside = False
+                if self._is_call(closed):
+                    # Справжній виклик: ховаємо від користувача.
+                    self.text += closed
+                else:
+                    # Звичайний JSON у відповіді — це ВМІСТ, показуємо.
+                    visible.append(closed)
+                continue
+            position = self._buffer.find("{")
+            if position < 0:
+                # Хвіст може бути початком JSON — тримаємо один символ.
+                if self._buffer.endswith("`"):
+                    break
+                visible.append(self._buffer)
+                self._buffer = ""
+                break
+            visible.append(self._buffer[:position])
+            self._buffer = self._buffer[position:]
+            self._inside = True
+        return "".join(visible)
+
+    def _is_call(self, payload: str) -> bool:
+        """Чи цей JSON-об'єкт є викликом інструмента."""
+        try:
+            calls = extract_tool_calls(payload, known=self.known)
+        except Exception:  # noqa: BLE001 - розбір не має ламати стрім
+            return False
+        return bool(calls)
+
+    def _close_if_complete(self) -> str | None:
+        """Відрізати завершений об'єкт; ``None`` — він ще не завершений."""
         depth = 0
         in_string = False
         escaped = False
@@ -413,13 +441,13 @@ class ToolCallParser:
             elif char == "}":
                 depth -= 1
                 if depth == 0:
+                    closed = self._buffer[:index + 1]
                     self._buffer = self._buffer[index + 1:]
-                    self._inside = False
-                    if self._buffer.strip():
-                        self._buffer = ""
-                    return
+                    return closed
         if not self._buffer.strip():
-            self._inside = False
+            self._buffer = ""
+            return ""
+        return None
 
     def finish(self) -> str:
         """Завершити розбір: віддати залишок, якщо це не виклик."""

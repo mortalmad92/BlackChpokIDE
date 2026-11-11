@@ -2593,7 +2593,7 @@ class AgentRunner:
             if _router.confident(text):
                 return False
         except Exception:  # noqa: BLE001 - роутер необов'язковий
-            pass
+            LOG.debug("Роутер не дав підказки для %r", text[:60], exc_info=True)
         return True
 
     def _chat_only(self, client: LLMClient) -> None:

@@ -77,12 +77,22 @@ class TestKeyboardShortcuts(unittest.TestCase):
 
         available = set(dir(BlackChpokIDE))
         source = (PKG / "main_window.py").read_text(encoding="utf-8")
+        # Атрибути, створені під час побудови вікна (не методи класу):
+        # ``self.terminal.interrupt()`` цілком законний, хоч ``terminal``
+        # з'являється лише в ``_build_layout``. Без цього тест «падав» на
+        # робочій клавіші й показував дефект там, де його немає.
+        instance_attrs = {
+            match.group(1)
+            for match in re.finditer(r"self\.([a-z_][a-z0-9_]{2,})\s*=", source)
+        }
         start = source.index("def _wire_shortcuts")
         end = source.index("def _wrap(", start)
         block = source[start:end]
         missing = []
         for match in re.finditer(r"self\.([a-z_][a-z0-9_]{2,})", block):
             name = match.group(1)
+            if name in instance_attrs:
+                continue
             if name not in available:
                 missing.append(name)
         self.assertEqual(missing, [], f"клавіші ведуть на неіснуючі: {sorted(set(missing))}")
