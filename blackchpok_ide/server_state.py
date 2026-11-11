@@ -195,6 +195,51 @@ def probe_server(base_url: str, *, api_key: str = "",
         state.error = "адреса сервера не задана"
         return state
 
+    # ── Вбудований рушій: це не HTTP-сервер ──────────────────────────────
+    # ``native://blackchpok`` живе в ЦЬОМУ процесі: у нього немає ні порту,
+    # ні ``/health``, ні ``/props``. Раніше функція все одно робила HTTP-
+    # запити, діставала «немає відповіді» й показувала робочий рушій як
+    # офлайн (саме через це ``tools/check_live_lazy.py`` мовчки
+    # пропускав усі перевірки). Тепер питаємо сам рушій.
+    from . import runtime
+
+    if runtime.embedded_url(state.base_url):
+        try:
+            from .native import bridge
+
+            engine = bridge.runtime().engine
+            state.reachable = True
+            state.running = True
+            loaded = str(getattr(engine, "model_path", "") or "")
+            state.model_loaded = Path(loaded).stem if loaded else ""
+            # Вікно беремо з САМОГО рушія. ``engine.context`` — об'єкт
+            # контексту, тому питаємо його ``n_ctx``; ``context_actual``
+            # лишаємо як запасне джерело (воно є в інших версіях).
+            context = 0
+            holder = getattr(engine, "context", None)
+            for attribute in ("n_ctx", "context_actual", "n_ctx_train"):
+                try:
+                    value = getattr(holder, attribute, None)
+                    if value is None:
+                        value = getattr(engine, attribute, None)
+                except Exception:  # noqa: BLE001 - читання не має падати
+                    value = None
+                try:
+                    context = int(value or 0)
+                except (TypeError, ValueError):
+                    context = 0
+                if context > 0:
+                    break
+            state.context = context
+            state.context_source = "вбудований рушій"
+            # Вікно взяте з рушія — це виміряний факт, не оцінка.
+            state.estimated = context <= 0
+            if not getattr(engine, "loaded", False):
+                state.error = "рушій готовий, модель не завантажена"
+        except Exception as exc:  # noqa: BLE001 - стан не має падати
+            state.error = f"вбудований рушій недоступний: {exc}"
+        return state
+
     origin = _origin(state.base_url)
     # 1. Живий? ``/health`` відкритий навіть із ``--api-key``.
     healthy, _payload = _get_json(f"{origin}/health", timeout=timeout)

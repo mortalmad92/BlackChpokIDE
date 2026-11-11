@@ -24,9 +24,30 @@ for stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):
         pass
 
-BASE = "http://127.0.0.1:8080/v1"
-API_KEY = "local"
-MODEL = "qwen25vl3b"
+#: Адреса й модель беруться з РЕАЛЬНИХ налаштувань, а не з жорсткого
+#: порту 8080. Доти перевірка завжди писала «сервер не відповідає» на
+#: робочій конфігурації зі вбудованим рушієм (``native://blackchpok``) —
+#: тобто мовчки не перевіряла НІЧОГО й повертала код 0.
+from blackchpok_ide.config import Settings as _Settings
+
+_llm = _Settings.load().llm
+BASE = str(getattr(_llm, "base_url", "") or "").rstrip("/")
+API_KEY = str(getattr(_llm, "api_key", "") or "local")
+MODEL = str(getattr(_llm, "model", "") or "")
+if not MODEL:
+    # Порожня назва для вбудованого рушія — нормальний стан: рушій бере
+    # модель із диска. Питаємо його, яку саме.
+    try:
+        from blackchpok_ide import runtime as _runtime
+
+        if _runtime.embedded_url(BASE):
+            from blackchpok_ide.native import bridge as _bridge
+
+            entries = _bridge.runtime().manager.local_models()
+            if entries:
+                MODEL = max(entries, key=lambda item: item.size_gb).key
+    except Exception:  # noqa: BLE001 - без моделі перевірка просто пропустить
+        pass
 
 failures = 0
 
@@ -49,9 +70,12 @@ def scenario_a_state() -> None:
           state.model_loaded)
     check("контекст узято з сервера", state.context > 0,
           f"{state.context} ({state.context_source})")
-    check("джерело контексту — /props", "props" in state.context_source,
+    check("джерело контексту назване", bool(state.context_source),
           state.context_source)
-    check("порт визначено", state.port == 8080, str(state.port))
+    from blackchpok_ide import runtime as _rt
+    check("адресу визначено",
+          state.port > 0 or _rt.embedded_url(BASE),
+          f"порт {state.port}" if state.port else "вбудований рушій")
 
     # Реальний запит до моделі.
     from blackchpok_ide.llm_client import LLMClient
