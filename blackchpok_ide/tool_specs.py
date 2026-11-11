@@ -374,6 +374,19 @@ def spec_for(schema: Mapping[str, Any]) -> ToolSpec:
     category = str(note.get("category") or ("mcp" if name.startswith(("mcp__", "router:"))
                                             else "files"))
     failures = note.get("failure_modes") or ()
+    # ``retries`` і ``timeout`` приходять із таблиці описів інструментів.
+    # Якщо там помилка в числі ("3-5", "", None), ``int()``/``float()``
+    # кидали б ``ValueError`` і знищували ВЕСЬ реєстр специфікацій — а без
+    # нього агент не знає жодного інструмента. Тому беремо безпечні
+    # значення за замовчуванням.
+    try:
+        retries_value = int(note.get("retries", DEFAULT_RETRIES))
+    except (TypeError, ValueError):
+        retries_value = DEFAULT_RETRIES
+    try:
+        timeout_value = float(note.get("timeout") or DEFAULT_TIMEOUT)
+    except (TypeError, ValueError):
+        timeout_value = DEFAULT_TIMEOUT
     return ToolSpec(
         name=name,
         purpose=purpose,
@@ -383,8 +396,8 @@ def spec_for(schema: Mapping[str, Any]) -> ToolSpec:
         required=required_tuple,
         side_effects=str(note.get("side_effects") or ""),
         failure_modes=tuple(str(item) for item in failures),
-        timeout=float(note.get("timeout") or DEFAULT_TIMEOUT),
-        retries=int(note.get("retries", DEFAULT_RETRIES)),
+        timeout=timeout_value,
+        retries=retries_value,
         parallel_safe=bool(note.get("parallel_safe", True)),
         example=dict(note.get("example") or {}),
         output=str(note.get("output") or _default_output(name, risk)),

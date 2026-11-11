@@ -2670,7 +2670,16 @@ class ChatPanel(tk.Frame):
             line = int(widget.index(f"@{event.x},{event.y}").split(".")[0])
         except (tk.TclError, ValueError):
             return None
-        headers = [int(index.split(".")[0]) for index in widget.tag_ranges("md_code_header")]
+        # ``tag_ranges`` повертає пари «початок-кінець», і Tk іноді віддає
+        # індекси без крапки. Раніше ``int(index.split(".")[0])`` на такому
+        # значенні кидав ``ValueError`` просто в обробнику кліку — блок
+        # коду не копіювався, і жодної підказки користувач не бачив.
+        headers: list[int] = []
+        for index in widget.tag_ranges("md_code_header"):
+            try:
+                headers.append(int(str(index).split(".")[0]))
+            except (TypeError, ValueError):
+                continue
         current: Optional[int] = None
         for order, start in enumerate(headers):
             if start <= line:
