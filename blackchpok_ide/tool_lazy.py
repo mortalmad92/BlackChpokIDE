@@ -570,6 +570,32 @@ class LazyToolRouter:
             f"{CONTROL_RUN}; щоб знайти потрібний — {CONTROL_FIND}.")
         return "\n".join(lines)
 
+    def compact_text(self) -> str:
+        """Найкоротший реєстр: назви того, чого НЕМАЄ серед показаних схем.
+
+        Повний ``catalog_text`` (з описами) — це ≈2000 токенів у КОЖНОМУ
+        кроці. Для інструментів, чиї схеми модель уже бачить, ці описи
+        дублюють саму схему; для решти достатньо назви, бо призначення
+        знаходиться через ``find_tools`` (він шукає і за описом).
+
+        Замір на локальній моделі: повний реєстр 1993 ток. → цей 194 ток.
+        Економія йде в історію розмови, а не «в нікуди».
+        """
+        if not self._cards:
+            return ""
+        visible = {_schema_name(schema) for schema in self.eager_schemas()}
+        hidden = [card for card in self._cards if card.name not in visible]
+        if not hidden:
+            return ""
+        lines = ["Інші інструменти (повна схема — через "
+                 f"{CONTROL_LOAD}, виконати за назвою — {CONTROL_RUN}):"]
+        for tier in sorted({card.tier for card in hidden}):
+            names = [card.name for card in hidden if card.tier == tier]
+            lines.append(f"{TIER_TITLES.get(tier, 'інші')}: " + ", ".join(names))
+        lines.append(f"Усього інструментів: {len(self._cards)}; пошук за словами — "
+                     f"{CONTROL_FIND}.")
+        return "\n".join(lines)
+
     # ── стан для інтерфейсу ─────────────────────────────────────────────────
     def stats(self) -> dict[str, Any]:
         """Реальні показники реєстру (без декоративних чисел)."""

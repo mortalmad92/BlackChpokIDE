@@ -1410,8 +1410,27 @@ class AgentRunner:
             except Exception:  # noqa: BLE001
                 has_mcp = False
         parts: list[str] = []
+        # Схеми рахуємо ПЕРШИМИ: від них залежить, чи потрібен текстовий
+        # каталог (він же дублює їхні описи). Раніше ``_specs`` скидались
+        # нижче, і перевірка завжди бачила порожнечу.
+        self._specs = {}
+        self._observations = []
         if self.tools_enabled:
-            parts.append(tool_router.catalog_text(include_mcp=has_mcp))
+            try:
+                self.tool_schemas()
+            except Exception:  # noqa: BLE001 - вибір схем не має ламати старт
+                LOG.debug("Схеми перед стартом не пораховано", exc_info=True)
+        if self.tools_enabled:
+            # ── Каталог дій — ЛИШЕ коли схеми не передаються ────────────────
+            # ``catalog_text`` — це 5261 символ (≈2520 токенів) описів тих
+            # самих інструментів, які модель УЖЕ бачить повними JSON-схемами.
+            # На вікні 8192 це дублювання з'їдало понад 30% контексту: у
+            # живому прогоні «система» важила 6158 токенів із 8192, і модель
+            # починала повторювати той самий виклик замість роботи.
+            # Каталог лишаємо тільки як заміну схемам (вузьке вікно, лінивий
+            # режим без специфікацій) — там він справді потрібен.
+            if not self._schemas_are_visible():
+                parts.append(tool_router.catalog_text(include_mcp=has_mcp))
             # ── Компактний реєстр інструментів ─────────────────────────────
             # Коли схем забагато, повні JSON-схеми вже не передаються (див.
             # ``tool_schemas``), і моделі потрібен перелік того, що взагалі
@@ -1451,11 +1470,6 @@ class AgentRunner:
             parts.append(context_block)
         self.session.action_prompt = "\n\n".join([*parts, rule])
         self.session.skill_prompt = ""
-        #: Схеми для цього ходу (потрібні, щоб знати, які інструменти є).
-        self._specs = {}
-        self._observations = []
-        if self.tools_enabled:
-            self.tool_schemas()
         # ── Профіль моделі ─────────────────────────────────────────────────
         self.model_caps = model_profile.profile_for(
             self.llm_settings.model,
@@ -1753,13 +1767,18 @@ class AgentRunner:
 
         У повному режимі реєстр не потрібен: модель уже бачить повні схеми,
         і другий перелік лише дублював би інформацію та з'їдав токени.
+
+        У лінивому режимі беремо НАЙКОРОТШИЙ варіант (``compact_text``):
+        назви без описів. Описи інструментів уже є в схемах, які модель
+        бачить, а для решти назви досить — призначення знаходиться через
+        ``find_tools``, який шукає і за описом.
         """
         if not self.lazy_mode():
             return ""
         router = getattr(self, "_lazy_router", None)
         if router is None:
             return ""
-        return router.catalog_text()
+        return router.compact_text()
 
     def _available_schemas(self) -> list[dict[str, Any]]:
         """УСІ схеми, які існують у системі: без обрізання й без лінивості.
@@ -1905,6 +1924,27 @@ class AgentRunner:
                                              emit=self._emit)
             self._lazy_router = router
         return router
+
+    def _schemas_are_visible(self) -> bool:
+        """Чи модель бачить повні схеми інструментів цього ходу.
+
+        Коли бачить — текстовий каталог зайвий (це те саме, лише словами),
+        і його місце в контексті марне. Коли ні (лінивий режим без
+        специфікацій або вузьке вікно) — каталог єдине джерело назв.
+
+        Перевірка дешева: беремо те, що вже вирішено в ``tool_schemas()``,
+        без жодного запиту до мережі.
+        """
+        try:
+            if not self.tools_enabled:
+                return False
+            if getattr(self, "_schemas_lazy", False):
+                # Лінивий режим: повних схем мало, але є реєстр назв —
+                # каталог із описами тут не потрібен, реєстр уже сказав що є.
+                return True
+            return bool(self._specs)
+        except Exception:  # noqa: BLE001 - не має ламати старт
+            return False
 
     def _eager_tool_limit(self) -> int:
         """Скільки інструментів показати повністю за поточного вікна.

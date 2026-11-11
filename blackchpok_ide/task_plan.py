@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
+from . import path_scan
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Наміри: що саме людина просить зробити
 # ─────────────────────────────────────────────────────────────────────────────
@@ -277,11 +279,22 @@ class Understanding:
         return INTENT_LABELS.get(self.primary, "Розмова")
 
 
-_PATH_RE = re.compile(
-    r"((?:[\w.\-]+[\\/])*[\w.\-]+\.(?:py|pyi|js|ts|tsx|jsx|json|md|txt|html|css|"
-    r"yml|yaml|toml|ini|sql|ps1|bat|cmd|cfg|cpp|c|h|go|rs|java|cs))",
-    re.IGNORECASE,
-)
+#: Пошук згадок файлів ВИНЕСЕНО в :mod:`path_scan` — і причина поважна.
+#:
+#: Тут стояла регулярка ``((?:[\w.\-]+[\\/])*[\w.\-]+\.(?:py|js|…))``. На
+#: короткій фразі вона непомітна, але рушій regex пробує КОЖНУ стартову
+#: позицію, і кожна невдала спроба сканує решту рядка — тобто квадратичний
+#: час. Заміряно на вставленому тексті без шляху:
+#:
+#:     1 000 символів —    13 мс
+#:     4 000 —            224 мс
+#:     8 000 —            896 мс     ← інтерфейс уже «замислюється»
+#:    20 000 —          5 136 мс
+#:    50 000 —         32 453 мс     ← повне зависання на пів хвилини
+#:
+#: Тепер час лінійний (50 000 символів — 0.6 мс), бо шляхи шукаються одним
+#: проходом за межами слів. Саму регулярку прибрано, щоб її не повернули
+#: випадково: поведінку перевіряють ``path_scan.find_paths`` і тести.
 _QUOTED = re.compile(r"[«\"'`]([^»\"'`]{2,})[»\"'`]")
 _SENTENCE_SPLIT = re.compile(r"[.!?]+\s+|\n+")
 
@@ -359,7 +372,11 @@ def understand(text: str) -> Understanding:
 
     # Об'єкти збираємо ЗАВЖДИ: навіть коли дії не розпізнано, названі
     # файли й символи в лапках потрібні (напр. для підказки «який файл?»).
-    result.paths = [m.group(1).replace("\\", "/") for m in _PATH_RE.finditer(clean)]
+    #
+    # Пошук шляхів — ЛІНІЙНИЙ (:mod:`path_scan`), а не регулярка. Стара
+    # регулярка на вставленому тексті без шляху працювала квадратично:
+    # 8 000 символів — 0.9 с, 50 000 — 32 с. Для інтерфейсу це зависання.
+    result.paths = path_scan.find_paths(clean)
     result.quoted = [m.group(1).strip() for m in _QUOTED.finditer(clean)]
     result.demands = _demands(low)
     result.sentences = max(1, len([s for s in _SENTENCE_SPLIT.split(clean) if s.strip()]))
@@ -768,13 +785,12 @@ def _split_by_files(text: str, *, limit: int = MAX_STAGES) -> list[str]:
     Хвіст на кшталт «, а в» перед наступним файлом відрізаємо: інакше
     етап читався б як «calc.py функцію множення, а в».
     """
-    matches = list(_PATH_RE.finditer(text))
+    matches = list(path_scan.find_path_matches(text))
     if len(matches) < 2:
         return []
     pieces: list[str] = []
-    for index, match in enumerate(matches):
-        start = match.start()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+    for index, (start, _end, _name) in enumerate(matches):
+        end = matches[index + 1][0] if index + 1 < len(matches) else len(text)
         piece = text[start:end]
         # Прибираємо сполучники й пунктуацію, що лишились на стику шматків.
         piece = re.sub(r"[,\s;—\-]*(?:а|й|та|і|потім|далі)\s+(?:в|у|на)?\s*$",
