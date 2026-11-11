@@ -33,13 +33,17 @@ BINARY_EXT = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".exe", ".dll", ".pyc", "
 
 
 def icon_for(path: Path) -> str:
+    # Публічні помічники дерева кличе не лише воно саме: ``chat_panel`` і
+    # тести передають рядок. Без приведення ``path.is_dir()`` падає
+    # ``AttributeError``, і список файлів лишається без іконок.
+    path = Path(path)
     if path.is_dir():
         return "📂"
     return FILE_ICONS.get(path.suffix.lower(), "📄")
 
 
 def is_binary(path: Path) -> bool:
-    return path.suffix.lower() in BINARY_EXT
+    return Path(path).suffix.lower() in BINARY_EXT
 
 
 class FileTree(ttk.Frame):
@@ -127,6 +131,8 @@ class FileTree(ttk.Frame):
 
     # ── корінь ─────────────────────────────────────────────────────────────
     def set_root(self, folder: Path) -> None:
+        # Приймає й рядок: теку передає палітра команд і налаштування.
+        folder = Path(folder)
         self.root_dir = folder
         self.title.configure(text=f"ПРОВІДНИК · {folder.name.upper() or folder}")
         self.refresh()
@@ -188,6 +194,7 @@ class FileTree(ttk.Frame):
         self.open_path(path)
 
     def open_path(self, path: Path) -> None:
+        path = Path(path)
         if is_binary(path):
             self._notify(f"Бінарний файл не відкриваю: {path.name}")
             return

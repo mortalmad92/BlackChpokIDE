@@ -94,8 +94,13 @@ class Layout:
 
 
 def load(path: Path | None = None) -> Layout:
-    """Прочитати збережену розкладку (порожня, якщо файла немає)."""
-    target = path or layout_path()
+    """Прочитати збережену розкладку (порожня, якщо файла немає).
+
+    ``path`` приймає й рядок: його передають тести й палітра команд, а
+    ``target.read_text()`` на рядку падає ``AttributeError``, і розкладка
+    мовчки «не знаходилась» (перевірено ``tools/probe_module_str_args.py``).
+    """
+    target = Path(path) if path else layout_path()
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -105,7 +110,7 @@ def load(path: Path | None = None) -> Layout:
 
 def save(layout: Layout, path: Path | None = None) -> None:
     """Записати розкладку (тихо, без падіння на помилках диска)."""
-    target = path or layout_path()
+    target = Path(path) if path else layout_path()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         temp = target.with_suffix(".tmp")

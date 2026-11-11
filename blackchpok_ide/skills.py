@@ -85,6 +85,9 @@ def parse_skill(text: str, *, fallback_name: str = "") -> tuple[str, str, str]:
 
 
 def load_skill(path: Path) -> Optional[Skill]:
+    # Шлях приходить рядком від панелі скілів і з налаштувань; без
+    # приведення ``path.read_text()`` падав ``AttributeError``.
+    path = Path(path)
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
