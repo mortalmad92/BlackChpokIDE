@@ -5074,9 +5074,19 @@ class BlackChpokIDE(tk.Tk):
         if not answer.strip():
             return False, "порожня відповідь"
         # Шукаємо згадані шляхи з розширенням файлу.
+        #
+        # Раніше тут був ЖОРСТКИЙ список розширень (``js|json|html|css|ejs|
+        # env|db|md``) — і в ньому не було ``py``. Тобто відповідь «створив
+        # greeting.py» вважалась такою, що не згадує файлів, і крок
+        # зараховувався навіть тоді, коли файлу на диску не було. Тепер
+        # беремо будь-яке розширення, а службові слова відсіюємо нижче.
         mentioned = set()
-        for match in re.finditer(r"[\w./\\-]+\.(?:js|json|html|css|ejs|env|db|md)\b", answer):
-            mentioned.add(match.group(0).replace("/", "\\").lstrip(".\\"))
+        for match in re.finditer(r"[\w./\\-]+\.[A-Za-z][A-Za-z0-9]{0,7}\b", answer):
+            name = match.group(0).replace("/", "\\").lstrip(".\\")
+            # ``1.5``, ``v1.2``, ``3.14`` — це числа, а не файли.
+            if re.fullmatch(r"[\d.\\-]+", name):
+                continue
+            mentioned.add(name)
         mentioned = {name for name in mentioned if len(name) > 3}
         if not mentioned:
             # Файлів не згадано — задача була не про створення файлу.
