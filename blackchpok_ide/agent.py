@@ -2504,7 +2504,22 @@ class AgentRunner:
             return False
         text = str(getattr(intent, "text", "") or "")
         # Довга фраза навіть із «привіт» усередині — це вже завдання.
-        return len(text) <= 200
+        if len(text) > 200:
+            return False
+        # ── Роутер бачить конкретну дію — це НЕ балачка ────────────────────
+        # «Зупини програму», «перейменуй функцію foo», «відкоти останню
+        # зміну» класифікувались як `converse` (бо в них немає слів на
+        # кшталт «створи» чи «виправ»), і розмова забирала хід: агент
+        # відповідав словами, а програма не зупинялась. Якщо роутер дав
+        # хоч одну впевнену підказку — ідемо робочим шляхом.
+        try:
+            from . import tool_router as _router
+
+            if _router.confident(text):
+                return False
+        except Exception:  # noqa: BLE001 - роутер необов'язковий
+            pass
+        return True
 
     def _chat_only(self, client: LLMClient) -> None:
         """Один хід без інструментів: звичайна відповідь на репліку.
