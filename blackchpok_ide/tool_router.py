@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from . import path_scan
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Модель результату
 # ─────────────────────────────────────────────────────────────────────────────
@@ -181,17 +183,18 @@ def catalog_text(include_mcp: bool = True) -> str:
 # Власні правила IDE
 # ───────────────────────────────────────────────────────────────────────────────
 
-_PATH_RE = re.compile(
-    r"((?:[\w.\-]+[\\/])*[\w.\-]+\.(?:py|pyi|js|ts|tsx|jsx|json|md|txt|html|css|"
-    r"yml|yaml|toml|ini|sql|ps1|bat|cmd|cfg|cpp|c|h|go|rs|java|cs))",
-    re.IGNORECASE,
-)
+#: Пошук згадок файлів ВИНЕСЕНО в :mod:`path_scan`.
+#:
+#: Стара регулярка ``((?:[\w.\-]+[\\/])*[\w.\-]+\.(?:py|js|…))`` на довгому
+#: тексті без шляху працювала квадратично (50 000 символів — 32 с, тобто
+#: зависання інтерфейсу). Деталі й заміри — у докстрінгу ``path_scan``.
+_PATH_RE = None            # залишено як нагадування; НЕ використовується
 
 _QUOTED = re.compile(r"[«\"'`]([^»\"'`]{2,})[»\"'`]")
 
 #: Назва ТЕКИ у фразі: «у теці blackchpok_ide», «в папці src», «в каталозі lib».
 #:
-#: Навіщо окремо. ``_PATH_RE`` шукає лише імена з розширенням, тому «скільки
+#: Навіщо окремо. Пошук шляхів бачить лише імена з розширенням, тому «скільки
 #: файлів .py у теці blackchpok_ide» давало підказку ``list_dir`` БЕЗ ``path``
 #: — і агент перелічував КОРІНЬ проєкту замість названої теки. Живий прогін:
 #: користувач спитав про теку ``blackchpok_ide``, а відповідь була
@@ -242,10 +245,8 @@ def _folder_in(text: str) -> str:
 
 
 def _path_in(text: str) -> str:
-    match = _PATH_RE.search(text or "")
-    if not match:
-        return ""
-    return match.group(1).strip("`\"'").replace("\\", "/")
+    """Перший згаданий файл. Пошук лінійний — див. :mod:`path_scan`."""
+    return path_scan.first_path(text or "")
 
 
 def _quoted(text: str) -> str:
@@ -259,13 +260,11 @@ def _paths_in(text: str) -> list[str]:
     Потрібно для фраз із кількома файлами: «додай у calc.py множення, а в
     notes.txt запиши». Раніше роутер бачив лише перший, і агент виконував
     половину прохання.
+
+    Пошук лінійний (:mod:`path_scan`): стара регулярка на довгому тексті
+    без шляху працювала квадратично й підвішувала інтерфейс.
     """
-    seen: list[str] = []
-    for match in _PATH_RE.finditer(text or ""):
-        name = match.group(1).strip("`\"'").replace("\\", "/")
-        if name and name not in seen:
-            seen.append(name)
-    return seen
+    return path_scan.find_paths(text or "")
 
 
 def _has(low: str, *needles: str) -> bool:
@@ -452,8 +451,10 @@ def _read_rules(phrase: str) -> list[ToolHint]:
               "запусти сайт", "запусти застосунок", "запусти програму",
               "підніми сервер", "start server", "start app"):
         hints.append(ToolHint("app_start", {}, HIGH, "просили запустити застосунок"))
-    elif _has(low, "зупини сервер", "зупини проєкт", "зупини сайт",
-              "зупини застосунок", "stop server", "stop app"):
+    elif _has(low, "зупини сервер", "зупини проєкт", "зупини проект", "зупини сайт",
+              "зупини застосунок", "зупини застосунок", "зупини програму",
+              "зупини додаток", "закрий програму", "закрий застосунок",
+              "зупини агент", "стоп програму", "stop server", "stop app"):
         hints.append(ToolHint("app_stop", {}, HIGH, "просили зупинити застосунок"))
     elif _has(low, "запусти", "виконай", "run "):
         command = _command_after(low)
@@ -486,7 +487,9 @@ def _read_rules(phrase: str) -> list[ToolHint]:
     # правило правки мусить мати свій шанс раніше за нього.
     if path and _has(low, "додай", "додати", "добав", "встав", "вставити",
                      "зміни", "змінит", "поміняй", "заміни", "перероби",
-                     "виправ", "онови", "прибери", "перепиши", "зроби в"):
+                     "виправ", "онови", "прибери", "перепиши", "зроби в",
+                     "перейменуй", "переименуй", "rename", "видали функцію",
+                     "вилучи", "замінити назву"):
         # Підказка — лише «прочитати файл»: модель сама має побачити код і
         # взяти точний фрагмент. Цього досить, щоб агент почав діяти, а не
         # говорити; сама правка йде через edit_file з її ж аргументами.
@@ -499,6 +502,22 @@ def _read_rules(phrase: str) -> list[ToolHint]:
                                   "спершу прочитати файл перед правкою"))
     elif path and _has(low, "прочитай", "покажи", "відкрий", "read", "що робить"):
         hints.append(ToolHint("read_file", {"path": path}, HIGH, "просили файл"))
+    elif (not path and _has(low, "перейменуй", "переименуй", "rename")
+          and _has(low, "функц", "клас", "змінн", "метод", "параметр")):
+        # «Перейменуй функцію foo в bar» — файл не названо, працюємо з
+        # відкритим. Раніше роутер не давав жодної підказки, і агент
+        # відповідав словами замість правки.
+        current = _quoted(phrase)
+        if not current:
+            # Без лапок: беремо ідентифікатор після слова-типу («функцію foo»).
+            found = re.search(
+                r"(?:функцію|функції|клас|змінну|змінної|метод|параметр|"
+                r"function|class|method)\s+([A-Za-z_]\w*)", phrase, re.I)
+            if found:
+                current = found.group(1)
+        if current:
+            hints.append(ToolHint("search_text", {"query": current}, HIGH,
+                                  "знайти всі місця перед перейменуванням"))
     elif path and not hints:
         hints.append(ToolHint("read_file", {"path": path}, MEDIUM, "названо файл"))
     elif (not path and _has(low, "що в цьому файлі", "що в файлі", "що тут",
