@@ -328,7 +328,7 @@ class Orchestrator:
         call_id: str = "",
     ) -> Observation:
         """Виконати один виклик: перевірити, виконати, повторити, пояснити."""
-        data = dict(arguments or {})
+        data = tool_specs.rename_aliases(arguments)
         with self._lock:
             self.calls += 1
         spec = self._specs.get(name)

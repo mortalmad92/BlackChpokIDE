@@ -504,6 +504,54 @@ def _matches_type(value: Any, expected: str) -> bool:
     return isinstance(value, python_type)
 
 
+#: Як моделі НАСПРАВДІ називають параметри. Побачено в живих прогонах:
+#: ``run_command(exec="pytest test_greeting.py")`` — модель узяла ім'я зі
+#: стороннього API, і виклик відкидався як «обов'язковий аргумент
+#: відсутній», хоча всередині була готова команда. Перейменування дешевше
+#: за відмову: користувач чекає роботи, а не виправлення синтаксису.
+ARG_ALIASES: dict[str, str] = {
+    "exec": "command",
+    "cmd": "command",
+    "shell": "command",
+    "script": "command",
+    "file_path": "path",
+    "filepath": "path",
+    "filename": "path",
+    "file": "path",
+    "target": "path",
+    "dirname": "path",
+    "directory": "path",
+    "folder": "path",
+    "query_text": "query",
+    "search": "query",
+    "needle": "query",
+    "text": "content",
+    "body": "content",
+    "data": "content",
+    "old": "old_string",
+    "old_text": "old_string",
+    "new": "new_string",
+    "new_text": "new_string",
+    "pattern_glob": "pattern",
+    "glob": "pattern",
+    "url_address": "url",
+    "link": "url",
+}
+
+
+def rename_aliases(arguments: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Привести знайомі псевдоніми параметрів до імен зі схеми.
+
+    Наявний ключ завжди перемагає псевдонім: якщо модель передала і
+    ``command``, і ``exec``, вважаємо правильний.
+    """
+    data = dict(arguments or {})
+    for alias, proper in ARG_ALIASES.items():
+        if alias in data and proper not in data:
+            data[proper] = data.pop(alias)
+    return data
+
+
 def arg_issues(spec: ToolSpec, arguments: Mapping[str, Any] | None) -> list[ArgIssue]:
     """Перевірити аргументи за схемою інструмента.
 
@@ -513,7 +561,7 @@ def arg_issues(spec: ToolSpec, arguments: Mapping[str, Any] | None) -> list[ArgI
     інакше один зайвий ключ (``file_path`` замість ``path``) відкидав би
     цілком робочий виклик.
     """
-    data = dict(arguments or {})
+    data = rename_aliases(arguments)
     issues: list[ArgIssue] = []
     for name in spec.required:
         if name not in data or data[name] in (None, "", [], {}):
