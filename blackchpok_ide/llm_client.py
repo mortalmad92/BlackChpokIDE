@@ -948,6 +948,7 @@ class LLMClient:
         on_text: Callable[[str], None] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        known_tools: Iterable[str] | None = None,
     ) -> ChatResult:
         """Потокова відповідь власного рушія (без SSE — просто callback'и)."""
         from .native import bridge
@@ -1331,7 +1332,8 @@ class LLMClient:
             return self._stream_embedded(
                 messages, tools=tools, temperature=temperature,
                 max_tokens=max_tokens, on_text=on_text,
-                on_reasoning=on_reasoning, should_stop=should_stop)
+                on_reasoning=on_reasoning, should_stop=should_stop,
+                known_tools=known_tools)
         if self.style == provider_adapters.ANTHROPIC:
             return self._stream_anthropic(
                 messages, tools=tools, temperature=temperature,

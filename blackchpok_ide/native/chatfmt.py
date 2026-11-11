@@ -303,6 +303,23 @@ def _balanced_objects(text: str) -> list[str]:
     return found
 
 
+def _repair_json(text: str) -> str:
+    """Полагодити типові вади JSON, які робить локальна модель.
+
+    Головна й найчастіша: екранування апострофа (``\\'``). У JSON апостроф
+    НЕ потребує екранування, а модель звикла до Python і пише
+    ``"content": "input(\\'ім'я\\')"``. Такий текст непарситься, виклик
+    відкидається, і файл не створюється — хоча модель усе зробила правильно
+    (заміряно: «створи файл hello.py…» → порожня тека, у чаті сирий JSON).
+
+    Прибираємо РІВНО ТЕ, ЩО ЗАВАЖАЄ, і не чіпаємо решту: лагодження має
+    бути безпечним, інакше можна зіпсувати коректний вміст файлу.
+    """
+    if "\\'" not in text:
+        return text
+    return text.replace("\\'", "'")
+
+
 def extract_tool_calls(text: str, *, known: set[str] | None = None) -> list[ParsedToolCall]:
     """Знайти виклики інструментів у текстовій відповіді моделі.
 
@@ -329,10 +346,15 @@ def extract_tool_calls(text: str, *, known: set[str] | None = None) -> list[Pars
         candidates.extend(json.dumps(item, ensure_ascii=False) for item in parsed)
     calls: list[ParsedToolCall] = []
     for candidate in candidates:
+        payload = None
         try:
             payload = json.loads(candidate)
         except json.JSONDecodeError:
-            continue
+            # Друга спроба — після лагодження типового екранування.
+            try:
+                payload = json.loads(_repair_json(candidate))
+            except json.JSONDecodeError:
+                continue
         items = payload if isinstance(payload, list) else [payload]
         for item in items:
             call = _call_from_object(item)

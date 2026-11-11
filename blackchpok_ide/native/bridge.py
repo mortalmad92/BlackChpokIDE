@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from .api import NativeRuntime, RuntimeBusy
 from .engine import EngineError
