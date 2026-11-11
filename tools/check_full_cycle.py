@@ -88,7 +88,16 @@ def main() -> int:
 
         # 1. Модель доступна й обрана
         check("модель вибрана", bool(app.settings.llm.model), app.settings.llm.model)
-        check("сервер моделі відповідає", app._server_alive())
+        alive = app._server_alive(fresh=True)
+        # Вбудований рушій вантажить модель на ПЕРШИЙ запит: поки запиту не
+        # було, «модель завантажена» дорівнює False, і це не дефект. Тому
+        # перевіряємо саме готовність відповісти: або модель у пам'яті, або
+        # рушій встановлений і підніме її на вимогу.
+        import blackchpok_ide.runtime as _rt
+        ready = bool(alive) or (_rt.embedded_url(app.settings.llm.base_url)
+                                and _rt.embedded_engine_available())
+        check("модель готова відповідати", ready,
+              "завантажена" if alive else "рушій підніме на перший запит")
         model, kind = app._model_summary()
         check("панель контексту бачить модель", model != "не вибрана", f"{model} · {kind}")
 
