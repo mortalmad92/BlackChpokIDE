@@ -2479,11 +2479,20 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Моделі для власного рушія недоступні: %s", exc)
             return ""
         wanted = str(getattr(self.settings.engine, "native_model", "") or "")
+        # ── Назва моделі могла зберегтись у ``llm.model`` ──────────────────
+        # Коли користувач обирав модель у хабі, назва писалась у
+        # ``llm.model``, а ``engine.native_model`` лишався порожнім. Через
+        # це автозапуск брав «найбільший файл», а не вибрану модель — а
+        # якщо назва була втрачена, шапка показувала «модель не вибрана»
+        # при сімox GGUF-файлах на диску. Тепер враховуємо обидва поля.
+        if not wanted:
+            wanted = str(getattr(self.settings.llm, "model", "") or "")
         chosen = None
         if wanted:
             chosen = next((item for item in entries
                            if item.key == wanted or Path(item.name).name == wanted
-                           or item.path == wanted), None)
+                           or item.path == wanted
+                           or Path(item.path).stem == wanted), None)
         if chosen is None and entries:
             chosen = max(entries, key=lambda item: item.size_gb)
         if chosen is None:

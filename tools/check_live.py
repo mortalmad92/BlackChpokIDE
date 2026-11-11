@@ -65,12 +65,15 @@ def _utf8() -> None:
             pass
 
 
-def _model_ready() -> bool:
+def _model_ready() -> tuple[bool, str]:
     """Чи є запущений сервер моделі — без нього живі перевірки не мають сенсу.
 
     Перевіряємо саме ``/v1/models`` З КЛЮЧЕМ: керований llama-server
     віддає 401 без ``Authorization``, і без ключа перевірка хибно казала
     «модель не відповідає», хоч сервер працює.
+
+    Повертає ``(готово, причина)``: причина потрібна, щоб пропуск живих
+    перевірок не виглядав як «усе гаразд».
     """
     import json
     import urllib.request
@@ -80,6 +83,41 @@ def _model_ready() -> bool:
 
         llm = Settings.load().llm
         base = str(llm.base_url or "").rstrip("/")
+        # ── Вбудований рушій: HTTP-перевірки не існує ─────────────────────
+        # ``native://blackchpok`` — не адреса в мережі: запит на
+        # ``native://blackchpok/v1/models`` не може вдатись у принципі.
+        # Раніше через це ВСІ живі перевірки мовчки пропускались, хоч
+        # вбудований рушій відповідав (перевірено: модель складала план і
+        # створювала файли).
+        from blackchpok_ide import runtime
+
+        if runtime.embedded_url(base):
+            if runtime.embedded_model_loaded():
+                return True, f"вбудований рушій, модель у пам'яті: {llm.model}"
+            if not runtime.embedded_engine_available():
+                return False, "вбудованого рушія (llama.dll) не встановлено"
+            # Модель могла бути не вибрана в налаштуваннях (напр. після
+            # скидання) — тоді беремо найбільшу локальну, як це робить
+            # сама IDE при автозапуску. Порожня назва НЕ означає «моделі
+            # немає»: файл лежить на диску.
+            target = str(getattr(llm, "model", "") or "").strip()
+            from blackchpok_ide.native import bridge
+
+            if not target:
+                try:
+                    entries = bridge.runtime().manager.local_models()
+                except Exception:  # noqa: BLE001 - рушій може бути недоступний
+                    entries = []
+                if not entries:
+                    return False, "немає жодного локального GGUF-файлу"
+                target = max(entries, key=lambda item: item.size_gb).key
+            try:
+                bridge.chat([{"role": "user", "content": "Скажи «так»."}],
+                            model=target, max_tokens=4)
+            except Exception as exc:  # noqa: BLE001 - причина йде в звіт
+                return False, f"рушій не відповів на пробний запит: {exc}"
+            return bool(runtime.embedded_model_loaded()), (
+                f"вбудований рушій підняв модель: {target}")
         if not base.endswith("/v1"):
             base = base + "/v1"
         for key in (llm.api_key, "", "local"):
@@ -90,12 +128,12 @@ def _model_ready() -> bool:
                 with urllib.request.urlopen(request, timeout=5) as response:
                     data = json.load(response)
                 if data.get("data"):
-                    return True
+                    return True, f"сервер відповідає: {base}"
             except Exception:  # noqa: BLE001 - пробуємо наступний ключ
                 continue
-        return False
-    except Exception:  # noqa: BLE001
-        return False
+        return False, f"сервер не відповідає: {base}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"налаштування недоступні: {exc}"
 
 
 def main() -> int:
@@ -108,10 +146,13 @@ def main() -> int:
         print("Доступні:", ", ".join(CHECKS))
         return 2
 
-    if not _model_ready():
-        print("Модель не відповідає — живі перевірки пропущено.")
+    ready, reason = _model_ready()
+    if not ready:
+        # Пропуск — це НЕ успіх: інакше «усе пройдено» показувалось тоді,
+        # коли не виконано жодної перевірки.
+        print(f"Модель не відповідає — живі перевірки пропущено ({reason}).")
         print("Запусти локальну модель (Хаб моделей або llama-server) і повтори.")
-        return 0
+        return 3
 
     results: list[tuple[str, bool]] = []
     for name in wanted:

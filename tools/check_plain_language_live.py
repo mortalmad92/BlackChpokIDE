@@ -79,7 +79,12 @@ def main() -> int:
         settings.workspace = str(workspace)
         settings.first_run_done = True
         settings.project_chosen = True
-        settings.engine.auto_start = False
+        # Автозапуск НЕ вимикаємо: перевірка має поводитись як справжній
+        # користувач, який просто відкрив IDE. Раніше тут стояло
+        # ``auto_start = False`` (залишок від часів llama-server на 8080),
+        # і модель не піднімалась узагалі — усі три сценарії падали з
+        # «файлів на диску: []», хоч намір був правильний.
+        settings.engine.auto_start = True
         settings.agent.queue_auto_run = False
         # Достатньо кроків на: читання, запис, перевірку синтаксису й
         # виправлення. Типових 8 мало, коли модель спершу читає файл.

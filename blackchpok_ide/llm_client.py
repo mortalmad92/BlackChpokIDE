@@ -737,6 +737,48 @@ class LLMClient:
             return False, "Сервер відповів, але не показав жодної моделі."
         return True, f"Онлайн. Моделі: {', '.join(models[:6])}"
 
+    def _use_embedded_default_model(self) -> bool:
+        """Підставити модель для вбудованого рушія, якщо назви немає.
+
+        Дефект, який це виправляє (заміряно на справжніх налаштуваннях):
+        ``base_url`` = ``native://blackchpok``, ``model`` = порожній рядок —
+        і КОЖЕН запит падав із «Модель не вибрана», хоч на диску лежало
+        сім GGUF-файлів. Користувач бачив у чаті «модель недоступна» без
+        жодної підказки, що модель треба лише ВИБРАТИ.
+
+        Для ``native://`` назва моделі — це не адреса сервера, а шлях до
+        файлу: рушій цілком здатен узяти завантажену або найбільшу
+        локальну. Тому підставляємо її самі, а вже потім питаємо рушій.
+        Порожню назву НЕ вигадуємо для HTTP-серверів: там вона справді
+        обов'язкова.
+        """
+        if self.style != provider_adapters.EMBEDDED:
+            return False
+        try:
+            from .native import bridge
+
+            runtime = bridge.runtime()
+        except Exception:  # noqa: BLE001 - без рушія підставляти нічого
+            return False
+        loaded = str(getattr(runtime, "model_path", "") or "").strip()
+        if not loaded:
+            try:
+                loaded = str(bridge.pending_model() or "").strip()
+            except Exception:  # noqa: BLE001
+                loaded = ""
+        if not loaded:
+            try:
+                entries = runtime.manager.local_models()
+            except Exception:  # noqa: BLE001
+                entries = []
+            if entries:
+                loaded = max(entries, key=lambda item: item.size_gb).key
+        if not loaded:
+            return False
+        self.model = loaded
+        LOG.info("Модель не була вибрана — вбудований рушій бере «%s»", loaded)
+        return True
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -748,7 +790,7 @@ class LLMClient:
         stream_callback: Callable[[str], None] | None = None,
         known_tools: Iterable[str] | None = None,
     ) -> ChatResult:
-        if not self.model:
+        if not self.model and not self._use_embedded_default_model():
             raise LLMError("Модель не вибрана. Відкрий Налаштування → Модель і натисни «Оновити список».")
         payload: dict[str, Any] = {
             "model": self.model,
@@ -1268,7 +1310,7 @@ class LLMClient:
         прозоро відкочується до звичайного запиту, тож поведінка не
         ламається на старих рушіях.
         """
-        if not self.model:
+        if not self.model and not self._use_embedded_default_model():
             raise LLMError("Модель не вибрана. Відкрий Налаштування → Модель і натисни «Оновити список».")
 
         # ── Не-OpenAI протокол: інший формат стріму ───────────────────────
