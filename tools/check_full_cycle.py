@@ -25,6 +25,21 @@ GOAL = (
 )
 
 
+def _safe(text: str, limit: int = 4000) -> str:
+    """Текст, який гарантовано надрукується в консолі Windows.
+
+    ``print`` у cp1251 падає на символах поза кодуванням («⚠», «✓», емодзі),
+    і тоді інструмент замість діагностики показує ``UnicodeEncodeError``.
+    Замінюємо лише те, що не кодується, решту лишаємо як є.
+    """
+    raw = str(text or "")[:limit]
+    encoding = getattr(sys.stdout, "encoding", "") or "utf-8"
+    try:
+        return raw.encode(encoding, errors="replace").decode(encoding)
+    except (LookupError, UnicodeError):
+        return raw.encode("ascii", errors="replace").decode("ascii")
+
+
 def pump(app, seconds: float) -> None:
     end = time.time() + seconds
     while time.time() < end:
@@ -171,12 +186,16 @@ def main() -> int:
         for task in app.task_queue.tasks:
             if task.status == queue_engine.FAILED:
                 print(f"\n   ЗБІЙ кроку {task.number:02d}: {task.title[:60]}")
-                print(f"      причина: {task.error[:300]}")
+                # ``task.error`` приходить із рушія й може містити символи,
+                # яких немає в cp1251 (напр. «⚠»). Раніше ``print`` падав з
+                # ``UnicodeEncodeError`` ПРОСТО НА ДІАГНОСТИЦІ — тобто
+                # інструмент не показував причину збою, а сам ламався.
+                print(f"      причина: {_safe(task.error)[:300]}")
                 print(f"      файли: {task.files_changed}")
                 print(f"      спроб: {task.attempts}")
                 for entry in task.history[-8:]:
                     print(f"      · [{entry.get('kind')}] "
-                          f"{str(entry.get('text'))[:150]}")
+                          f"{_safe(str(entry.get('text')))[:150]}")
 
         # 4. Результат СПРАВДІ на диску
         files = sorted(p.name for p in workspace.iterdir() if p.is_file())

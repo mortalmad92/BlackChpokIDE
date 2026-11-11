@@ -2293,6 +2293,47 @@ class BlackChpokIDE(tk.Tk):
     def _on_welcome_hint(self, title: str, _prompt: str) -> None:
         self.set_status(f"Підказка: {title}")
 
+    def _ensure_owner_chat(self) -> str:
+        """Гарантувати СПРАВЖНІЙ запис чату й повернути його ``id``.
+
+        Навіщо окремий метод. ``_ensure_chat()`` не годиться: при старті
+        програми чат перебуває в стані «чернетка» (``_pending_chat``), і
+        ``_ensure_chat`` лише ПЕРЕКОНУЄТЬСЯ, що така чернетка є — запис у
+        сховищі не створюється, ``chat_store.active_id`` лишається
+        порожнім.
+
+        Наслідок заміряний у живому прогоні (``check_full_cycle``, чиста
+        тека):
+
+            20:10:29,856  Завдання розбито на 6 кроків
+            20:10:29,922  Створено чат 9012cbb3715c на перше повідомлення
+            готово за 9 с: {'done': 1, 'pending': 5, 'errors': 0}
+
+        Кроки народились із ``chat_id=""`` (сироти), а насос черги їх не
+        прив'язує: ``_adopt_orphan_tasks`` вимагає НЕПОРОЖНІЙ активний чат.
+        Черга ставала назавжди — без помилок, просто тиша.
+
+        Тепер кроки отримують власника до створення: якщо чат — чернетка,
+        вона перетворюється на справжній запис (``_ensure_pending_chat``).
+        """
+        owner = self._active_chat_id()
+        if owner:
+            return owner
+        try:
+            # Чернетка → справжній запис. Саме цей метод створює ``chat.id``
+            # на перше повідомлення, тож порожніх сесій у списку не буде.
+            self._ensure_pending_chat()
+        except Exception:  # noqa: BLE001 - чат не має ламати планування
+            LOG.debug("Запис чату не створено", exc_info=True)
+        owner = self._active_chat_id()
+        if not owner:
+            try:
+                self._ensure_chat()
+            except Exception:  # noqa: BLE001
+                LOG.debug("Чат не створено", exc_info=True)
+            owner = self._active_chat_id()
+        return owner
+
     def _ensure_chat(self) -> None:
         """Гарантувати активний чат — але лише коли є робочий проєкт.
 
@@ -2346,26 +2387,40 @@ class BlackChpokIDE(tk.Tk):
             return 0
 
     def _auto_setup_in_background(self) -> None:
-        """Тихо підготувати проєкт: профіль, скіли, модель і сервер.
+        """Тихо підготувати проєкт: модель, профіль, скіли, сервер.
 
         Користувач запускає програму й одразу отримує робочу модель: якщо
-        локальна модель уже є — IDE сама піднімає сервер; якщо є
+        локальна модель уже є — IDE сама піднімає рушій; якщо є
         налаштований зовнішній сервер — використовує його.
+
+        ── ЧОМУ МОДЕЛЬ ПЕРША, А ПРОФІЛЬ ПОТІМ ────────────────────────────
+        Раніше порядок був зворотний: спершу ``build_plan`` (сканування
+        робочої теки — до 4000 файлів, читання 400 із них по 64 КБ), і лише
+        потім завантаження моделі. Сканування великого проєкту триває
+        десятки секунд, і весь цей час модель НЕ вантажилась.
+
+        ЗАМІРЯНО на справжньому запуску (``ide.log``):
+
+            18:29:15  Стан моделі скинуто: перемикання на qwen2.5-coder…
+            18:30:29  Адреса http://127.0.0.1:8080/v1 не слухає
+            18:30:34  LLM недоступна: …[WinError 10061]
+
+        Між цими рядками НЕМАЄ жодного «Модель завантажена», хоч саме
+        завантаження триває 3.3 с (видно в тому ж лозі о 18:13:21).
+        Користувач бачив «● МОДЕЛЬ ОФЛАЙН» і «локальна модель недоступна»,
+        хоча файл лежить на диску, а рушій увімкнений.
+
+        Тепер модель піднімається ПЕРШОЮ (3–4 с), а профіль і скіли
+        готуються після неї — вони нікому не потрібні в першу секунду.
         """
         if self._setup_busy:
             return
         self._setup_busy = True
         root = Path(self.settings.workspace)
 
-        def work() -> None:
+        def start_model() -> dict:
+            """Підняти модель — найважливіше, тому без черги за скануванням."""
             result: dict = {}
-            try:
-                profile, proposals = auto_setup.build_plan(root)
-                installed = auto_setup.install_proposals(root, proposals)
-                result.update(profile=profile, installed=installed)
-            except Exception as exc:  # noqa: BLE001 - автоналаштування не критичне
-                LOG.warning("Профіль/скіли не вдались: %s", exc, exc_info=True)
-
             try:
                 local = [p.name for p in hub.local_models()]
                 engine_ok = runtime.engine_installed()
@@ -2394,10 +2449,40 @@ class BlackChpokIDE(tk.Tk):
                     result["started"] = self._autostart_local_model(local)
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("Підбір моделі не вдався: %s", exc, exc_info=True)
+            return result
 
-            self._ui_call(self._after_auto_setup, result)
+        def work() -> None:
+            # 1. МОДЕЛЬ — першою, бо без неї агент не працює взагалі.
+            result: dict = {}
+            try:
+                result.update(start_model())
+            except Exception as exc:  # noqa: BLE001 - старт не має ламати вікно
+                LOG.warning("Автозапуск моделі впав: %s", exc, exc_info=True)
+            # Панель стану показуємо ОДРАЗУ після моделі: користувач бачить
+            # «онлайн», не чекаючи, поки доскане проєкт.
+            self._ui_call(self._after_auto_setup, dict(result))
+            # 2. Профіль і скіли — після моделі, окремим оновленням.
+            try:
+                profile, proposals = auto_setup.build_plan(root)
+                installed = auto_setup.install_proposals(root, proposals)
+                result.update(profile=profile, installed=installed)
+            except Exception as exc:  # noqa: BLE001 - автоналаштування не критичне
+                LOG.warning("Профіль/скіли не вдались: %s", exc, exc_info=True)
+                return
+            self._ui_call(self._after_skills_ready, installed)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _after_skills_ready(self, installed: list) -> None:
+        """Скіли згенеровано — оновити панель і рядок стану (без моделі)."""
+        try:
+            self.skill_book.reload()
+            self.skills_panel.refresh()
+        except (tk.TclError, AttributeError):
+            LOG.debug("Панель скілів не оновилась", exc_info=True)
+        if installed:
+            self.set_status(f"Автоналагодження · створено скілів: {len(installed)}")
+
 
     def _server_alive(self, *, fresh: bool = False) -> bool:
         """Чи відповідає налаштований OpenAI-сумісний сервер.
@@ -2709,12 +2794,13 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Модель офлайн після автозапуску: %s", detail[:160])
 
     def _after_auto_setup(self, result: dict) -> None:
+        """Стан після спроби підняти модель (скіли приходять окремо).
+
+        ``installed`` тут може бути порожнім: скіли генеруються ПІСЛЯ моделі
+        й показуються через :meth:`_after_skills_ready`. Раніше все робилось
+        одним викликом, і модель чекала, поки доскане проєкт.
+        """
         self._setup_busy = False
-        try:
-            self.skill_book.reload()
-            self.skills_panel.refresh()
-        except (tk.TclError, AttributeError):
-            pass
         installed = result.get("installed") or []
         plan = result.get("plan")
         started = str(result.get("started") or "").strip()
@@ -4644,6 +4730,20 @@ class BlackChpokIDE(tk.Tk):
             return
         self._split_request = (now, clean)
         self._planning = True
+        # ── Чат мусить існувати ДО планування ─────────────────────────────
+        # ``_after_split`` бере власника кроків через ``_active_chat_id()``,
+        # а чат створюється першим повідомленням. ЗАМІРЯНО в живому прогоні:
+        # план готовий о 20:00:24,978, а «Створено чат …» — о 20:00:25,044,
+        # тобто на 66 мс ПІЗНІШЕ. Усі кроки народжувались без власника й
+        # після першого ж кроку черга ставала: «done 1, pending 5», без
+        # помилок і без руху.
+        #
+        # Тепер чат гарантовано є до створення кроків, і кожен крок одразу
+        # належить своїй розмові.
+        try:
+            self._ensure_owner_chat()
+        except Exception:  # noqa: BLE001 - чат не має ламати планування
+            LOG.debug("Чат не створено перед плануванням", exc_info=True)
         self.show_bottom("tasks")
         self.set_status("Складаю план кроків локальною моделлю…")
         # Стан агента має показати, що робота ЙДЕ. Без цього вікно
@@ -4679,7 +4779,19 @@ class BlackChpokIDE(tk.Tk):
         # Кроки плану народжуються з повідомлення в чаті, тож вони належать
         # йому ж: інакше після видалення чату задачі лишались у черзі
         # «сиротами» й агент продовжував їх виконувати.
+        #
+        # ── ЧОМУ ТУТ ЩЕ Й ``_ensure_chat`` ────────────────────────────────
+        # Планування йде у ФОНОВОМУ потоці, тож між стартом і цим колбеком
+        # чат міг ще не існувати (заміряно: 66 мс). Беремо власника ще раз
+        # і, якщо його немає, створюємо чат — інакше кроки стають сиротами,
+        # яких ``next_pending()`` не віддає жодному чату, і черга стоїть.
         owner = self._active_chat_id()
+        if not owner:
+            try:
+                owner = self._ensure_owner_chat()
+            except Exception:  # noqa: BLE001 - чат не має ламати план
+                LOG.debug("Чат не створено після планування", exc_info=True)
+                owner = self._active_chat_id()
         steps = result.steps if result is not None else []
 
         if not steps:
@@ -7469,6 +7581,14 @@ class BlackChpokIDE(tk.Tk):
                     self.memory.attach_engine(self.native_runtime.engine)
                 self._attach_memory_bridge(self.agent)
                 self._wire_exact_tokens()
+                # ── Статус «ОНЛАЙН» ставимо ТУТ, а не лише після автозапуску ──
+                # Це єдина точка, через яку проходить КОЖНЕ завантаження
+                # моделі у вбудований рушій: автозапуск при старті,
+                # збереження налаштувань, пробудження після простою, вибір
+                # моделі. Раніше статус у шапці оновлювався лише з
+                # ``_after_auto_setup``, тож після інших шляхів лишався
+                # «● МОДЕЛЬ ОФЛАЙН» на живій моделі.
+                self._confirm_model_online(f"власний рушій: {Path(path).stem}")
                 self.set_status(
                     f"Власний рушій: модель «{Path(path).stem}» готова до чату.")
             except (tk.TclError, AttributeError) as exc:

@@ -579,14 +579,61 @@ def group(entries: Iterable[ModelEntry]) -> list[tuple[str, list[ModelEntry]]]:
     return groups
 
 
+def _embedded_url() -> str:
+    """Псевдо-адреса вбудованого рушія (``native://blackchpok``).
+
+    Винесено в окрему функцію, бо ``providers`` навмисно не тягне
+    ``native`` на імпорті модуля: рушій підвантажує ``llama.dll``.
+    """
+    try:
+        from .native import bridge
+
+        return bridge.EMBEDDED_URL
+    except Exception:  # noqa: BLE001 - без рушія лишається рядок-константа
+        return "native://blackchpok"
+
+
 def apply_choice(settings: Any, entry: ModelEntry) -> None:
-    """Зробити запис активною моделлю (правильно оновлює налаштування)."""
+    """Зробити запис активною моделлю (правильно оновлює налаштування).
+
+    ── ЧОМУ ЛОКАЛЬНИЙ ФАЙЛ НЕ ПЕРЕМИКАЄ НА HTTP ──────────────────────────
+    Кожен запис локальної моделі має ``provider_key = "llamacpp"``, а його
+    ``base_url`` — ``http://127.0.0.1:8080/v1``. Тому вибір GGUF-файлу
+    переписував адресу на HTTP, хоча модель вантажиться у ВБУДОВАНИЙ рушій
+    (``native://blackchpok``) у цьому ж процесі.
+
+    ЗАМІРЯНО на справжніх налаштуваннях користувача (``ide.log``):
+
+        18:29:38  Стан сервера скинуто: перемикання на Ministral-3-14B…
+        18:30:30  Адреса http://127.0.0.1:8080/v1 не слухає → пошук порту
+        18:30:34  LLM недоступна: …[WinError 10061] target machine actively
+                  refused it
+
+    Тобто модель обрана, рушій увімкнений — а кожен запит ішов у мережу,
+    де ніхто не слухає: на екрані це «● МОДЕЛЬ ОФЛАЙН» і «локальна модель
+    недоступна», хоч файл лежить на диску й рушій готовий.
+
+    Тепер вибір локального файлу при ВВІМКНЕНОМУ вбудованому рушії лишає
+    адресу ``native://blackchpok`` і записує вибраний шлях у рушій — тобто
+    модель справді стає активною, без жодних HTTP-серверів.
+    """
     settings.llm.model = entry.name
     if entry.is_local:
         provider = _LOCAL_BY_KEY.get(entry.provider_key)
-        if provider is not None and provider.base_url:
-            settings.llm.base_url = provider.base_url
-        settings.llm.api_key = "local"
+        want_native = bool(getattr(getattr(settings, "engine", None), "native", False))
+        # Локальний ФАЙЛ (``path`` заповнений) — це те, що вантажить рушій.
+        # Записи, які прийшли від живого HTTP-сервера (LM Studio, Ollama),
+        # шляху не мають: їхню адресу міняти не можна.
+        if want_native and entry.path:
+            settings.llm.base_url = _embedded_url()
+            settings.llm.api_key = "local"
+            settings.llm.auto_detect = False
+            settings.engine.model_path = str(entry.path)
+            settings.engine.native_model = entry.name
+        else:
+            if provider is not None and provider.base_url:
+                settings.llm.base_url = provider.base_url
+            settings.llm.api_key = "local"
         if entry.context:
             settings.engine.ctx_size = int(entry.context)
     else:
