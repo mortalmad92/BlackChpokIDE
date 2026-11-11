@@ -66,7 +66,11 @@ def main() -> int:
         settings.workspace = str(workspace)
         settings.first_run_done = True
         settings.project_chosen = True
-        settings.engine.auto_start = False
+        # Автозапуск лишаємо УВІМКНЕНИМ: перевірка має поводитись як
+        # справжній користувач. Раніше тут стояло ``auto_start = False``, і
+        # перший сценарій завершувався за 8 с без жодного файлу — модель
+        # просто не була завантажена.
+        settings.engine.auto_start = True
         settings.agent.queue_auto_run = False
         settings.agent.max_steps = 14   # місце на виправлення
         settings.ui.view = "workspace"

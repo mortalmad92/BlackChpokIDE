@@ -15,12 +15,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from . import path_scan
+
+LOG = logging.getLogger("blackchpok.tool_router")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Модель результату
@@ -164,6 +167,22 @@ MCP_CATALOG: tuple[tuple[str, str, str], ...] = (
     ("fetch_url", "завантажити сторінку", "прочитай https://example.com"),
     ("run_and_repair", "запустити й виправити помилку", "запусти і виправ"),
 )
+
+#: Наміри ``vibe_router``, які справді можна виконати в IDE.
+#:
+#: ``vibe_router`` — окремий великий набір правил (спільний з MCP-сервером),
+#: і він знає БІЛЬШЕ намірів, ніж є дій у реєстрі інструментів. Приклад:
+#: на «створи файл hello.py який питає ім'я і вітає користувача» він
+#: повертає ``build_project``, а такої дії немає ні серед вбудованих
+#: інструментів, ні серед ``MCP_CATALOG``. Агент перетворював це на
+#: ``router:build_project``, діставав «Інструмента … немає в реєстрі» й
+#: витрачав на це крок — а оскільки підказка мала рівень «high», вона ще й
+#: глушила розмовний швидкий шлях. Файл не створювався зовсім.
+#:
+#: Тому беремо ЛИШЕ наміри з ``MCP_CATALOG``: саме вони мають обробник у
+#: ``_ROUTER_ACTIONS`` агента.
+_ROUTER_AVAILABLE_INTENTS: frozenset[str] = frozenset(
+    name for name, _when, _example in MCP_CATALOG)
 
 
 def catalog_text(include_mcp: bool = True) -> str:
@@ -543,6 +562,22 @@ def _read_rules(phrase: str) -> list[ToolHint]:
         if not asks_about_image:
             hints.append(ToolHint("project_screenshot", {}, HIGH, "просили знімок"))
 
+    # ── Створення названого файлу ──────────────────────────────────────────
+    # «створи файл app.py», «зроби notes.txt із текстом». Доти підказку давав
+    # лише ``vibe_router`` — наміром ``build_project``, якого в реєстрі
+    # інструментів НЕМАЄ. Агент викликав ``router:build_project``, діставав
+    # «Інструмента немає в реєстрі» й зупинявся, не створивши файлу.
+    #
+    # Підказка веде до ``read_file``: спершу подивитись, чи файл уже є. Це
+    # безпечно (нічого не перезаписує) і дає моделі реальний факт, з яким
+    # вона далі або створить файл, або допише наявний. ``write_file`` з
+    # порожнім вмістом тут був би НЕБЕЗПЕЧНИМ: він затер би наявний файл.
+    if path and not any(h.tool == "read_file" for h in hints) \
+            and _has(low, "створи", "створити", "зроби", "зробити", "напиши",
+                     "написати", "згенеруй", "згенерувати", "create", "make"):
+        hints.append(ToolHint("read_file", {"path": path}, HIGH,
+                              "спершу перевірити, чи файл уже існує"))
+
     # ── Правка названого файлу ─────────────────────────────────────────────
     # «у файлі calc.py додай функцію множення»: файл названо, і просять
     # змінити його ВМІСТ. Без цього правила роутер не бачив наказу зовсім
@@ -658,6 +693,25 @@ def _vibe_rules(phrase: str) -> list[ToolHint]:
         return []
     intent = str(getattr(decision, "intent", "") or "")
     if intent in {"", "auto", "talk"}:
+        return []
+    # ── Лише ті наміри, які справді можна виконати ────────────────────────
+    # ``vibe_router`` знає більше намірів, ніж є дій у реєстрі IDE:
+    # ``build_project`` він повертає на «створи файл hello.py …», а такої
+    # дії немає НІ серед вбудованих інструментів, НІ серед дій MCP-роутера.
+    # Агент перетворював підказку на ``router:build_project``, діставав
+    # «Інструмента … немає в реєстрі» й витрачав на це крок — а другого
+    # кроку вже не було, і файл не створювався (перевірено наживо: 10 с і
+    # порожня тека). Тепер невідомі наміри просто не породжують підказок:
+    # модель отримує решту правил і працює звичайним шляхом.
+    #
+    # ``list_intents`` — окремий випадок: у реєстрі такої дії немає, але
+    # питання «що ти вмієш?» мусить дати перелік можливостей. Його
+    # обслуговує вбудований ``list_skills``.
+    if intent == "list_intents":
+        return [ToolHint("list_skills", {}, HIGH,
+                         "питали про можливості", source="vibe_router")]
+    if intent not in _ROUTER_AVAILABLE_INTENTS:
+        LOG.debug("vibe_router повернув недосяжний намір %r — пропускаю", intent)
         return []
     arguments: dict[str, Any] = {}
     query = str(getattr(decision, "query", "") or "")
