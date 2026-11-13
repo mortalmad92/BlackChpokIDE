@@ -26,6 +26,14 @@ SKIP_PREFIX = (
     "app.exit", "file.quit", "model.", "engine.", "hub.", "browser.",
     "preview.start", "mcp.", "voice.", "autonomous.", "night.", "deploy.",
     "publish.", "install.", "update.", "download.", "social.", "help.about",
+    # ── ``file.exit`` ЗАКРИВАЄ вікно ──────────────────────────────────────
+    # Це не дефект, а призначення команди. Без цього пропуску проба
+    # зупинялась на ній, і КОЖНА наступна команда «падала» з
+    # ``TclError: application has been destroyed`` — тобто звіт показував
+    # сотню несправжніх збоїв замість справжніх. Перевірено живим прогоном:
+    # після ``file.exit`` зникли ВСІ вісім віджетів, і далі 100+ рядків
+    # «ЗБІЙ … application has been destroyed».
+    "file.exit",
 )
 
 
@@ -75,6 +83,16 @@ def main() -> int:
         found = [c for c in commands.all_commands() if c.key == key]
         if not found or not found[0].is_enabled():
             continue
+        # ── Якщо вікно вже знищене, далі перевіряти нічого ────────────────
+        # Інакше решта команд «падає» з ``application has been destroyed``,
+        # і звіт показує несправжні збої (саме це й сталось: одна команда
+        # закрила вікно, а далі 100+ рядків «ЗБІЙ»). Чесніше сказати прямо,
+        # що перевірку припинено.
+        if not alive(root):
+            print(f"ВІКНО ЗАКРИТО командою «{key}» — перевірку припинено, "
+                  f"решта {len(keys) - keys.index(key) - 1} команд не "
+                  f"перевірялись")
+            break
         try:
             found[0].action()
             root.update_idletasks()
@@ -87,7 +105,8 @@ def main() -> int:
             print(f"ЗЛАМАВ {key} -> зникли {dead}")
         root.update_idletasks()
 
-    app.on_close()
+    if alive(root):
+        app.on_close()
     print(f"\nкоманд, що ламають вікно: {len(broken_by)}")
     for key, dead in broken_by:
         print(f"  {key}: {dead}")
