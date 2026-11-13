@@ -5,6 +5,19 @@
 або мертву клавішу, або дві різні дії на одній комбінації.
 """
 from __future__ import annotations
+# ── ІЗОЛЯЦІЯ ДАНИХ ───────────────────────────────────────────────────────
+# Інструмент будує СПРАВЖНЄ вікно IDE. Без власного ``BLACKCHPOK_HOME``
+# вікно читає ``<app_data>/chats.json`` і відновлює активний чат
+# КОРИСТУВАЧА — з ЙОГО текою. Наслідок заміряно: тестовий агент писав
+# файли в проєкт користувача, а перевірка дивилась у пісочницю.
+# Ставимо ДО звернення до пакета: ``config`` рахує шляхи під час імпорту.
+import os as _os
+import tempfile as _tempfile
+
+_os.environ.setdefault("BLACKCHPOK_HOME",
+                       _tempfile.mkdtemp(prefix="tool-home-"))
+_os.environ["BLACKCHPOK_NO_SAVE"] = "1"
+
 
 import os
 import pathlib

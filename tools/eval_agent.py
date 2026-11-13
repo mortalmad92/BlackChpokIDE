@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import py_compile
 import shutil
 import sys
@@ -20,6 +21,29 @@ from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# ── ІЗОЛЯЦІЯ ДАНИХ: КОЖЕН СЦЕНАРІЙ — У ВЛАСНОМУ «ДОМІ» ─────────────────
+# Стенд створює СПРАВЖНЄ вікно IDE, а те не ізолює себе саме: ``ChatStore()``
+# читає ``<app_data>/chats.json``, і вікно відновлює активний чат із ЙОГО
+# текою.
+#
+# ВАЖЛИВО: ``setdefault`` тут недостатньо. Батьківський процес створює свій
+# HOME і запускає дочірні, а ті УСПАДКОВУЮТЬ змінну — тобто всі сценарії
+# ділять один ``chats.json``. Заміряно живим прогоном: сценарій ``upgrade``
+# діставав активний чат від ``edit`` із текою ``eval-edit-…``, сторож теки
+# відмовляв, і запит не приймався:
+#
+#   busy=False, guard=False, chat_ws='…\\eval-edit-odar7mht'
+#
+# А ``--one upgrade`` окремо проходив — бо там свій HOME.
+#
+# Тому: якщо ми в дочірньому процесі (``--one``) — ЗАВЖДИ свій HOME.
+if len(sys.argv) >= 3 and sys.argv[1] == "--one":
+    os.environ["BLACKCHPOK_HOME"] = tempfile.mkdtemp(prefix="eval-one-home-")
+else:
+    os.environ.setdefault("BLACKCHPOK_HOME",
+                          tempfile.mkdtemp(prefix="eval-agent-home-"))
+os.environ["BLACKCHPOK_NO_SAVE"] = "1"
 
 # ── Підготовка пісочниць ───────────────────────────────────────────────────
 
@@ -179,9 +203,9 @@ SCENARIOS: dict[str, Scenario] = {
         "зроблено",
         _setup_two,
         "у calc.py є multiply, у notes.txt дописано (не затерто)",
-        # Перевіряємо САМЕ факт дописування: попередній вміст notes.txt
-        # мусить лишитись, а новий рядок — з'явитись. Пошук конкретного
-        # слова («зробл») хибно падав, коли модель писала «Додана функція».
+        # Перевіряємо ОБИДВІ дії: ``_appended_keeps_old`` вимагає і
+        # дописування в notes.txt (старий текст збережено), і появи
+        # «def multiply» у calc.py. Підпис очікування це й каже.
         lambda ws: _appended_keeps_old(ws, "notes.txt", "замітки"),
     ),
     "docs": (
@@ -335,13 +359,53 @@ def run_scenario(key: str) -> tuple[bool, str]:
         pump(app, 1.8)
         app.hide_welcome()
         pump(app, 0.4)
+        # ── ДОЧІКУЄМОСЬ, ПОКИ ВІКНО ЗАВАНТАЖИТЬ МОДЕЛЬ ────────────────────
+        # ``auto_start=True`` піднімає модель у ФОНОВОМУ потоці одразу після
+        # створення вікна, і ``agent.busy`` певний час істинний. Якщо
+        # відправити запит у цю мить, ``chat._send`` відмовляє («агент ще
+        # виконує попередній запит»), і сценарій виглядає проваленим, хоч
+        # агент навіть не починав.
+        #
+        # Заміряно: поодинокий запуск (`--one edit`) проходив за 27 с, а в
+        # послідовному прогоні той самий сценарій давав «витрачено: 1 с» —
+        # бо попередній процес щойно звільнив VRAM, і завантаження моделі
+        # тривало довше.
         idle = 0.0
-        while app.agent.busy and idle < 90:
+        while app.agent.busy and idle < 180:
             pump(app, 0.5)
             idle += 0.5
+        if app.agent.busy:
+            print(f"   УВАГА: агент зайнятий {idle:.0f} с після старту — "
+                  f"запит може не пройти")
 
         started = time.time()
-        app.chat._send(phrase)
+        # ``_send`` повертає False, якщо запит НЕ прийнято (агент ще зайнятий,
+        # теку не вибрано, спрацював сторож теки). Раніше результат
+        # ігнорувався, і такий випадок виглядав як провал агента:
+        # «витрачено: 1 с, файли: ['calc.py']». Перевірено на сценарії
+        # ``docs`` — там агент навіть не стартував, а звіт казав «FAIL».
+        accepted = app.chat._send(phrase)
+        if accepted is False:
+            # Показуємо СПРАВЖНЮ причину відмови, а не лише «не прийнято»:
+            # без цього неможливо відрізнити «модель ще вантажиться» від
+            # «сторож теки не пустив».
+            reasons = [f"busy={app.agent.busy}"]
+            try:
+                reasons.append(f"has_project={app.has_project()}")
+                reasons.append(f"workspace={app.settings.workspace}")
+                reasons.append(f"agent_ws={app.agent.workspace}")
+                # Сторож теки: саме він відмовляє, коли активний чат
+                # прив'язаний до ІНШОЇ папки. Без цього поля причина
+                # «запит не прийнято» лишалась загадкою.
+                guard = getattr(app.chat, "folder_guard", None)
+                reasons.append(f"guard={guard() if guard else 'немає'}")
+                active = app.chat_store.active()
+                reasons.append(f"chat_ws={active.workspace if active else None!r}")
+                reasons.append(f"runner={bool(app.chat.runner)}")
+            except Exception as exc:  # noqa: BLE001 - діагностика не має падати
+                reasons.append(f"діагностика впала: {exc}")
+            print("   УВАГА: запит не прийнято — " + ", ".join(reasons))
+            events.append(("not_started", "запит не прийнято"))
         waited = 0.0
         while app.agent.busy and waited < 600:
             pump(app, 0.5)
@@ -380,10 +444,18 @@ def run_scenario(key: str) -> tuple[bool, str]:
             print(f"   черга: {app.task_queue.progress()}")
         print(f"[{'OK  ' if ok else 'FAIL'}] {expect}" + (f" — {detail}" if detail else ""))
         if not ok:
+            # Показуємо ШИРШЕ вікно подій. Раніше було 10 останніх, і при
+            # складній задачі («дві дії в двох файлах») у звіті лишався
+            # тільки фінальний текст — не було видно, які інструменти
+            # справді викликались і на якому кроці хід обірвався.
             print("   останні події:")
-            for kind, text in events[-10:]:
-                if kind in ("status", "tool_call", "error", "assistant"):
+            for kind, text in events[-30:]:
+                if kind in ("status", "tool_call", "tool_result", "error",
+                            "assistant"):
                     print(f"     [{kind}] {text}")
+            calls = [text for kind, text in events if kind == "tool_call"]
+            print(f"   інструментів викликано: {len(calls)}"
+                  + (f" — {calls}" if calls else " (жодного)"))
         return ok, f"{key}: {phrase}"
     finally:
         try:
@@ -396,23 +468,15 @@ def run_scenario(key: str) -> tuple[bool, str]:
 
 
 def main() -> int:
-    wanted = [a for a in sys.argv[1:] if a in SCENARIOS] or list(SCENARIOS)
-    unknown = [a for a in sys.argv[1:] if a not in SCENARIOS and not a.startswith("-")]
-    if unknown:
-        print("Невідомі сценарії:", ", ".join(unknown))
-        print("Доступні:", ", ".join(SCENARIOS))
-        return 2
-
-    # ── Кожен архетип — в ОКРЕМОМУ процесі ─────────────────────────────────
-    # Кожен сценарій піднімає власне вікно IDE, а разом із ним — модель на
-    # 9 ГБ у відеопам'яті. У спільному процесі попереднє вікно не звільняло
-    # її повністю: на четвертому-п'ятому архетипі рушій писав
-    # ``unable to allocate CUDA0 buffer``, і решта сценаріїв падала з
-    # «модель не відповіла» — хоч кожен із них окремо проходив. Заміряно:
-    # 6/10 у спільному процесі проти 10/10 по одному.
-    #
-    # ``--one <ключ>`` запускає РІВНО один сценарій — так батьківський
-    # процес викликає дочірній.
+    # ── ``--one <ключ>`` МУСИТЬ оброблятись ПЕРШИМ ─────────────────────────
+    # Інакше ``wanted`` нижче бачить лише ``--one`` (це не назва сценарію),
+    # падає в ``or list(SCENARIOS)`` і запускає ВСІ десять...
+    # у дочірньому процесі, який мав виконати РІВНО один. Заміряно живим
+    # прогоном: батьківський процес друкував «СЦЕНАРІЙ create (окремий
+    # процес)», а дочірній запускав усі сценарії підряд у спільному процесі —
+    # тобто рівно те, від чого цей поділ і рятував (нестача VRAM).
+    # Наслідок у звіті: 5 з 10, де шість «провалів» — це «запит не прийнято»
+    # (агент справді був зайнятий попереднім сценарієм).
     if len(sys.argv) >= 3 and sys.argv[1] == "--one":
         ok, label = run_scenario(sys.argv[2])
         print()
@@ -420,6 +484,13 @@ def main() -> int:
         print(("[OK  ] " if ok else "[FAIL] ") + label)
         print("=" * 76)
         return 0 if ok else 1
+
+    wanted = [a for a in sys.argv[1:] if a in SCENARIOS] or list(SCENARIOS)
+    unknown = [a for a in sys.argv[1:] if a not in SCENARIOS and not a.startswith("-")]
+    if unknown:
+        print("Невідомі сценарії:", ", ".join(unknown))
+        print("Доступні:", ", ".join(SCENARIOS))
+        return 2
 
     import subprocess
 
