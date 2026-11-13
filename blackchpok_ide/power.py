@@ -198,10 +198,25 @@ class ModelKeeper:
             except Exception:  # noqa: BLE001
                 LOG.debug("on_status моделі впав", exc_info=True)
 
+    def should_unload(self, *, busy: bool, autonomous: bool) -> bool:
+        """Чи ЧАС вивантажувати — БЕЗ самого вивантаження.
+
+        Навіщо окремо від :meth:`poll`. Вивантаження рушія бере замки
+        контексту й ЧЕКАЄ завершення поточного ``llama_decode`` (див.
+        докстрінг ``Engine.unload``); для llama-server там узагалі
+        ``process.wait(timeout=10)``. Викликати це з головного потоку —
+        вікно «не відповідає» кілька секунд, саме як у скаргах
+        «інколи зависає».
+
+        Тепер тік простою лише ПИТАЄ (дешева арифметика над часом), а
+        вивантаження виконує фоновий потік. Правило простою не змінилось.
+        """
+        return bool(self.tracker.should_unload(busy=busy, autonomous=autonomous,
+                                               loaded=self.loaded))
+
     def poll(self, *, busy: bool, autonomous: bool) -> bool:
         """Перевірити простій і, якщо час, вивантажити. True — вивантажили."""
-        if not self.tracker.should_unload(busy=busy, autonomous=autonomous,
-                                          loaded=self.loaded):
+        if not self.should_unload(busy=busy, autonomous=autonomous):
             return False
         return self.unload()
 

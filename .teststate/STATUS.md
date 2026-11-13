@@ -1,6 +1,6 @@
 # Стан тестів (автоматично, не правити руками)
 
-Створено: `tools/test_ledger.py`. Оновлено: 2026-11-13 13:11:57
+Створено: `tools/test_ledger.py`. Оновлено: 2026-11-13 13:25:47
 
 **Якщо ти ШІ-агент:** перш ніж запускати тести, виконай `python tools/test_ledger.py status`. Запускай лише ті, що позначені «не запускався», «застарів» або «ПАДАЄ».
 
@@ -9,7 +9,7 @@
 | `tests/e2e_real_agent.py` | пройдено | script | 2026-11-13 12:41:40 |  |
 | `tests/e2e_stabilization_demo.py` | пройдено | script | 2026-11-13 12:40:29 |  |
 | `tests/smoke_gui.py` | пройдено | script | 2026-11-13 13:11:57 |  |
-| `tests/test_adaptive_power.py` | пройдено | unittest | 2026-11-13 12:41:40 |  |
+| `tests/test_adaptive_power.py` | пройдено | unittest | 2026-11-13 13:25:32 |  |
 | `tests/test_agent_e2e.py` | пройдено | script | 2026-11-13 12:41:58 |  |
 | `tests/test_agent_executes_task.py` | пройдено | unittest | 2026-11-13 12:41:58 |  |
 | `tests/test_agent_live_ux.py` | пройдено | unittest | 2026-11-13 13:04:33 |  |
@@ -67,7 +67,7 @@
 | `tests/test_git_degradation.py` | пройдено | unittest | 2026-11-13 12:44:49 |  |
 | `tests/test_git_publish.py` | пройдено | unittest | 2026-11-13 12:44:58 |  |
 | `tests/test_ide_core.py` | пройдено | unittest | 2026-11-13 12:45:00 |  |
-| `tests/test_idle_reload_live.py` | пройдено | script | 2026-11-13 12:45:15 |  |
+| `tests/test_idle_reload_live.py` | пройдено | script | 2026-11-13 13:25:47 |  |
 | `tests/test_idle_unload_live.py` | пройдено | script | 2026-11-13 12:45:17 |  |
 | `tests/test_intent_engine.py` | пройдено | unittest | 2026-11-12 16:32:23 |  |
 | `tests/test_kv_abort_resync.py` | пройдено | unittest | 2026-11-13 12:41:40 |  |
