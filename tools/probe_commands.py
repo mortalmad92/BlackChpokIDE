@@ -44,9 +44,47 @@ SKIP_WORDS = (
 #: для словників, і подвоювати їх не потрібно. Місце під корінь проєкту
 #: позначає ``__ROOT__``.
 CHILD = r'''
-import json, sys, tempfile
+import json, os, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, r"__ROOT__")
+
+# ── ІЗОЛЯЦІЯ ДАНИХ ───────────────────────────────────────────────────────
+# Без цього дочірній процес читає СПРАВЖНІ ``chats.json``, ``queue.json`` і
+# ``settings.json`` користувача. Наслідки заміряно:
+#   • ``agent.new_chat`` «зависала» понад 25 с — бо вікно відновлювало
+#     активний чат користувача зі 187 повідомленнями (перемальовування
+#     транскрипту займає секунди, і команда не встигала);
+#   • у справжній черзі з'являлись кроки прогону;
+#   • проба залежала від того, що користувач робив у програмі раніше.
+# Ставимо ДО імпорту пакета: ``config`` обчислює шляхи під час імпорту.
+os.environ.setdefault("BLACKCHPOK_HOME",
+                      tempfile.mkdtemp(prefix="probe-cmd-home-"))
+os.environ["BLACKCHPOK_NO_SAVE"] = "1"
+
+# ── МОДАЛЬНІ ДІАЛОГИ МУСЯТЬ БУТИ ЗАГЛУШЕНІ ──────────────────────────────
+# Без цього будь-яка команда, що відкриває діалог, «зависає»: у
+# дочірньому процесі немає користувача, який його закриє. Заміряно:
+# ``agent.new_chat`` висіла понад 25 с, бо ``new_chat_session`` кличе
+# ``filedialog.askdirectory``. Команда при цьому СПРАВНА — винна проба.
+import tkinter.filedialog as _fd
+import tkinter.messagebox as _mb
+import tkinter.simpledialog as _sd
+
+_mb.askyesno = lambda *a, **k: True
+_mb.askokcancel = lambda *a, **k: True
+_mb.askyesnocancel = lambda *a, **k: True
+_mb.showinfo = lambda *a, **k: None
+_mb.showwarning = lambda *a, **k: None
+_mb.showerror = lambda *a, **k: None
+_sd.askstring = lambda *a, **k: ""
+_sd.askinteger = lambda *a, **k: 0
+_sd.askfloat = lambda *a, **k: 0.0
+# ``askdirectory`` віддає порожній рядок — «користувач скасував». Команда
+# доходить до власної гілки скасування, і ми перевіряємо саме те, що вона
+# не падає; підсовувати теку означало б вдавати, що теку вибрано.
+_fd.askdirectory = lambda *a, **k: ""
+_fd.askopenfilename = lambda *a, **k: ""
+_fd.asksaveasfilename = lambda *a, **k: ""
 
 from blackchpok_ide import commands
 from blackchpok_ide.config import Settings
