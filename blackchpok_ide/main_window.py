@@ -7871,8 +7871,16 @@ class BlackChpokIDE(tk.Tk):
         self.settings.agent.mode = mode.key
         self.settings.save()
         # Синхронізувати перемикач дозволів у композері з режимом.
+        #
+        # ``notify="always"`` при зміні РЕЖИМУ: дозволи в «Чат» і «Код»
+        # часто однакові, тож звичайна умова «лише на зміну дозволів»
+        # давала НУЛЬ підтверджень, і користувач не бачив, що режим інший
+        # (заміряно: «після зміни режиму: 0» рядків). При відновленні на
+        # старті (``notify=False``) підтвердження не потрібне.
         try:
-            self.chat.set_permission_mode(mode.permission, notify=notify)
+            self.chat.set_permission_mode(
+                mode.permission,
+                notify="always" if notify else False)
         except (tk.TclError, AttributeError):
             pass
         self.header.set_mode(mode.key)
