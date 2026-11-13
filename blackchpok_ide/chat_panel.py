@@ -1616,15 +1616,35 @@ class ChatPanel(tk.Frame):
         except (tk.TclError, AttributeError):
             pass
 
-    def set_permission_mode(self, mode: str) -> None:
-        """Змінити режим дозволів і показати це в композері."""
+    def set_permission_mode(self, mode: str, *, notify: bool = True) -> None:
+        """Змінити режим дозволів і показати це в композері.
+
+        ``notify=False`` — НЕ додавати рядок у транскрипт.
+
+        Навіщо це окремий параметр. Застосунок виставляє режим у кількох
+        місцях, і не кожне є дією користувача:
+          • ``_startup`` — відновлення збереженого режиму при старті;
+          • ``main_window`` — синхронізація після зміни профілю/налаштувань.
+
+        Раніше кожен такий виклик додавав у чат рядок «Режим дозволів: …».
+        Заміряно на скріншоті користувача: ОДИН і той самий рядок стояв
+        ДВІЧІ поспіль — бо при старті спрацювали два шляхи (профіль і
+        налаштування). У транскрипті це виглядало як помилка інтерфейсу.
+
+        Тепер нотатка з'являється лише тоді, коли режим справді змінив
+        користувач (меню, слеш-команда, кнопка).
+        """
         active = permissions.normalise_mode(mode)
+        changed = active != self.permission_mode
         self.permission_mode = active
         self._paint_permission_label()
         safe.call_quiet(self.on_permission_change, active,
                         where="зміна режиму дозволів")
-        self._note(f"Режим дозволів: {permissions.label_for(active)}. "
-                   f"{permissions.hint_for(active)}")
+        # Один рядок на СПРАВЖНЮ зміну, а не на кожен виклик початкового
+        # значення: інакше при старті транскрипт забивається дублями.
+        if notify and changed:
+            self._note(f"Режим дозволів: {permissions.label_for(active)}. "
+                       f"{permissions.hint_for(active)}")
 
     # ── виконання слэш-команд ──────────────────────────────────────────────
     def _run_slash_command(self, command: "slash_commands.SlashCommand", argument: str) -> bool:

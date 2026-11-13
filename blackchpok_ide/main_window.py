@@ -2129,15 +2129,19 @@ class BlackChpokIDE(tk.Tk):
     def _startup(self) -> None:
         self.set_status(f"Робоча тека: {self.settings.workspace}")
         # Застосувати збережений режим дозволів до чату й агента.
+        # ``notify=False``: це ВІДНОВЛЕННЯ, а не дія користувача. Інакше в
+        # чаті з'являвся рядок «Режим дозволів: …» на кожному старті, а якщо
+        # режим виставляли ще й з профілю — рівно двічі поспіль (заміряно
+        # на скріншоті користувача).
         try:
-            self.chat.set_permission_mode(self.permission_mode)
+            self.chat.set_permission_mode(self.permission_mode, notify=False)
         except (tk.TclError, AttributeError):
             pass
         self.agent.permission_mode = self.permission_mode
         # Запам'ятати базовий ліміт кроків: режими не мають його переписувати.
         modes.remember_base_steps(self.settings.agent.max_steps)
         # Режим роботи: дозволи, ліміт кроків і підказка моделі.
-        self.set_agent_mode(self.agent_mode)
+        self.set_agent_mode(self.agent_mode, notify=False)
         self._apply_cloud_provider()
         # Якщо модель не вибрана, а GGUF лежить на диску — підхопити її.
         # Інакше агент пише «Модель не вибрана» й мовчки йде в офлайн-роутер,
@@ -7852,8 +7856,15 @@ class BlackChpokIDE(tk.Tk):
     def _on_mode_selected(self, key: str) -> None:
         self.set_agent_mode(key)
 
-    def set_agent_mode(self, key: str) -> None:
-        """Застосувати режим: дозволи, ліміт кроків, підказка агенту."""
+    def set_agent_mode(self, key: str, *, notify: bool = True) -> None:
+        """Застосувати режим: дозволи, ліміт кроків, підказка агенту.
+
+        ``notify=False`` — не писати в транскрипт про зміну дозволів.
+        Потрібно при СТАРТІ: ``_startup`` відновлює збережений режим, і це
+        не дія користувача. Заміряно на скріншоті: при старті режим
+        виставлявся ДВІЧІ (спершу ``chat.set_permission_mode``, потім цей
+        метод), і в чаті стояли два однакові рядки «Режим дозволів: …».
+        """
         mode = modes.apply(self.settings, self.agent, key)
         self.agent_mode = mode.key
         self.settings.ui.mode = mode.key
@@ -7861,7 +7872,7 @@ class BlackChpokIDE(tk.Tk):
         self.settings.save()
         # Синхронізувати перемикач дозволів у композері з режимом.
         try:
-            self.chat.set_permission_mode(mode.permission)
+            self.chat.set_permission_mode(mode.permission, notify=notify)
         except (tk.TclError, AttributeError):
             pass
         self.header.set_mode(mode.key)

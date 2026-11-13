@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+from . import language
 from . import task_plan
 
 __all__ = [
@@ -158,11 +159,24 @@ def normalise_phrase(text: str) -> str:
 
     Не «виправлення помилок» у повному сенсі, а розшифровка того, що
     людина справді має на увазі: «мсп» → «MCP», «фронт» → «frontend».
-    Оригінал зберігається окремо — він потрібен моделі.
+
+    ── РОСІЙСЬКІ СЛОВА Й СУРЖИК ─────────────────────────────────────────
+    Користувач цілком може написати «сделай файл», «проверь папку
+    проекта» — і правила, які шукають українські маркери, цього не
+    побачать. ``language.normalise`` приводить такі слова до української
+    форми, і намір розпізнається.
+
+    Це НЕ переклад: російське речення лишається російським, просто окремі
+    слова стають українськими — рівно настільно, щоб збігся пошук.
+    Оригінал зберігається окремо (``IntentFrame.text``) — він потрібен
+    моделі, і показувати користувачу перероблений текст не можна.
     """
     body = (text or "").strip()
     if not body:
         return ""
+    # Спершу російські форми — вони трапляються цілими словами («сделай»),
+    # і без них правила українських маркерів не спрацьовують зовсім.
+    body = language.normalise(body)
     low = body.lower()
     replaced = low
     for wrong, right in _TYPO_FIXES:
@@ -357,8 +371,10 @@ _WORK_MARKERS: tuple[str, ...] = (
 _NO_GO_MARKERS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("не вигадув", "не придумуй", "не фантазуй", "не вигадай"),
      "не вигадувати вміст файлів і результати"),
-    (("не ліз у все", "не лізь у все", "не чіпай усе підряд",
-      "не змінюй усе підряд", "тільки потрібні файли"),
+    (("не ліз у все", "не лізь у все", "не ліз у усі", "не лізь у усі",
+      "не чіпай усе підряд", "не чіпай все підряд",
+      "не змінюй усе підряд", "не змінюй все підряд",
+      "тільки потрібні файли", "лише потрібні файли"),
      "змінювати лише потрібні файли"),
     # Заборона КОНКРЕТНОЇ дії. Це найнебезпечніше заперечення: без нього
     # «не запускай тести» читалось як TEST (тобто саме «запусти тести»), і
@@ -617,7 +633,9 @@ def classify_message(text: str, *, previous: Sequence[str] | None = None) -> str
     if not body:
         return CONVERSE
     low = normalise_phrase(body)
-    understanding = task_plan.understand(body)
+    # Те саме, що й у ``frame``: розуміння працює з нормалізованим текстом,
+    # інакше російське «сделай» не дає наміру ``create``.
+    understanding = task_plan.understand(low or body)
     informal = _informal_intent(low)
 
     # Питання-відповідь на наше уточнення.
@@ -921,9 +939,20 @@ def frame(
     лише доповнює завдання («і додай…») і сама по собі виглядає як «створи».
     """
     body = (text or "").strip()
-    understanding = task_plan.understand(body)
-    intent_type = classify_message(body, previous=previous_messages)
-    low = normalise_phrase(body)
+    # ── РОЗУМІННЯ ПРАЦЮЄ З НОРМАЛІЗОВАНИМ ТЕКСТОМ ────────────────────────
+    # ``task_plan.understand`` і ``classify_message`` шукають УКРАЇНСЬКІ
+    # маркери. На «сделай файл app.py» ОРИГІНАЛ давав ``['talk']``, а
+    # нормалізований «зроби файл app.py» — ``['create', 'edit']``.
+    # Заміряно: через це вся російська фраза вважалась розмовою,
+    # ``needs_tools`` ставало False, і агент відповідав словами замість
+    # роботи.
+    #
+    # ``body`` лишається ОРИГІНАЛОМ: він іде в ``IntentFrame.text`` і його
+    # бачить модель. Нормалізацію беремо ЛИШЕ для розпізнавання.
+    recognised = normalise_phrase(body) or body
+    understanding = task_plan.understand(recognised)
+    intent_type = classify_message(recognised, previous=previous_messages)
+    low = recognised
 
     files = [path for path in understanding.paths]
     continuation = intent_type in (CONTINUE, REVISE, CLARIFY)

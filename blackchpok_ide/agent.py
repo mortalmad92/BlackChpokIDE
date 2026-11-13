@@ -23,6 +23,7 @@ from . import context_stats
 from . import conversation
 from . import evidence as evidence_module
 from . import intent_engine
+from . import language
 from . import llm_client
 from . import memory_bridge
 from . import model_profile
@@ -2904,6 +2905,28 @@ class AgentRunner:
                                 task_plan.DOCS)
 
     def _emit(self, kind: str, text: str = "", **data: Any) -> None:
+        """Надіслати подію в інтерфейс.
+
+        ── ВИПРАВЛЕННЯ РУСИЗМІВ І СУРЖИКУ ────────────────────────────────
+        Локальні моделі навчені переважно на російському тексті, тож в
+        українській відповіді регулярно з'являються «сейчас», «нужно»,
+        «получается», «приймати участь». Користувач бачить це в чаті як
+        мовну помилку.
+
+        Виправлення стоїть САМЕ ТУТ, а не в місцях показу: через ``_emit``
+        проходять УСІ відповіді — і фінальні, і проміжні, і офлайн-роутера,
+        і ті, що збираються з результатів інструментів. Один прохід покриває
+        всі шляхи, і жоден новий шлях не забуде про це.
+
+        Що НЕ чіпається (див. :mod:`blackchpok_ide.language`): блоки коду,
+        інлайн-код, шляхи, імена файлів, URL і рядки, схожі на код. Інакше
+        ``get_state()`` перетворилось би на ``get_стан()``.
+        """
+        if kind in ("assistant", "narration", "reasoning") and text:
+            try:
+                text = language.polish(text)
+            except Exception:  # noqa: BLE001 - мовна косметика не має ламати хід
+                LOG.debug("Мовне виправлення не вдалось", exc_info=True)
         self.events.put(AgentEvent(kind, text, data))
 
     def _run(self, text: str) -> None:
