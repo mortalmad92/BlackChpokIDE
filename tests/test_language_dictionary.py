@@ -61,6 +61,40 @@ class TestPolishAnswers(TestCase):
         self.assertEqual(language.polish(None), None)  # type: ignore[arg-type]
 
 
+class TestReportPhrases(TestCase):
+    """Фрази, які модель справді видає у ЗВІТАХ про роботу.
+
+    Заміряно на реальних відповідях: без цих форм лишалось «файл
+    является», «функцию добавлено», «синтаксис проверен», «ошибок нет».
+    """
+
+    CASES = (
+        ("Сейчас проверю файл, потому что была ошибка в коде",
+         ("Зараз", "помилка", "у коді")),
+        ("Нужно сначала прочитать папку проекта",
+         ("Потрібно", "спочатку", "теку", "проєкту")),
+        ("Файлы созданы, ошибок нет",
+         ("Файли", "створені", "немає")),
+        ("Готово: функцию добавлено, синтаксис проверен",
+         ("функцію", "додано", "перевірено")),
+    )
+
+    def test_report_phrases_are_ukrainian(self) -> None:
+        for source, expected in self.CASES:
+            with self.subTest(source=source):
+                result = language.polish(source)
+                for fragment in expected:
+                    self.assertIn(fragment, result,
+                                  f"немає «{fragment}» у «{result}»")
+
+    def test_no_issues_left_after_polish(self) -> None:
+        """Після виправлення не має лишатись відомих русизмів."""
+        for source, _expected in self.CASES:
+            with self.subTest(source=source):
+                left = language.find_issues(language.polish(source))
+                self.assertEqual(left, [], f"лишилось: {left}")
+
+
 class TestCodeIsProtected(TestCase):
     """НАЙГОЛОВНІШЕ: словник не має чіпати код."""
 
