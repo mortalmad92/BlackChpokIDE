@@ -1,0 +1,263 @@
+{
+  "generated_at": 1794156801.192872,
+  "harness": "blackchpok-bench",
+  "engine": {
+    "status": "ok",
+    "model": "C:\\AI\\blackchpock_ai\\userdata\\models\\qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+    "description": "qwen2 14B Q4_K - Medium",
+    "context": 16384,
+    "gpu_layers": -1,
+    "cache_type": "q8_0",
+    "threads": 12,
+    "runs": [
+      {
+        "run": 1,
+        "prompt_tokens": 62,
+        "generated_tokens": 64,
+        "time_to_first_token_ms": 145.3,
+        "tokens_per_second": 30.91,
+        "prompt_tokens_per_second": 426.72,
+        "vram_used_mb": 10661.0,
+        "text_preview": "Функція, яка читає файл у межах робочої теки проєкту, використовується для отримання даних з файлу. Ця функція відкриває"
+      },
+      {
+        "run": 2,
+        "prompt_tokens": 62,
+        "generated_tokens": 64,
+        "time_to_first_token_ms": 34.6,
+        "tokens_per_second": 30.36,
+        "prompt_tokens_per_second": 1793.31,
+        "vram_used_mb": 10661.0,
+        "text_preview": "Функція, яка читає файл у межах робочої теки проєкту, використовується для отримання даних з файлу. Ця функція відкриває"
+      },
+      {
+        "run": 3,
+        "prompt_tokens": 62,
+        "generated_tokens": 64,
+        "time_to_first_token_ms": 33.7,
+        "tokens_per_second": 30.34,
+        "prompt_tokens_per_second": 1840.23,
+        "vram_used_mb": 10661.0,
+        "text_preview": "Функція, яка читає файл у межах робочої теки проєкту, використовується для отримання даних з файлу. Ця функція відкриває"
+      }
+    ],
+    "metrics": {
+      "time_to_load_ms": {
+        "name": "time_to_load",
+        "value": 4038.2,
+        "unit": "мс",
+        "note": "завантаження моделі у пам'ять"
+      },
+      "time_to_first_token_ms": {
+        "name": "time_to_first_token",
+        "value": 71.2,
+        "unit": "мс",
+        "note": "prefill промпту",
+        "samples": [
+          145.3,
+          34.6,
+          33.7
+        ],
+        "p50": 34.6,
+        "p95": 134.23,
+        "p99": 143.086
+      },
+      "tokens_per_second": {
+        "name": "tokens_per_second",
+        "value": 30.537,
+        "unit": "ток/с",
+        "note": "швидкість декодування",
+        "samples": [
+          30.91,
+          30.36,
+          30.34
+        ],
+        "p50": 30.36,
+        "p95": 30.855,
+        "p99": 30.899
+      },
+      "prompt_tokens_per_second": {
+        "name": "prompt_tokens_per_second",
+        "value": 1353.42,
+        "unit": "ток/с",
+        "note": "обробка промпту",
+        "samples": [
+          426.72,
+          1793.31,
+          1840.23
+        ],
+        "p50": 1793.31,
+        "p95": 1835.538,
+        "p99": 1839.292
+      },
+      "peak_vram_mb": {
+        "name": "peak_vram",
+        "value": 10661.0,
+        "unit": "МБ",
+        "note": "зайнята VRAM під час генерації",
+        "samples": [
+          10661.0,
+          10661.0,
+          10661.0
+        ],
+        "p50": 10661.0,
+        "p95": 10661.0,
+        "p99": 10661.0
+      },
+      "peak_ram_mb": {
+        "name": "peak_ram",
+        "value": 8660.594,
+        "unit": "МБ",
+        "note": "пікова робоча множина процесу"
+      },
+      "vram_baseline_mb": {
+        "name": "vram_baseline",
+        "value": 10639.0,
+        "unit": "МБ",
+        "note": "VRAM до генерації"
+      },
+      "ram_baseline_mb": {
+        "name": "ram_baseline",
+        "value": 8583.141,
+        "unit": "МБ",
+        "note": "RAM до генерації"
+      },
+      "total_ms": {
+        "name": "total",
+        "value": 2167.927,
+        "unit": "мс",
+        "note": "повний час запиту",
+        "samples": [
+          2216.903,
+          2143.04,
+          2143.837
+        ],
+        "p50": 2143.837,
+        "p95": 2209.597,
+        "p99": 2215.442
+      },
+      "kv_cache_capacity": {
+        "name": "kv_cache_capacity",
+        "value": 16384.0,
+        "unit": "токенів",
+        "note": "вікно KV-кешу"
+      }
+    }
+  },
+  "memory": {
+    "status": "ok",
+    "queries": 6,
+    "k": 3,
+    "window": 4096,
+    "recall_at_k": 1.0,
+    "precision_at_k": 0.833,
+    "mrr": 1.0,
+    "token_savings_share": 0.0,
+    "prediction_accuracy": 0.4,
+    "prediction_samples": 6,
+    "details": [
+      {
+        "query": "де виконуються команди",
+        "expected": "m-5aecf2df9e4e45bf",
+        "rank": 1,
+        "found": true,
+        "policy": "lexical+graph+temporal (немає векторів — лише лексемний пошук)",
+        "top": [
+          "run_command виконує команди через shell=True у робочій теці проєкту."
+        ]
+      },
+      {
+        "query": "як читається файл",
+        "expected": "m-70faf969be31401c",
+        "rank": 1,
+        "found": true,
+        "policy": "lexical (немає векторів — лише лексемний пошук)",
+        "top": [
+          "read_file читає файли лише в межах робочої теки й повертає рядки з ном"
+        ]
+      },
+      {
+        "query": "який контекст у моделі",
+        "expected": "m-b074c7d97acc4b84",
+        "rank": 1,
+        "found": true,
+        "policy": "lexical+graph+temporal (немає векторів — лише лексемний пошук)",
+        "top": [
+          "Контекст моделі 16K токенів дає 31 токен за секунду на RTX 3060."
+        ]
+      },
+      {
+        "query": "що було з помилкою theme",
+        "expected": "m-6334f418ee4a47bd",
+        "rank": 1,
+        "found": true,
+        "policy": "lexical+graph+temporal (немає векторів — лише лексемний пошук)",
+        "top": [
+          "Помилка NameError у chat_panel.py: не імпортовано theme.",
+          "Виправлення: додано імпорт theme у chat_panel.py."
+        ]
+      },
+      {
+        "query": "як виправлено імпорт",
+        "expected": "m-1e9f305bddc7446d",
+        "rank": 1,
+        "found": true,
+        "policy": "lexical (немає векторів — лише лексемний пошук)",
+        "top": [
+          "Виправлення: додано імпорт theme у chat_panel.py.",
+          "Помилка NameError у chat_panel.py: не імпортовано theme."
+        ]
+      },
+      {
+        "query": "навіщо KV-кеш",
+        "expected": "m-c6454a5c5be348ed",
+        "rank": 1,
+        "found": true,
+        "policy": "lexical (немає векторів — лише лексемний пошук)",
+        "top": [
+          "KV-кеш переиспользує префікс промпту й зменшує час до першого токена."
+        ]
+      }
+    ],
+    "counts": {
+      "memories": 6,
+      "active": 6,
+      "links": 0,
+      "conflicts": 0,
+      "with_vectors": 0
+    }
+  },
+  "library": {
+    "version": "0.9.0-dev",
+    "system": "CUDA : ARCHS = 750,800,860,890,900,1200,1210 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 |",
+    "devices": [
+      {
+        "index": 0,
+        "name": "CUDA0",
+        "description": "NVIDIA GeForce RTX 3060",
+        "kind": "gpu",
+        "memory_free_mb": 11255.0,
+        "memory_total_mb": 12287.4
+      },
+      {
+        "index": 1,
+        "name": "CPU",
+        "description": "AMD Ryzen 5 3600 6-Core Processor              ",
+        "kind": "cpu",
+        "memory_free_mb": 46000.1,
+        "memory_total_mb": 65461.1
+      }
+    ]
+  },
+  "gpu": [
+    {
+      "name": "NVIDIA GeForce RTX 3060",
+      "vram_total_mb": 12288.0,
+      "vram_used_mb": 10661.0,
+      "vram_free_mb": 1455.0,
+      "utilization_percent": 98.0,
+      "temperature_c": 59.69,
+      "driver": "621.01"
+    }
+  ]
+}

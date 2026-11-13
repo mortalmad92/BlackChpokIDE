@@ -183,7 +183,7 @@ _NOTES: dict[str, dict[str, Any]] = {
         "purpose": "показати вміст папки робочої теки",
         "category": "files", "risk": RISK_READ_ONLY,
         "side_effects": "немає",
-        "failure_modes": ("папки немає → перевір шлях у проекті",),
+        "failure_modes": ("папки немає → перевір шлях у проєкті",),
         "example": {"path": "."},
     },
     "search_text": {

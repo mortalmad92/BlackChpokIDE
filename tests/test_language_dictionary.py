@@ -72,7 +72,7 @@ class TestReportPhrases(TestCase):
         ("Сейчас проверю файл, потому что была ошибка в коде",
          ("Зараз", "помилка", "у коді")),
         ("Нужно сначала прочитать папку проекта",
-         ("Потрібно", "спочатку", "теку", "проєкту")),
+         ("Потрібно", "спочатку", "папку", "проєкту")),
         ("Файлы созданы, ошибок нет",
          ("Файли", "створені", "немає")),
         ("Готово: функцию добавлено, синтаксис проверен",
@@ -93,6 +93,61 @@ class TestReportPhrases(TestCase):
             with self.subTest(source=source):
                 left = language.find_issues(language.polish(source))
                 self.assertEqual(left, [], f"лишилось: {left}")
+
+
+class TestApostropheProtection(TestCase):
+    """Апостроф перед словом означає ІНШЕ слово — його чіпати не можна.
+
+    Заміряно: «Картинка з'являється в чаті» перетворювалась на
+    «Картинка з'є в чаті», бо «являється» (русизм) і «з'являється»
+    (цілком українське слово, множина від «являтися») мають спільну
+    частину. Межа слова цього не ловила: апостроф не є літерою.
+
+    Це було ПОРУШЕННЯ ТЕКСТУ, а не косметика: словник псував правильне
+    українське слово.
+    """
+
+    def test_z_yavlyayetsya_is_preserved(self) -> None:
+        text = "Картинка з'являється в чаті"
+        self.assertEqual(language.polish(text), text,
+                         "словник зіпсував «з'являється»")
+
+    def test_typographic_apostrophe(self) -> None:
+        text = "Вкладка з\u2019являється раніше"
+        self.assertEqual(language.polish(text), text)
+
+    def test_real_russism_still_fixed(self) -> None:
+        """Справжнє «являється» без апострофа — виправляємо."""
+        self.assertIn("є", language.polish("Це являється проблемою"))
+        self.assertNotIn("являється", language.polish("Це являється проблемою"))
+
+    def test_hyphenated_word_preserved(self) -> None:
+        text = "будь-який текст"
+        self.assertEqual(language.polish(text), text)
+
+
+class TestNoFalseIssues(TestCase):
+    """``find_issues`` не має лякати на українських словах.
+
+    Пари-тотожності (source == target) і літературні слова не є русизмами.
+    Заміряно: скан текстів інтерфейсу показував 44 файли з «русизмами»,
+    хоч там були «запусти», «команду», «задачу», «папку» — усі українські.
+    """
+
+    def test_identity_pairs_not_reported(self) -> None:
+        for text in ("запусти тести", "виконай команду", "виріши задачу",
+                     "відкрий папку", "покажи папку проєкту"):
+            with self.subTest(text=text):
+                self.assertEqual(language.find_issues(text), [])
+
+    def test_real_russism_reported(self) -> None:
+        self.assertTrue(language.find_issues("сейчас перевірю"))
+
+    def test_ui_texts_have_no_identity_noise(self) -> None:
+        """Типовий текст інтерфейсу не має давати жодного сигналу."""
+        text = ("Готовий до роботи. Опиши задачу — я прочитаю файли, "
+                "внесу зміни й перевірю результат.")
+        self.assertEqual(language.find_issues(text), [])
 
 
 class TestCodeIsProtected(TestCase):
@@ -155,7 +210,7 @@ class TestNormaliseInput(TestCase):
 
     def test_folder_word(self) -> None:
         result = language.normalise("проверь папку проекта")
-        self.assertIn("теку", result)
+        self.assertIn("папку", result)
         self.assertIn("проєкту", result)
 
     def test_yields_intent_create(self) -> None:

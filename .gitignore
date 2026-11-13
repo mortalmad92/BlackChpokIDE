@@ -1,34 +1,111 @@
-.venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-.mcp_rag/
-*.sqlite3-wal
-*.sqlite3-shm
+*$py.class
 
-# Артефакти збірки та тестів BlackChpok IDE
+# Distribution / packaging
+.Python
 build/
+develop-eggs/
 dist/
-.buildtmp/
-*.spec.bak
-userdata/
-*.bak
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# ── Локальні робочі дані (не для репозиторію) ──────────────────────────────
-# logs/ — журнали прогонів, знімки екрана стрес-тестів, дампи моделі.
-# .quarantine/ — перенесені файли разом із RESTORE.py (локальна історія).
+# PyInstaller
+/dist/
+/build/
+/develop-eggs/
+*.manifest
+*.spec
+
+# IPython
+profile_default/
+ipython_config.py
+
+# virtualenv
+.venv/
+venv/
+ENV/
+env/
+bin/
+
+# Spyder project settings
+.spyderproject
+.spyproject.pydevproject
+
+# Rope project settings
+.ropeproject
+
+# epytext
+*.rst
+
+# PyCharm
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ДАНІ ЗАСТОСУНКУ ТА МОДЕЛІ — НІКОЛИ НЕ В РЕПОЗИТОРІЇ
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Інцидент, який це виправляє. ``userdata/`` не був у ``.gitignore``, тож
+# ``git add -A`` затягнув у коміт:
+#
+#   userdata/models/qwen2.5-coder-14b-instruct-q4_k_m.gguf   8.99 ГБ
+#   userdata/models/Ministral-3-14B-Instruct-2512-Q4_K_M.gguf 8.24 ГБ
+#   userdata/models/*.gguf (решта)                          ~3.4 ГБ
+#   userdata/browser/** (профіль Edge)                       3560 файлів
+#
+# Разом ≈20 ГБ і 3560 файлів. ``git push`` на GitHub падав з
+# ``error: RPC failed; HTTP 500`` і ``fatal: the remote end hung up``
+# (перевірено тричі) — тобто зміни НЕ МОГЛИ потрапити на GitHub узагалі.
+#
+# Тепер ваги моделей, профіль браузера, журнали й тимчасові дані
+# виключені: репозиторій містить КОД, а не гігабайти бінарників.
+userdata/
+.mcp_rag/
 logs/
+.teststate/
 .quarantine/
+.buildtmp/
 .pytest_cache/
-research/
-.agents/
-gcm-diagnose.log
+.ruff_cache/
+
+# Ваги моделей і проєктори — у будь-якій теці (модель завантажується
+# окремо через «Хаб моделей», а не лежить у git).
+*.gguf
+*.bin
+*.safetensors
+*.onnx
+
+# Службові дані IDE, які не мають сенсу поза машиною розробника.
+*.db
+*.db-wal
+*.db-shm
+queue.json
+chats.json
+chats.json.bak
+session.json
 *.log
 
-# Службові каталоги редакторів/агентів із локальними налаштуваннями.
-.github/agents/
-
-# ── Реєстр тестів ──────────────────────────────────────────────────────────
-# .teststate/README.md і STATUS.md — ЗБЕРІГАЄМО: за ними агент розуміє, що
-# вже перевірено й не запускає 210-секундний прогін по колу.
-# ledger.json — локальний стан конкретної машини, тому він ігнорується.
-.teststate/ledger.json
+# Артефакти тестових і живих прогонів.
+*.bak
+__pycache__/
+*.pyc

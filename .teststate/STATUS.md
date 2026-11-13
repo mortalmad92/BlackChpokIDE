@@ -1,85 +1,86 @@
 # Стан тестів (автоматично, не правити руками)
 
-Створено: `tools/test_ledger.py`. Оновлено: 2026-11-13 20:25:13
+Створено: `tools/test_ledger.py`. Оновлено: 2026-11-13 22:56:08
 
 **Якщо ти ШІ-агент:** перш ніж запускати тести, виконай `python tools/test_ledger.py status`. Запускай лише ті, що позначені «не запускався», «застарів» або «ПАДАЄ».
 
 | Тест | Стан | Тип | Оновлено | Нотатка |
 |---|---|---|---|---|
-| `tests/test_agent_e2e.py` | ПАДАЄ | script | 2026-11-13 20:18:37 | llama_graph_n_input_tensors: input tensor '                a |
-| `tests/test_deep_mode_live_model.py` | ПАДАЄ | script | 2026-11-13 20:20:16 |     version, status, reason = self._read_status()
-           |
+| `tests/test_all_tools.py` | ПАДАЄ | script | 2026-11-13 22:56:08 | Traceback (most recent call last):
+  File "C:\AI\blackchpock |
+| `tests/test_work_log_live.py` | ПАДАЄ | script | 2026-11-13 22:36:49 | llama_graph_n_input_tensors: input tensor '                a |
 | `tests/e2e_real_agent.py` | пройдено | script | 2026-11-13 20:17:23 |  |
 | `tests/e2e_stabilization_demo.py` | пройдено | script | 2026-11-13 20:17:49 |  |
-| `tests/smoke_gui.py` | пройдено | script | 2026-11-13 20:18:03 |  |
+| `tests/smoke_gui.py` | пройдено | script | 2026-11-13 22:11:06 |  |
 | `tests/test_adaptive_power.py` | пройдено | unittest | 2026-11-13 13:25:32 |  |
+| `tests/test_agent_e2e.py` | пройдено | script | 2026-11-13 22:32:40 |  |
 | `tests/test_agent_executes_task.py` | пройдено | unittest | 2026-11-13 20:18:37 |  |
-| `tests/test_agent_live_ux.py` | пройдено | unittest | 2026-11-13 20:18:38 |  |
+| `tests/test_agent_live_ux.py` | пройдено | unittest | 2026-11-13 22:11:07 |  |
 | `tests/test_agent_no_json_demand.py` | пройдено | unittest | 2026-11-13 20:18:38 |  |
 | `tests/test_agent_reliability.py` | пройдено | unittest | 2026-11-13 20:18:39 |  |
 | `tests/test_agent_scenarios.py` | пройдено | unittest | 2026-11-13 20:18:40 |  |
-| `tests/test_all_tools.py` | пройдено | script | 2026-11-13 20:18:43 |  |
 | `tests/test_answer_branches_clean.py` | пройдено | unittest | 2026-11-12 18:15:10 |  |
-| `tests/test_ast_editor.py` | пройдено | script | 2026-11-13 20:18:46 |  |
+| `tests/test_ast_editor.py` | пройдено | script | 2026-11-13 22:11:11 |  |
 | `tests/test_atomic_save.py` | пройдено | unittest | 2026-11-13 12:42:06 |  |
 | `tests/test_audit_regressions.py` | пройдено | unittest | 2026-11-13 20:18:47 |  |
 | `tests/test_audit_undefined_names.py` | пройдено | unittest | 2026-11-13 20:17:15 |  |
 | `tests/test_auto_setup.py` | пройдено | script | 2026-11-13 12:42:07 |  |
 | `tests/test_autonomous.py` | пройдено | unittest | 2026-11-13 12:42:07 |  |
-| `tests/test_autonomous_live.py` | пройдено | script | 2026-11-13 20:19:01 |  |
+| `tests/test_autonomous_live.py` | пройдено | script | 2026-11-13 22:11:30 |  |
 | `tests/test_bench.py` | пройдено | unittest | 2026-11-13 12:42:31 |  |
 | `tests/test_bridge_reliability.py` | пройдено | unittest | 2026-11-13 12:42:31 |  |
-| `tests/test_broken_queue.py` | пройдено | unittest | 2026-11-13 20:19:03 |  |
+| `tests/test_broken_queue.py` | пройдено | unittest | 2026-11-13 22:11:33 |  |
 | `tests/test_broken_state_files.py` | пройдено | unittest | 2026-11-13 12:42:34 |  |
 | `tests/test_browser_url.py` | пройдено | unittest | 2026-11-13 12:42:35 |  |
-| `tests/test_browser_wizard_live.py` | пройдено | script | 2026-11-13 20:19:17 |  |
-| `tests/test_callbacks_contract.py` | пройдено | unittest | 2026-11-13 20:19:18 |  |
-| `tests/test_cases_live.py` | пройдено | script | 2026-11-13 20:19:39 |  |
-| `tests/test_cases_panel.py` | пройдено | script | 2026-11-13 20:19:40 |  |
-| `tests/test_chat_fixes.py` | пройдено | unittest | 2026-11-13 20:19:40 |  |
-| `tests/test_chat_folder.py` | пройдено | unittest | 2026-11-13 20:19:40 |  |
+| `tests/test_browser_wizard_live.py` | пройдено | script | 2026-11-13 22:11:47 |  |
+| `tests/test_callbacks_contract.py` | пройдено | unittest | 2026-11-13 22:11:48 |  |
+| `tests/test_cases_live.py` | пройдено | script | 2026-11-13 22:33:34 |  |
+| `tests/test_cases_panel.py` | пройдено | script | 2026-11-13 22:16:24 |  |
+| `tests/test_chat_fixes.py` | пройдено | unittest | 2026-11-13 22:16:24 |  |
+| `tests/test_chat_folder.py` | пройдено | unittest | 2026-11-13 22:16:25 |  |
 | `tests/test_chat_formatting.py` | пройдено | unittest | 2026-11-13 20:19:40 |  |
-| `tests/test_chat_history_view.py` | пройдено | unittest | 2026-11-13 20:19:41 |  |
-| `tests/test_chat_ownership.py` | пройдено | unittest | 2026-11-13 20:19:42 |  |
+| `tests/test_chat_history_view.py` | пройдено | unittest | 2026-11-13 22:16:25 |  |
+| `tests/test_chat_ownership.py` | пройдено | unittest | 2026-11-13 22:16:26 |  |
 | `tests/test_chat_renderer.py` | пройдено | unittest | 2026-11-13 20:19:42 |  |
 | `tests/test_chat_store.py` | пройдено | script | 2026-11-12 18:15:44 |  |
-| `tests/test_chat_ux.py` | пройдено | unittest | 2026-11-13 20:19:43 |  |
+| `tests/test_chat_ux.py` | пройдено | unittest | 2026-11-13 22:16:27 |  |
 | `tests/test_cloud_social.py` | пройдено | script | 2026-11-12 18:15:46 |  |
 | `tests/test_commands.py` | пройдено | script | 2026-11-13 20:19:46 |  |
-| `tests/test_composer_pills.py` | пройдено | unittest | 2026-11-13 20:19:47 |  |
+| `tests/test_composer_pills.py` | пройдено | unittest | 2026-11-13 22:16:28 |  |
 | `tests/test_composer_visible.py` | пройдено | unittest | 2026-11-13 20:19:48 |  |
 | `tests/test_context_budget.py` | пройдено | unittest | 2026-11-13 20:19:48 |  |
 | `tests/test_context_regulation.py` | пройдено | unittest | 2026-11-13 20:19:48 |  |
 | `tests/test_context_stats.py` | пройдено | script | 2026-11-13 12:43:00 |  |
 | `tests/test_deep_mode.py` | пройдено | unittest | 2026-11-13 20:19:52 |  |
-| `tests/test_deep_mode_live.py` | пройдено | script | 2026-11-13 20:19:59 |  |
+| `tests/test_deep_mode_live.py` | пройдено | script | 2026-11-13 22:16:36 |  |
+| `tests/test_deep_mode_live_model.py` | пройдено | script | 2026-11-13 22:34:55 |  |
 | `tests/test_deep_view.py` | пройдено | unittest | 2026-11-12 16:31:52 |  |
 | `tests/test_deploy.py` | пройдено | script | 2026-11-12 18:17:19 |  |
 | `tests/test_diff_stats.py` | пройдено | script | 2026-11-13 20:20:16 |  |
 | `tests/test_dom_bridge.py` | пройдено | unittest | 2026-11-12 16:31:53 |  |
 | `tests/test_edge_cases.py` | пройдено | script | 2026-11-13 20:20:18 |  |
 | `tests/test_edit_hint_content.py` | пройдено | unittest | 2026-11-13 20:17:15 |  |
-| `tests/test_editor_files.py` | пройдено | script | 2026-11-13 20:20:18 |  |
-| `tests/test_embedded_engine_status.py` | пройдено | unittest | 2026-11-13 20:20:40 |  |
+| `tests/test_editor_files.py` | пройдено | script | 2026-11-13 22:16:36 |  |
+| `tests/test_embedded_engine_status.py` | пройдено | unittest | 2026-11-13 22:16:54 |  |
 | `tests/test_engine_crash_and_filelist.py` | пройдено | unittest | 2026-11-13 20:20:40 |  |
 | `tests/test_env_setup.py` | пройдено | unittest | 2026-11-12 16:31:55 |  |
 | `tests/test_error_messages_readable.py` | пройдено | unittest | 2026-11-12 16:28:29 |  |
-| `tests/test_everything_works.py` | пройдено | unittest | 2026-11-13 20:20:41 |  |
+| `tests/test_everything_works.py` | пройдено | unittest | 2026-11-13 22:16:55 |  |
 | `tests/test_features.py` | пройдено | script | 2026-11-13 20:20:42 |  |
-| `tests/test_focus_mode.py` | пройдено | script | 2026-11-13 20:20:49 |  |
+| `tests/test_focus_mode.py` | пройдено | script | 2026-11-13 22:17:02 |  |
 | `tests/test_git_degradation.py` | пройдено | unittest | 2026-11-13 12:44:49 |  |
 | `tests/test_git_publish.py` | пройдено | unittest | 2026-11-13 20:20:58 |  |
 | `tests/test_ide_core.py` | пройдено | unittest | 2026-11-13 20:20:59 |  |
-| `tests/test_idle_reload_live.py` | пройдено | script | 2026-11-13 20:21:15 |  |
-| `tests/test_idle_unload_live.py` | пройдено | script | 2026-11-13 20:21:17 |  |
+| `tests/test_idle_reload_live.py` | пройдено | script | 2026-11-13 22:17:20 |  |
+| `tests/test_idle_unload_live.py` | пройдено | script | 2026-11-13 22:17:22 |  |
 | `tests/test_intent_engine.py` | пройдено | unittest | 2026-11-13 20:21:18 |  |
 | `tests/test_kv_abort_resync.py` | пройдено | unittest | 2026-11-13 12:41:40 |  |
 | `tests/test_language_cases.py` | пройдено | unittest | 2026-11-13 20:17:15 |  |
 | `tests/test_language_dictionary.py` | пройдено | unittest | 2026-11-13 20:17:16 |  |
-| `tests/test_layout.py` | пройдено | script | 2026-11-13 20:21:34 |  |
-| `tests/test_layout_persist.py` | пройдено | script | 2026-11-13 20:21:44 |  |
-| `tests/test_lazy_tools.py` | пройдено | unittest | 2026-11-13 20:21:45 |  |
-| `tests/test_local_detection.py` | пройдено | unittest | 2026-11-13 20:21:45 |  |
+| `tests/test_layout.py` | пройдено | script | 2026-11-13 22:17:43 |  |
+| `tests/test_layout_persist.py` | пройдено | script | 2026-11-13 22:17:53 |  |
+| `tests/test_lazy_tools.py` | пройдено | unittest | 2026-11-13 22:17:55 |  |
+| `tests/test_local_detection.py` | пройдено | unittest | 2026-11-13 22:17:55 |  |
 | `tests/test_lockfile.py` | пройдено | unittest | 2026-11-12 16:28:30 |  |
 | `tests/test_logic_modules.py` | пройдено | unittest | 2026-11-12 16:32:42 |  |
 | `tests/test_markdown_view.py` | пройдено | script | 2026-11-13 20:21:45 |  |
@@ -89,69 +90,69 @@
 | `tests/test_mcp_watch.py` | пройдено | unittest | 2026-11-12 18:18:46 |  |
 | `tests/test_message_parts.py` | пройдено | unittest | 2026-11-13 20:21:47 |  |
 | `tests/test_modal_windows.py` | пройдено | unittest | 2026-11-13 12:45:37 |  |
-| `tests/test_model_answers.py` | пройдено | unittest | 2026-11-13 20:21:48 |  |
+| `tests/test_model_answers.py` | пройдено | unittest | 2026-11-13 22:17:55 |  |
 | `tests/test_model_hub.py` | пройдено | unittest | 2026-11-13 20:21:48 |  |
-| `tests/test_model_identity.py` | пройдено | unittest | 2026-11-13 20:21:49 |  |
+| `tests/test_model_identity.py` | пройдено | unittest | 2026-11-13 22:17:55 |  |
 | `tests/test_model_menu.py` | пройдено | script | 2026-11-13 20:21:52 |  |
 | `tests/test_model_profile.py` | пройдено | unittest | 2026-11-13 20:21:53 |  |
 | `tests/test_model_switch_live.py` | пройдено | script | 2026-11-12 18:19:10 |  |
 | `tests/test_model_verify.py` | пройдено | unittest | 2026-11-12 16:33:19 |  |
 | `tests/test_more_panels.py` | пройдено | unittest | 2026-11-13 12:45:50 |  |
 | `tests/test_multiscale.py` | пройдено | unittest | 2026-11-13 20:22:03 |  |
-| `tests/test_native_engine_and_stats.py` | пройдено | unittest | 2026-11-13 20:22:03 |  |
+| `tests/test_native_engine_and_stats.py` | пройдено | unittest | 2026-11-13 22:17:56 |  |
 | `tests/test_native_model_default.py` | пройдено | unittest | 2026-11-13 12:45:51 |  |
 | `tests/test_native_runtime.py` | пройдено | unittest | 2026-11-13 20:22:55 |  |
-| `tests/test_nav_sidebar.py` | пройдено | unittest | 2026-11-13 20:22:56 |  |
+| `tests/test_nav_sidebar.py` | пройдено | unittest | 2026-11-13 22:17:57 |  |
 | `tests/test_neuromesh.py` | пройдено | unittest | 2026-11-13 20:22:59 |  |
 | `tests/test_new_layers_live.py` | пройдено | script | 2026-11-13 20:22:59 |  |
 | `tests/test_night_shift.py` | пройдено | unittest | 2026-11-12 16:34:26 |  |
-| `tests/test_no_duplication_and_greetings.py` | пройдено | unittest | 2026-11-13 20:23:00 |  |
+| `tests/test_no_duplication_and_greetings.py` | пройдено | unittest | 2026-11-13 22:17:58 |  |
 | `tests/test_outline_and_control.py` | пройдено | unittest | 2026-11-12 18:20:19 |  |
 | `tests/test_panels.py` | пройдено | unittest | 2026-11-13 20:23:01 |  |
 | `tests/test_path_scan.py` | пройдено | unittest | 2026-11-13 20:23:01 |  |
-| `tests/test_permission_notice.py` | пройдено | unittest | 2026-11-13 20:17:22 |  |
+| `tests/test_permission_notice.py` | пройдено | unittest | 2026-11-13 22:18:06 |  |
 | `tests/test_plain_language.py` | пройдено | unittest | 2026-11-13 20:23:02 |  |
 | `tests/test_planning_and_memory.py` | пройдено | unittest | 2026-11-13 20:23:02 |  |
-| `tests/test_port_discovery.py` | пройдено | unittest | 2026-11-13 20:23:21 |  |
-| `tests/test_project_gate.py` | пройдено | unittest | 2026-11-13 20:23:21 |  |
+| `tests/test_port_discovery.py` | пройдено | unittest | 2026-11-13 22:18:25 |  |
+| `tests/test_project_gate.py` | пройдено | unittest | 2026-11-13 22:18:26 |  |
 | `tests/test_quality_gate.py` | пройдено | unittest | 2026-11-12 18:20:43 |  |
 | `tests/test_rag_engine.py` | пройдено | unittest | 2026-11-12 16:34:53 |  |
-| `tests/test_rag_ui.py` | пройдено | script | 2026-11-13 20:23:32 |  |
+| `tests/test_rag_ui.py` | пройдено | script | 2026-11-13 22:18:36 |  |
 | `tests/test_redesign.py` | пройдено | unittest | 2026-11-13 20:23:34 |  |
 | `tests/test_response_engine.py` | пройдено | unittest | 2026-11-13 20:23:35 |  |
 | `tests/test_router_folder_path.py` | пройдено | unittest | 2026-11-13 20:23:35 |  |
 | `tests/test_runner_consistency.py` | пройдено | unittest | 2026-11-13 12:47:04 |  |
 | `tests/test_safe_calls.py` | пройдено | unittest | 2026-11-13 20:23:35 |  |
 | `tests/test_settings_outer_version.py` | пройдено | unittest | 2026-11-13 20:23:35 |  |
-| `tests/test_shell.py` | пройдено | script | 2026-11-13 20:23:44 |  |
+| `tests/test_shell.py` | пройдено | script | 2026-11-13 22:18:46 |  |
 | `tests/test_shell_session.py` | пройдено | script | 2026-11-12 16:35:16 |  |
-| `tests/test_sidebar_chats_only.py` | пройдено | unittest | 2026-11-13 20:23:44 |  |
-| `tests/test_stabilization_regressions.py` | пройдено | unittest | 2026-11-13 20:23:45 |  |
+| `tests/test_sidebar_chats_only.py` | пройдено | unittest | 2026-11-13 22:18:46 |  |
+| `tests/test_stabilization_regressions.py` | пройдено | unittest | 2026-11-13 22:18:47 |  |
 | `tests/test_stage4_reliability.py` | пройдено | unittest | 2026-11-13 12:47:13 |  |
 | `tests/test_startup_regressions.py` | пройдено | unittest | 2026-11-13 20:23:48 |  |
-| `tests/test_startup_speed.py` | пройдено | unittest | 2026-11-13 20:23:50 |  |
-| `tests/test_step_validation.py` | пройдено | unittest | 2026-11-13 20:17:23 |  |
+| `tests/test_startup_speed.py` | пройдено | unittest | 2026-11-13 22:18:49 |  |
+| `tests/test_step_validation.py` | пройдено | unittest | 2026-11-13 22:18:49 |  |
 | `tests/test_streaming.py` | пройдено | script | 2026-11-13 20:23:53 |  |
 | `tests/test_tabs.py` | пройдено | unittest | 2026-11-12 18:21:06 |  |
-| `tests/test_task_center_live.py` | пройдено | script | 2026-11-13 20:24:08 |  |
-| `tests/test_task_plan.py` | пройдено | unittest | 2026-11-13 20:24:09 |  |
-| `tests/test_task_queue_engine.py` | пройдено | unittest | 2026-11-13 20:24:09 |  |
+| `tests/test_task_center_live.py` | пройдено | script | 2026-11-13 22:19:14 |  |
+| `tests/test_task_plan.py` | пройдено | unittest | 2026-11-13 22:19:15 |  |
+| `tests/test_task_queue_engine.py` | пройдено | unittest | 2026-11-13 22:19:15 |  |
 | `tests/test_theme_persistence.py` | пройдено | unittest | 2026-11-13 20:24:09 |  |
-| `tests/test_thread_safety.py` | пройдено | unittest | 2026-11-13 20:24:10 |  |
-| `tests/test_timer_hygiene.py` | пройдено | unittest | 2026-11-13 20:24:10 |  |
-| `tests/test_token_counting.py` | пройдено | unittest | 2026-11-13 20:24:11 |  |
+| `tests/test_thread_safety.py` | пройдено | unittest | 2026-11-13 22:19:16 |  |
+| `tests/test_timer_hygiene.py` | пройдено | unittest | 2026-11-13 22:19:17 |  |
+| `tests/test_token_counting.py` | пройдено | unittest | 2026-11-13 22:19:17 |  |
 | `tests/test_tool_orchestrator.py` | пройдено | unittest | 2026-11-13 20:24:11 |  |
 | `tests/test_tool_router.py` | пройдено | script | 2026-11-13 20:24:12 |  |
-| `tests/test_tools_panel.py` | пройдено | script | 2026-11-13 20:24:27 |  |
+| `tests/test_tools_panel.py` | пройдено | script | 2026-11-13 22:19:33 |  |
 | `tests/test_trace_store.py` | пройдено | unittest | 2026-11-13 20:24:27 |  |
-| `tests/test_unified_chats_ui.py` | пройдено | unittest | 2026-11-13 20:24:28 |  |
+| `tests/test_unified_chats_ui.py` | пройдено | unittest | 2026-11-13 22:19:34 |  |
 | `tests/test_user_guide.py` | пройдено | unittest | 2026-11-13 20:24:28 |  |
-| `tests/test_user_reported_fixes.py` | пройдено | unittest | 2026-11-13 20:24:29 |  |
-| `tests/test_v2_audit.py` | пройдено | unittest | 2026-11-13 20:24:36 |  |
+| `tests/test_user_reported_fixes.py` | пройдено | unittest | 2026-11-13 22:19:35 |  |
+| `tests/test_v2_audit.py` | пройдено | unittest | 2026-11-13 22:19:41 |  |
 | `tests/test_vision_chain.py` | пройдено | unittest | 2026-11-12 18:21:33 |  |
 | `tests/test_voice.py` | пройдено | unittest | 2026-11-13 20:24:36 |  |
 | `tests/test_voice_hub.py` | пройдено | script | 2026-11-13 20:24:41 |  |
-| `tests/test_vram_release.py` | пройдено | unittest | 2026-11-13 20:24:42 |  |
+| `tests/test_vram_release.py` | пройдено | unittest | 2026-11-13 22:19:42 |  |
 | `tests/test_watchdog.py` | пройдено | unittest | 2026-11-12 18:21:41 |  |
 | `tests/test_web_api.py` | пройдено | unittest | 2026-11-13 20:24:46 |  |
 | `tests/test_web_open_tool.py` | пройдено | unittest | 2026-11-13 20:24:47 |  |
@@ -159,10 +160,10 @@
 | `tests/test_web_preview_stack.py` | пройдено | unittest | 2026-11-13 20:24:49 |  |
 | `tests/test_web_server.py` | пройдено | unittest | 2026-11-13 20:24:52 |  |
 | `tests/test_web_server_string_paths.py` | пройдено | unittest | 2026-11-13 20:17:23 |  |
-| `tests/test_work_log.py` | пройдено | script | 2026-11-13 20:24:55 |  |
-| `tests/test_work_log_live.py` | пройдено | script | 2026-11-13 20:25:13 |  |
+| `tests/test_window_folder_binding.py` | пройдено | unittest | 2026-11-13 22:10:42 |  |
+| `tests/test_work_log.py` | пройдено | script | 2026-11-13 22:19:45 |  |
 
 ## Підсумок
 
-- Усього записів: **154**
-- Падає: **2** — tests/test_agent_e2e.py, tests/test_deep_mode_live_model.py
+- Усього записів: **155**
+- Падає: **2** — tests/test_all_tools.py, tests/test_work_log_live.py
