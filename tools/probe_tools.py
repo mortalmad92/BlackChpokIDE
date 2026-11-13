@@ -14,10 +14,19 @@
 from __future__ import annotations
 
 import json
+import pathlib
+import sys
 import tempfile
 from pathlib import Path
 
-from blackchpok_ide.agent_tools import TOOL_SCHEMAS, ToolRegistry
+# ── Корінь проєкту в ``sys.path`` ─────────────────────────────────────────
+# Без цього скрипт працює ЛИШЕ коли запущений з кореня проєкту:
+# ``ModuleNotFoundError: No module named 'blackchpok_ide'`` (перевірено).
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from blackchpok_ide.agent_tools import TOOL_SCHEMAS, ToolRegistry  # noqa: E402
 
 #: Безпечні значення для аргументів за типом і назвою.
 BY_NAME = {

@@ -50,38 +50,61 @@ def _names_bound(node: ast.AST, out: set[str]) -> None:
     elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         out.add(node.name)
 
+    def _bind_nested_function(child: ast.AST) -> None:
+        """Зв'язати ім'я та параметри ВКЛАДЕНОЇ функції (на будь-якій глибині).
+
+        Навіщо окремою функцією. ``visit`` бачить лише ПРЯМИХ дітей, тоді як
+        ``_scope_nodes`` заходить у тіла на будь-яку глибину. Через цю
+        розбіжність функція, вкладена у вкладену (``attach_keys`` →
+        ``_guard`` → ``inner(event)``), не отримувала зв'язаних імен, і
+        аудит скаржився на власне ім'я функції та її параметр:
+
+            attach_keys(): ряд 255: «inner» не визначено
+            attach_keys(): ряд 253: «event» не визначено
+
+        Обидва сигнали хибні: ``inner`` — це ``def`` у тій самій функції,
+        а ``event`` — його параметр за замовчуванням. Тепер вкладені
+        зв'язуються рекурсивно, і подвійне вкладення не дає шуму.
+        """
+        out.add(child.name)
+        args = child.args
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            out.add(arg.arg)
+        if args.vararg:
+            out.add(args.vararg.arg)
+        if args.kwarg:
+            out.add(args.kwarg.arg)
+        for inner in ast.walk(child):
+            if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
+                out.add(inner.id)
+            elif isinstance(inner, ast.ExceptHandler) and inner.name:
+                # ``except X as exc`` усередині вкладеної функції:
+                # ``exc`` діє лише в ній, але перевіряємо її разом із
+                # батьком — без цього кожен такий блок давав хибний
+                # «exc не визначено».
+                out.add(inner.name)
+            elif isinstance(inner, (ast.Import, ast.ImportFrom)):
+                # Локальний імпорт усередині функції
+                # (``from . import diagnostics``) діє саме в ній.
+                for alias in inner.names:
+                    local = alias.asname or alias.name.split(".")[0]
+                    if local != "*":
+                        out.add(local)
+            elif isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # Подвійне вкладення: ім'я й параметри теж мусять бути
+                # зв'язані — див. докстрінг вище.
+                if inner is not child:
+                    _bind_nested_function(inner)
+
     def visit(current: ast.AST, *, top: bool) -> None:
         for child in ast.iter_child_nodes(current):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                out.add(child.name)          # ім'я функції видиме
                 # Параметри вкладеної функції зв'язуємо в ТІЙ САМІЙ
                 # області перевірки: ``_scope_nodes`` заходить у її тіло, і
                 # без цього кожен ``def counter(text)`` давав би «text не
                 # визначено». Змінні, які вона створює локально, теж
                 # зв'язуємо — вони не течуть назовні, але перевіряються тут.
-                for arg in (*child.args.posonlyargs, *child.args.args,
-                            *child.args.kwonlyargs):
-                    out.add(arg.arg)
-                if child.args.vararg:
-                    out.add(child.args.vararg.arg)
-                if child.args.kwarg:
-                    out.add(child.args.kwarg.arg)
-                for inner in ast.walk(child):
-                    if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Store):
-                        out.add(inner.id)
-                    elif isinstance(inner, ast.ExceptHandler) and inner.name:
-                        # ``except X as exc`` усередині вкладеної функції:
-                        # ``exc`` діє лише в ній, але перевіряємо її разом із
-                        # батьком — без цього кожен такий блок давав хибний
-                        # «exc не визначено».
-                        out.add(inner.name)
-                    elif isinstance(inner, (ast.Import, ast.ImportFrom)):
-                        # Локальний імпорт усередині функції
-                        # (``from . import diagnostics``) діє саме в ній.
-                        for alias in inner.names:
-                            local = alias.asname or alias.name.split(".")[0]
-                            if local != "*":
-                                out.add(local)
+                _bind_nested_function(child)
                 continue                     # тіло — інша область
             if isinstance(child, ast.ClassDef):
                 out.add(child.name)
@@ -240,13 +263,20 @@ def audit_function(func: ast.AST, module_names: set[str]) -> list[str]:
 
 
 def audit_methods_in_class(node: ast.ClassDef,
-                           module_names: set[str]) -> list[str]:
+                           module_names: set[str],
+                           enclosing: set[str] | None = None) -> list[str]:
     """Перевірити методи класу, НЕ змішуючи їхні області видимості.
 
     Навіщо окремо: дефект ``known_tools`` у ``_stream_embedded`` не був
     знайдений загальним обходом, бо в сусідньому методі ``chat_stream``
     такий параметр Є. Загальний обхід додавав імена ВСІХ методів класу в
     одну «модульну» область — і помилка ховалась.
+
+    ``enclosing`` — імена, видимі методам через ЗАМИКАННЯ: коли клас
+    оголошено ВСЕРЕДИНІ функції, його методи бачать локальні змінні цієї
+    функції. Без цього кожен ``class _Collect`` усередині ``apply_markup``
+    давав хибні «_VOID не визначено», «_IGNORED не визначено» — хоча методи
+    справді їх бачать (перевірено: Python замикає вільні імена класу).
     """
     problems: list[str] = []
     # Імена рівня класу (константи, вкладені класи) видимі методам.
@@ -260,10 +290,11 @@ def audit_methods_in_class(node: ast.ClassDef,
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         _names_bound(item, class_names)
+    visible = module_names | class_names | set(enclosing or ())
     for item in node.body:
         if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        for problem in audit_function(item, module_names | class_names):
+        for problem in audit_function(item, visible):
             problems.append(f"{node.name}.{item.name}(): {problem}")
     return problems
 
@@ -311,6 +342,10 @@ def main() -> int:
         method_nodes: set[int] = set()
         # Вкладені функції: їх перевіряє зовнішня, разом із замиканням.
         nested_nodes: set[int] = set()
+        # Класи, оголошені ВСЕРЕДИНІ функції: їхні методи бачать локальні
+        # змінні цієї функції через замикання. Без обліку цього кожен
+        # локальний клас давав хибні «_VOID не визначено» (hmr.py).
+        nested_class_closure: dict[int, set[str]] = {}
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                  ast.Lambda)):
@@ -320,12 +355,20 @@ def main() -> int:
                     if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         nested_nodes.add(id(inner))
         for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            closure = _closure_names(node)
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.ClassDef) and inner is not node:
+                    nested_class_closure[id(inner)] = closure
+        for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     method_nodes.add(id(item))
-            problems = audit_methods_in_class(node, module_names)
+            problems = audit_methods_in_class(
+                node, module_names, nested_class_closure.get(id(node)))
             if not problems:
                 continue
             if not printed:

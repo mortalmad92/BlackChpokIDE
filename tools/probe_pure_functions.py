@@ -18,10 +18,20 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import pathlib
 import pkgutil
+import sys
 import traceback
 
-import blackchpok_ide as package
+# ── Корінь проєкту в ``sys.path`` ─────────────────────────────────────────
+# Без цього скрипт працює ЛИШЕ коли запущений з кореня проєкту:
+# ``ModuleNotFoundError: No module named 'blackchpok_ide'`` (перевірено).
+# Той самий пропуск був і в ``audit_exports.py``.
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import blackchpok_ide as package  # noqa: E402
 
 #: Модулі, які чіпають GUI, мережу, модель або диск — їх перевіряють інші
 #: інструменти (``smoke_widgets.py``, ``smoke_modules.py``).

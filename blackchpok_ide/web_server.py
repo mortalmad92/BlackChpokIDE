@@ -99,9 +99,17 @@ class Recipe:
 # ── Визначення стеку ────────────────────────────────────────────────────────
 
 def _read(path: Path, limit: int = 8000) -> str:
+    """Прочитати текст файлу, не кидаючи винятків.
+
+    ``path`` приймається і рядком. Раніше виклик із рядком падав з
+    ``AttributeError: 'str' object has no attribute 'read_text'``, якого
+    ``except OSError`` НЕ ловить — тобто виняток летів у викликача замість
+    того, щоб просто віддати порожній рядок. ``AttributeError`` тут така
+    сама «файл недоступний», як і ``OSError``.
+    """
     try:
-        return path.read_text(encoding="utf-8", errors="replace")[:limit]
-    except OSError:
+        return Path(path).read_text(encoding="utf-8", errors="replace")[:limit]
+    except (OSError, AttributeError, TypeError):
         return ""
 
 
@@ -133,7 +141,10 @@ def _find_html(root: Path, *, limit: int = 1) -> list[Path]:
     """
     found: list[Path] = []
     seen = 0
-    stack: list[tuple[Path, int]] = [(root, 0)]
+    # ``root`` приймається і рядком: ``iterdir`` у рядка немає, і виклик
+    # падав з ``AttributeError`` (не ``OSError``, тож і ``except`` нижче
+    # його не ловив).
+    stack: list[tuple[Path, int]] = [(Path(root), 0)]
     while stack and len(found) < limit and seen < _HTML_SCAN_LIMIT:
         folder, depth = stack.pop(0)
         try:
@@ -221,6 +232,14 @@ def looks_like_web_app(code: str) -> tuple[bool, str]:
 
 
 def _exists(root: Path, *names: str) -> Optional[Path]:
+    """Перший наявний файл із переліку в теці.
+
+    ``root`` приймається і рядком: ``settings.workspace`` — це рядок, і
+    виклик із ним падав з ``TypeError: unsupported operand type(s) for /:
+    'str' and 'str'`` замість того, щоб просто відповісти. ``detect``
+    нормалізує теку сам, але ця функція публічна й викликається окремо.
+    """
+    root = Path(root)
     for name in names:
         target = root / name
         if target.exists():
@@ -229,7 +248,11 @@ def _exists(root: Path, *names: str) -> Optional[Path]:
 
 
 def find_entry(root: Path, names: Iterable[str]) -> Optional[Path]:
-    """Перший наявний файл із переліку (з підпапок теж)."""
+    """Перший наявний файл із переліку (з підпапок теж).
+
+    ``root`` може бути рядком — див. :func:`_exists`.
+    """
+    root = Path(root)
     for name in names:
         direct = root / name
         if direct.is_file():

@@ -13,8 +13,18 @@ from __future__ import annotations
 import importlib
 import pathlib
 import pkgutil
+import sys
 
-import blackchpok_ide as package
+# ── Корінь проєкту в ``sys.path`` ─────────────────────────────────────────
+# Без цього скрипт працює ЛИШЕ коли його запускають з кореня проєкту:
+# ``ModuleNotFoundError: No module named 'blackchpok_ide'``. Перевірено —
+# саме так він і падав. Інші інструменти теки це вже роблять; тут рядок
+# був пропущений.
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import blackchpok_ide as package  # noqa: E402
 
 ROOT_MODULES = ("main", "agent_tools", "rag_engine", "vibe_router", "night_shift")
 
@@ -45,7 +55,7 @@ def main() -> int:
 
 
 def _importable(name: str) -> bool:
-    return pathlib.Path(f"{name}.py").is_file()
+    return (ROOT / f"{name}.py").is_file()
 
 
 if __name__ == "__main__":

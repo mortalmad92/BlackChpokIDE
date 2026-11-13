@@ -15,15 +15,24 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import pathlib
 import pkgutil
+import sys
 import tempfile
 import traceback
 from pathlib import Path
 
 import tkinter as tk
 
-import blackchpok_ide as package
-from blackchpok_ide import theme
+# ── Корінь проєкту в ``sys.path`` ─────────────────────────────────────────
+# Без цього скрипт працює ЛИШЕ коли запущений з кореня проєкту:
+# ``ModuleNotFoundError: No module named 'blackchpok_ide'`` (перевірено).
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import blackchpok_ide as package  # noqa: E402
+from blackchpok_ide import theme  # noqa: E402
 
 
 class Context:
