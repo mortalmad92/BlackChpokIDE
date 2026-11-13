@@ -96,6 +96,25 @@ def main() -> int:
         pump(app, 1.4)
         app.hide_welcome()
         pump(app, 0.4)
+        # ── Тека мусить бути ТЕЮ ТЕСТУ, а не збереженого чату ─────────────
+        # Вікно відновлює робочу теку з активної сесії (``chats.json``), і на
+        # машині розробника там цілком законно стоїть інша тека (``C:\AI\site``).
+        # Тест вважав, що ``settings.workspace = ROOT`` достатньо, і падав на
+        # «контекст: проєкт», бо панель чесно показувала ту теку, яку відкрив
+        # застосунок. Це не дефект продукту — це відсутня ізоляція тесту.
+        #
+        # Важливий ПОРЯДОК: відновлення чату скидає теку ще раз, тому
+        # перемикаємо ПІСЛЯ нього, а перед перевірками панелі — доліковуємо
+        # асинхронні колбеки ``after(...)``.
+        app._apply_workspace(ROOT)
+        pump(app, 0.8)
+        # Чат міг відновитись із ``after`` — тому перевіряємо й за потреби
+        # повторюємо (ідемпотентно: та сама тека нічого не ламає).
+        if app._project_root() != ROOT:
+            app._apply_workspace(ROOT)
+            pump(app, 0.8)
+        check("робоча тека — тека тесту", app._project_root() == ROOT,
+              str(app._project_root()))
 
         check("центр завдань існує", hasattr(app, "task_center"))
         check("виконавець підключений", app.task_center.executor is app.executor)
@@ -239,7 +258,15 @@ def main() -> int:
 
         # ── колонка контексту показує стан агента
         app._update_queue_badge()
-        pump(app, 0.3)
+        # Панель малює ту теку, яку знає ВІКНО. Протягом тесту застосунок
+        # міг відновити збережений чат (``chats.json`` на машині розробника
+        # містить ``C:\AI\site``) і перемкнути теку назад — це законна
+        # поведінка продукту, а не дефект. Тому перед перевіркою панелі
+        # явно повертаємо теку тесту й перечитуємо панель.
+        if app._project_root() != ROOT:
+            app._apply_workspace(ROOT)
+        app.context.refresh()
+        pump(app, 0.5)
         agent_join = " | ".join(_labels(app.context.agent_section["body"]))
         check("контекст: стан агента", "модель" in agent_join.lower(), agent_join[:60])
         project_join = " | ".join(_labels(app.context.project_section["body"]))

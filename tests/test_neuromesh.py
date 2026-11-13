@@ -492,5 +492,50 @@ class TestModelHelpers(unittest.TestCase):
         self.assertLessEqual(len(memory.summary), 170)
 
 
+class TestContextLeavesTheWindow(TempMemory):
+    """Те, що вже не вміщається у вікно, лишається в NEUROMESH."""
+
+    def test_archived_turn_is_found_later(self) -> None:
+        from blackchpok_ide.memory_bridge import MemoryBridge
+
+        bridge = MemoryBridge(self.memory)
+        saved = bridge.archive_messages([
+            {"role": "user", "content": "Зроби калькулятор з кнопкою множення"},
+            {"role": "assistant", "content": "Додав multiply у calc.py і перевірив синтаксис"},
+            {"role": "tool", "name": "write_file", "content": "записано calc.py " + ("x" * 2000)},
+        ], task="калькулятор")
+        self.assertTrue(saved)
+        found = self.memory.search("multiply calc.py", limit=5)
+        self.assertGreater(found["count"], 0)
+        body = found["hits"][0]["memory"]["content"]
+        self.assertIn("multiply", body)
+        self.assertLess(len(body), 1000)
+        self.assertEqual(found["hits"][0]["memory"]["task"], "калькулятор")
+
+    def test_trim_hands_the_dropped_block_to_memory(self) -> None:
+        from blackchpok_ide.agent import AgentSession
+        from blackchpok_ide.config import AgentSettings
+        from blackchpok_ide.memory_bridge import MemoryBridge
+
+        bridge = MemoryBridge(self.memory)
+        session = AgentSession(AgentSettings(), Path("."))
+        session.context_limit = 256
+        session.settings.context_char_limit = 120
+        session.on_evict = lambda messages: bridge.archive_messages(
+            messages, task="довгий діалог")
+        session.messages = [
+            {"role": "user", "content": "Поясни архітектуру черги задач " + ("крок " * 80)},
+            {"role": "assistant", "content": "Черга тримає кроки окремо від вікна моделі."},
+            {"role": "user", "content": "а"},
+            {"role": "assistant", "content": "б"},
+            {"role": "user", "content": "останнє прохання лишається у вікні"},
+        ]
+        session.trim()
+        self.assertTrue(any("останнє прохання" in str(item.get("content"))
+                            for item in session.messages))
+        found = self.memory.search("архітектуру черги", limit=3)
+        self.assertGreater(found["count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

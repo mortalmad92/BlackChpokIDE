@@ -630,6 +630,29 @@ class SettingsDialog(tk.Toplevel):
                         variable=self.auto_plan_var).grid(
             row=10, column=0, columnspan=2, sticky="w", pady=2)
 
+        # ── GitHub: питати й відправляти ──────────────────────────────────
+        # Питання «оновити файли на GitHub?» — лише питання: сама відправка
+        # без згоди людини не робиться ніколи.
+        self.git_offer_var = tk.BooleanVar(
+            value=getattr(self.settings.git, "offer_after_work", True))
+        ttk.Checkbutton(options, text="Питати «оновити файли на GitHub?» після "
+                                      "успішної роботи",
+                        variable=self.git_offer_var).grid(
+            row=14, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(options, text="Токен GitHub (лише якщо git не має збережених "
+                                "облікових даних; потрібен доступ «repo»)",
+                  style="Faint.TLabel", wraplength=460).grid(
+            row=15, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.git_token_var = tk.StringVar(
+            value=str(getattr(self.settings.git, "token", "") or ""))
+        ttk.Entry(options, textvariable=self.git_token_var, width=48,
+                  show="•").grid(row=16, column=0, columnspan=2, sticky="w",
+                                 pady=(2, 0))
+        ttk.Label(options, text="Зберігається зашифрованим (DPAPI) і ніколи не "
+                                "потрапляє в командний рядок.",
+                  style="Faint.TLabel", wraplength=460).grid(
+            row=17, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
         # ── відеокарта: звільняти пам'ять, коли користувач не працює
         self.idle_unload_var = tk.BooleanVar(
             value=getattr(self.settings.engine, "unload_when_idle", True))
@@ -1440,6 +1463,12 @@ class SettingsDialog(tk.Toplevel):
         s.agent.save_traces = bool(self.traces_var.get())
         s.agent.memory_participates = bool(self.memory_join_var.get())
         s.agent.auto_plan = bool(self.auto_plan_var.get())
+        # GitHub: прапорець питати й токен (шифрується під час save()).
+        try:
+            s.git.offer_after_work = bool(self.git_offer_var.get())
+            s.git.token = str(self.git_token_var.get() or "").strip()
+        except (AttributeError, tk.TclError):
+            LOG.debug("Налаштування GitHub не збережено", exc_info=True)
         if bool(self.clear_prefs_var.get()):
             s.preferences = []
 

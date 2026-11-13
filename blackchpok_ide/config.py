@@ -294,7 +294,19 @@ DEFAULT_SYSTEM_PROMPT = """Ти — BlackChpok AI, автономний прог
    інших випадках обирай розумний варіант і йди далі.
 
 Як працювати:
-1. ІНТЕРНЕТ — ОБОВ'ЯЗКОВИЙ ІНСТРУМЕНТ, А НЕ ОПЦІЯ.
+0. СПЕРШУ ЗРОБИ ТЕ, ЩО ПРОСЯТЬ, ПОТІМ ШУКАЙ.
+   Якщо прохання — створити річ (сайт, бота, застосунок, скрипт, гру,
+   калькулятор, сторінку, API, тести, файл), це ЗАВДАННЯ, а не привід
+   щось шукати. Бери list_dir/read_file (щоб побачити, що вже є),
+   створюй файли через write_file і йди далі. Пошук у мережі тут не
+   потрібен: ти вже знаєш, як писати код.
+   Мережа потрібна ЛИШЕ тоді, коли бракує саме ФАКТУ (ціна, курс, погода,
+   версія бібліотеки) або просять знайти щось в інтернеті.
+   Слова з опису («новини», «курс», «ціни») у завданні створити річ — це
+   ОПИС цієї речі, а не запит пошуку. «Напиши сайт новин» — це сайт, а не
+   пошук новин.
+
+1. ІНТЕРНЕТ — інструмент для СВІЖИХ ДАНИХ, а не для будь-якої дії.
    У тебе є search_web (пошук), fetch_url (прочитати сторінку) і web_api
    (запит до API). Вони працюють завжди, без жодних налаштувань.
    Викликай search_web, коли:
@@ -343,6 +355,54 @@ DEFAULT_SYSTEM_PROMPT = """Ти — BlackChpok AI, автономний прог
 що зроблено, які файли змінено, як перевірити."""
 
 
+#: Унікальні рядки, за якими впізнаємо ЗАВОДСЬКИЙ промпт у збережених
+#: налаштуваннях. Це не «хеші назавжди»: достатньо однієї сталої фрази з
+#: кожної історичної версії, щоб відрізнити нашу копію від редакції
+#: користувача.
+#:
+#: Навіщо. ``settings.json`` зберігає ПОВНИЙ текст промпту, тож виправлення
+#: в ``DEFAULT_SYSTEM_PROMPT`` не доходило до користувача, доки не додано
+#: міграцію. При цьому чіпати ВЛАСНИЙ текст людини не можна: вона могла
+#: написати його під свою роботу.
+_STOCK_PROMPT_MARKERS: tuple[str, ...] = (
+    "автономний програмний агент усередині IDE",
+    "ІНТЕРНЕТ — ОБОВ'ЯЗКОВИЙ ІНСТРУМЕНТ, А НЕ ОПЦІЯ.",
+    "ІНТЕРНЕТ ОБОВ'ЯЗКОВИЙ. Є search_web (пошук), fetch_url (сторінка),",
+    "СПЕРШУ ЗРОБИ ТЕ, ЩО ПРОСЯТЬ, ПОТІМ ШУКАЙ.",
+)
+
+#: Початок будь-якого нашого промпту (регістр не важливий: у старих
+#: збереженнях трапляється «Blackchpok» із малою «p»).
+_STOCK_PROMPT_HEAD = "blackchpok ai"
+
+
+def _is_stock_prompt(text: str) -> bool:
+    """Чи це НАШ заводський промпт (у т.ч. стара версія), а не редакція людини.
+
+    Перевіряємо дві речі:
+
+    1. текст збігається з поточним ``DEFAULT_SYSTEM_PROMPT`` (тоді міграція
+       нічого не змінює, і це просто швидкий шлях);
+    2. текст починається з нашої назви І містить характерні фрази наших
+       минулих версій — тобто це наша стара копія.
+
+    Регістр перевіряємо без урахування: у реальному ``settings.json``
+    користувача стояло «Blackchpok AI» з малою «p» (стара друкарська
+    помилка), і через сувору перевірку міграція не спрацьовувала взагалі.
+
+    Порожній текст теж вважаємо заводським: це «не налаштовано», а не вибір.
+    """
+    body = (text or "").strip()
+    if not body:
+        return True
+    if body == DEFAULT_SYSTEM_PROMPT.strip():
+        return True
+    head = body[:60].lower()
+    if _STOCK_PROMPT_HEAD not in head:
+        return False
+    return any(marker in body for marker in _STOCK_PROMPT_MARKERS)
+
+
 #: Стислий варіант системного промпту для вузьких вікон контексту.
 #:
 #: Навіщо окремий текст: повний промпт (≈1670 токенів) разом зі схемами
@@ -356,7 +416,11 @@ COMPACT_SYSTEM_PROMPT = """Ти — BlackChpok AI, агент усередині
 проєкті (list_dir, read_file, search_text) і зроби.
 
 Правила роботи:
-1. ІНТЕРНЕТ ОБОВ'ЯЗКОВИЙ. Є search_web (пошук), fetch_url (сторінка),
+0. СПЕРШУ ЗРОБИ ТЕ, ЩО ПРОСЯТЬ. Прохання створити річ (сайт, бота,
+   застосунок, файл, тести) — це завдання: створюй файли через write_file.
+   Мережа потрібна лише для СВІЖИХ ФАКТІВ (ціни, курси, погода, новини),
+   а не для будь-якої дії. «Сайт новин» — це сайт, а не пошук новин.
+1. ІНТЕРНЕТ для свіжих даних. Є search_web (пошук), fetch_url (сторінка),
    web_api (запит до API) — працюють завжди. Викликай search_web для цін,
    курсів, погоди, новин, версій бібліотек і будь-яких свіжих даних.
    НІКОЛИ не вигадуй ціни, курси, дати й версії. Додавай посилання на джерела.
@@ -491,6 +555,12 @@ class AgentSettings:
     #:
     #: Вимкнений для тих, кому заважає смуга етапів над полем вводу.
     auto_plan: bool = True
+    #: Питати «оновити файли на GitHub?» після успішної роботи зі змінами.
+    #:
+    #: Сама відправка не робиться ніколи без згоди людини — це лише
+    #: питання. Вимкнений — агент мовчить, а оновити можна вручну з меню
+    #: Git або словами («запуш на GitHub»).
+    git_offer_publish: bool = True
 
 
 @dataclass
@@ -559,8 +629,28 @@ class CloudSettings:
 
 
 @dataclass
+class GitSettings:
+    """Публікація проєкту на GitHub.
+
+    Токен потрібен ЛИШЕ тоді, коли git не має збережених облікових даних
+    (Git Credential Manager). Він зберігається через DPAPI — так само, як
+    ключі провайдерів, — і ніколи не потрапляє в командний рядок.
+    """
+
+    #: Токен GitHub (fine-grained або classic із доступом ``repo``).
+    token: str = ""
+    #: Питати «оновити файли на GitHub?» після успішної роботи зі змінами.
+    #:
+    #: Це лише ПИТАННЯ: сама відправка без згоди людини не робиться.
+    offer_after_work: bool = True
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.token.strip())
+
+
+@dataclass
 class VoiceSettings:
-    """Голосове керування агентом."""
 
     enabled: bool = True
     auto_send: bool = True          # надсилати розпізнане одразу
@@ -679,6 +769,7 @@ class Settings:
     social: SocialSettings = field(default_factory=SocialSettings)
     voice: VoiceSettings = field(default_factory=VoiceSettings)
     cloud: CloudSettings = field(default_factory=CloudSettings)
+    git: GitSettings = field(default_factory=GitSettings)
     shell: str = "cmd.exe /d /s /c"
     recent: list[str] = field(default_factory=list)
     first_run_done: bool = False
@@ -772,6 +863,24 @@ class Settings:
             UISettings, data.get("ui") if isinstance(data.get("ui"), dict) else {})).normalise()
         agent = AgentSettings(**cls._only_known(
             AgentSettings, data.get("agent") if isinstance(data.get("agent"), dict) else {}))
+        # ── МІГРАЦІЯ СИСТЕМНОГО ПРОМПТУ ────────────────────────────────────
+        # ``settings.json`` зберігає ПОВНИЙ текст системного промпту. Через це
+        # будь-яке виправлення в ``DEFAULT_SYSTEM_PROMPT`` не доходило до
+        # користувача: у нього лишався текст, записаний першого запуску.
+        # Заміряно на справжніх налаштуваннях: у файлі був промпт від старої
+        # версії, де мережа названа «ОБОВ'ЯЗКОВИМ ІНСТРУМЕНТОМ», і модель на
+        # «напиши сайт» ішла в ``search_web`` замість того, щоб створити
+        # файли. Виправлення в коді при цьому не діяло ВЗАГАЛІ.
+        #
+        # Правило безпеки: чужий (змінений користувачем) промпт не чіпаємо.
+        # Оновлюємо лише тоді, коли збережений текст збігається з ЯКИМОСЬ із
+        # наших заводських варіантів — тобто це наша стара копія, а не
+        # власна редакція людини.
+        if _is_stock_prompt(agent.system_prompt):
+            if agent.system_prompt.strip() != DEFAULT_SYSTEM_PROMPT.strip():
+                LOG.info("Системний промпт оновлено до поточної версії "
+                         "(збережена копія була заводською, але старою)")
+            agent.system_prompt = DEFAULT_SYSTEM_PROMPT
         engine_data = data.get("engine") if isinstance(data.get("engine"), dict) else {}
         engine = EngineSettings(**cls._only_known(EngineSettings, engine_data))
         # ── МІГРАЦІЯ: прапорець рушія й адреса мусять збігатися ────────────
@@ -838,6 +947,19 @@ class Settings:
         )
         social = SocialSettings()
         social_data = data.get("social") if isinstance(data.get("social"), dict) else {}
+        # ── GitHub: токен шифрується так само, як ключі провайдерів ────────
+        # Читаємо ``token_enc`` (DPAPI), інакше — застарілий відкритий
+        # ``token``: він перешифрується під час найближчого save().
+        git_data = data.get("git") if isinstance(data.get("git"), dict) else {}
+        git_token = ""
+        if git_data.get("token_enc"):
+            git_token = secrets.decrypt(str(git_data["token_enc"]))
+        if not git_token:
+            git_token = str(git_data.get("token") or "")
+        git = GitSettings(
+            token=git_token,
+            offer_after_work=_as_bool(git_data.get("offer_after_work", True), True),
+        )
         accounts = social_data.get("accounts")
         if isinstance(accounts, dict):
             for key, entry in accounts.items():
@@ -870,6 +992,7 @@ class Settings:
             social=social,
             cloud=cloud,
             voice=voice,
+            git=git,
             shell=str(data.get("shell") or "cmd.exe /d /s /c"),
             recent=recent[:12],
             first_run_done=_as_bool(data.get("first_run_done"), False),
@@ -898,6 +1021,10 @@ class Settings:
         else:
             llm["api_key_enc"] = secrets.encrypt(llm_key)
         cloud["api_key_enc"] = secrets.encrypt(cloud_key)
+        # Токен GitHub — теж секрет: у файлі лише шифротекст.
+        git = asdict(self.git)
+        git_token = str(git.pop("token", "") or "")
+        git["token_enc"] = secrets.encrypt(git_token)
         return {
             "workspace": self.workspace,
             "llm": llm,
@@ -908,6 +1035,7 @@ class Settings:
             "social": asdict(self.social),
             "voice": asdict(self.voice),
             "cloud": cloud,
+            "git": git,
             "shell": self.shell,
             "recent": list(self.recent),
             "first_run_done": self.first_run_done,

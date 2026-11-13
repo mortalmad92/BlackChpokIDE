@@ -123,6 +123,85 @@ class CacheManager:
             self.state.tokens = self.state.tokens[:keep]
             return keep
 
+    def resync(self) -> int:
+        """Привести «дзеркало» до РЕАЛЬНОГО вмісту KV-кешу рушія.
+
+        Навіщо це критично. ``llama_decode`` може повернути ``2``
+        (``DECODE_ABORTED``), коли його перервав наш abort-callback. У цьому
+        разі llama.cpp ЛИШАЄ в пам'яті вже пораховані ubatch-і (це прямо
+        задокументовано в ``llama.h``: «processed ubatches will remain in the
+        context's memory»), але наш ``prepare()`` про них не знає — він
+        довіряє власній мітці (``state.tokens``).
+
+        Заміряно на справжньому рушії (RTX 3060, Qwen2.5-Coder-14B): після
+        скасування посеред prefill мітка показувала **0**, а
+        ``llama_memory_seq_pos_max`` — **1535** (тобто в кеші лежало 1536
+        токенів). Наступний хід брав ``skip = 0`` і декодував поверх наявних
+        даних → ``llama_decode`` повертав ``-1`` («inconsistent sequence
+        positions»), виняток летів у ``llm_client`` → ``LLMError`` → агент
+        повторював ТУ САМУ зіпсовану генерацію, а контекст лишався
+        зіпсованим до перезавантаження моделі. Ззовні це виглядало як
+        «модель перестала відповідати / програма зависла».
+
+        Повертає фактичну кількість токенів у кеші.
+        """
+        with self._lock:
+            memory = self._lib.llama_get_memory(self._ctx)
+            if not memory:
+                # Рушій не дає дескриптора пам'яті — безпечно почати з нуля.
+                self.clear()
+                return 0
+            try:
+                position = int(self._lib.llama_memory_seq_pos_max(memory, 0))
+            except Exception:                        # noqa: BLE001
+                LOG.debug("Позицію KV не прочитано — очищаю", exc_info=True)
+                self.clear()
+                return 0
+            if position < 0:
+                # Порожній кеш: мітка теж мусить бути порожньою.
+                if self.state.tokens:
+                    LOG.info("KV-кеш рушія порожній, мітка мала %d — синхронізую",
+                             len(self.state.tokens))
+                self.state.tokens = []
+                return 0
+            length = position + 1
+            if self.state.length != length:
+                LOG.info("Мітку KV-кешу відновлено з рушія: %d → %d токенів",
+                         self.state.length, length)
+                # Вміст токенів відновити неможливо, а позиції мусять бути
+                # точними. Тому лишаємо порожнє дзеркало: ``prepare()``
+                # побачить розбіжність і чисто перерахує промпт.
+                self.state.tokens = []
+            return length
+
+    def _verify_against_engine(self) -> None:
+        """Звірити «дзеркало» з РЕАЛЬНОЮ позицією рушія перед новим промптом.
+
+        Розсинхрон виникає після ``llama_decode`` з кодом ``2``
+        (``DECODE_ABORTED``): рушій лишає в пам'яті вже пораховані ubatch-і,
+        а наша мітка про них не знає (заміряно: мітка 0, реально 1536).
+
+        Політика безпечна: якщо довжини розійшлись — ПОВНЕ очищення. Це
+        коштує одного повторного prefill, але гарантує правильні позиції.
+        Часткове «відновлення» неможливе: вміст обрізаних токенів нам
+        невідомий, а позиції мусять бути точними.
+        """
+        memory = self._lib.llama_get_memory(self._ctx)
+        if not memory:
+            return
+        try:
+            position = int(self._lib.llama_memory_seq_pos_max(memory, 0))
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Позицію KV не прочитано", exc_info=True)
+            return
+        real = 0 if position < 0 else position + 1
+        if real == self.state.length:
+            return
+        LOG.info("KV-кеш розійшовся з міткою (мітка %d, рушій %d) — "
+                 "очищаю перед новим промптом", self.state.length, real)
+        self._lib.llama_memory_clear(memory, True)
+        self.state.tokens = []
+
     def prepare(self, tokens: list[int]) -> int:
         """Підготувати кеш під новий промпт; повернути індекс початку декодування.
 
@@ -131,6 +210,12 @@ class CacheManager:
         завжди узгоджене з РЕАЛЬНИМ вмістом кешу після обрізання.
         """
         with self._lock:
+            # ── Спершу звірка з рушієм ────────────────────────────────────
+            # Мітка могла розійтись із реальним кешем (скасування посеред
+            # decode лишає пораховані ubatch-і). Довіряти мітці наосліп
+            # означало б декодувати з неправильної позиції — рушій відповідає
+            # ``-1`` і контекст заклинює до перезавантаження моделі.
+            self._verify_against_engine()
             if not tokens:
                 self.clear()
                 return 0

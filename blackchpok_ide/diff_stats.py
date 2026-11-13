@@ -615,7 +615,6 @@ def git_changes(root: Path, *, timeout: float = 20.0) -> ChangeSet | None:
             entries = [(_c, _p[len(prefix):] if _p.startswith(prefix) else _p, _o)
                        for _c, _p, _o in entries
                        if _p.startswith(prefix)]
-        entries = _parse_porcelain_z(raw)
 
         batch = _numstat_map(root, ["diff", "--numstat", "HEAD"], timeout)
         if batch is None:

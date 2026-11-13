@@ -126,7 +126,7 @@ class TestNewAgentHidesWelcome(unittest.TestCase):
 
         from blackchpok_ide.main_window import BlackChpokIDE
 
-        source = inspect.getsource(BlackChpokIDE.new_chat_session)
+        source = inspect.getsource(BlackChpokIDE._start_chat_in)
         self.assertIn("_hide_welcome", source,
                       "новий чат має ховати оверлей, інакше поле введення недоступне")
 

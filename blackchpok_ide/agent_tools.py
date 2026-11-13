@@ -169,6 +169,22 @@ def _parse_sizes(raw: str) -> list[tuple[int, int]]:
     return sizes
 
 
+def _ast_note(target: Path, body: str) -> str:
+    """Короткий підсумок AST для Python, щоб модель бачила структуру файлу."""
+    if target.suffix.lower() not in (".py", ".pyw", ".pyi"):
+        return ""
+    from . import ast_index
+
+    result = ast_index.analyse(body or "")
+    if result.problem is not None:
+        return f"\nAST: {result.problem.short}"
+    names = [sym.name for sym in result.symbols
+             if sym.kind in (ast_index.FUNCTION, ast_index.CLASS,
+                             ast_index.ASYNC, ast_index.METHOD)][:8]
+    tail = f": {', '.join(names)}" if names else ""
+    return f"\nAST: ок, символів {len(result.symbols)}{tail}"
+
+
 def _syntax_issue(target: Path, body: str) -> str:
     """Перевірити синтаксис Python-файлу, який збираємось записати.
 
@@ -258,6 +274,17 @@ class ToolRegistry:
         self.root = Path(root).resolve()
         self.confirm_commands = confirm_commands
         self.command_guard: Callable[[str], bool] | None = None
+        #: Вікно редактора: ``(шлях, текст, "open"|"write")``.
+        #: Модель пише на диск, а цей гачок показує той самий текст у
+        #: правій панелі, не ховаючи чат.
+        self.on_editor: Callable[[Path, str, str], None] | None = None
+        #: Токен GitHub для ``git_publish``. Порожній — покладаємось на
+        #: збережені облікові дані git (Git Credential Manager).
+        #:
+        #: Токен НЕ потрапляє в командний рядок: він іде через тимчасовий
+        #: ``GIT_ASKPASS`` (див. :mod:`git_repo`), бо аргументи процесу на
+        #: Windows видно іншим процесам.
+        self.git_token: str = ""
         self._handlers: dict[str, Callable[..., str]] = {
             "read_file": self.read_file,
             "write_file": self.write_file,
@@ -269,6 +296,8 @@ class ToolRegistry:
             "run_command": self.run_command,
             "git_status": self.git_status,
             "git_diff": self.git_diff,
+            "git_remote_info": self.git_remote_info,
+            "git_publish": self.git_publish,
             "project_tree": self.project_tree,
             "python_check": self.python_check,
             # Живе тестування застосунку проєкту (прив'язується вікном).
@@ -421,6 +450,7 @@ class ToolRegistry:
         lines = content.splitlines()
         rel = ws.relative_to_root(self.root, target)
         if not lines:
+            self._show_in_editor(target, content, "open")
             return f"# {rel} (0 рядків)\n(файл порожній)"
         start = max(1, int(start_line or 1))
         end = int(end_line or 0) or len(lines)
@@ -432,6 +462,7 @@ class ToolRegistry:
         body = "\n".join(f"{n:>5} | {lines[n - 1]}" for n in range(start, end + 1))
         if end < len(lines):
             body += f"\n… (файл має {len(lines)} рядків, показано до {end})"
+        self._show_in_editor(target, content, "open")
         return f"# {rel} ({len(lines)} рядків)\n{body}"
 
     def write_file(self, path: str, content: str) -> str:
@@ -470,6 +501,8 @@ class ToolRegistry:
             # виправити його наступним кроком.
             message += f"\nУВАГА: синтаксична помилка — {issue}"
             message += "\nВиправ цей файл зараз же (edit_file або write_file)."
+        message += _ast_note(target, body)
+        self._show_in_editor(target, body, "write")
         return message
 
     def edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
@@ -477,7 +510,24 @@ class ToolRegistry:
         content, _encoding = ws.read_text_file(target)
         if old_string == "":
             raise ToolError("old_string не може бути порожнім; для нового файлу використай write_file.")
+        ast_symbol = ""
         count = content.count(old_string)
+        if count == 0 and target.suffix.lower() in (".py", ".pyw", ".pyi"):
+            from . import ast_index
+
+            replaced = ast_index.replace_symbol_source(content, old_string, new_string)
+            if replaced is not None:
+                updated, ast_symbol = replaced
+                issue = _syntax_issue(target, updated) or _json_issue(target, updated)
+                ws.write_text_file(target, updated)
+                message = (f"Оновлено {ws.relative_to_root(self.root, target)}: "
+                           f"AST замінив символ «{ast_symbol}».")
+                if issue:
+                    message += f"\nУВАГА: синтаксична помилка — {issue}"
+                    message += "\nВиправ цей файл зараз же."
+                message += _ast_note(target, updated)
+                self._show_in_editor(target, updated, "write")
+                return message
         if count == 0:
             # Точний збіг не знайдено — пробуємо пробачити типові розбіжності
             # локальних моделей: інші лапки, інші відступи, зайві пробіли.
@@ -501,6 +551,8 @@ class ToolRegistry:
         if issue:
             message += f"\nУВАГА: синтаксична помилка — {issue}"
             message += "\nВиправ цей файл зараз же."
+        message += _ast_note(target, updated)
+        self._show_in_editor(target, updated, "write")
         return message
 
     def append_file(self, path: str, content: str) -> str:
@@ -541,7 +593,19 @@ class ToolRegistry:
         if issue:
             message += f"\nУВАГА: синтаксична помилка — {issue}"
             message += "\nВиправ цей файл зараз же."
+        message += _ast_note(target, updated)
+        self._show_in_editor(target, updated, "write")
         return message
+
+    def _show_in_editor(self, path: Path, content: str, kind: str) -> None:
+        """Показати файл у редакторі, якщо вікно підключило гачок."""
+        hook = getattr(self, "on_editor", None)
+        if hook is None:
+            return
+        try:
+            hook(Path(path), content or "", kind)
+        except Exception:  # noqa: BLE001 - показ не має зривати запис
+            LOG.debug("Редактор не відкрив %s", path, exc_info=True)
 
     def list_dir(self, path: str = ".") -> str:
         """Показати вміст теки.
@@ -695,6 +759,63 @@ class ToolRegistry:
         if path:
             args += f' -- "{path}"'
         return self._git(args)
+
+    # ── git: публікація на GitHub ──────────────────────────────────────────
+    def git_remote_info(self) -> str:
+        """Стан репозиторію й адреса GitHub — щоб агент міг СПИТАТИ людину.
+
+        Окремий інструмент, а не частина ``git_status``: питання «оновити
+        файли на GitHub?» потребує саме адреси, гілки й переліку змін, а
+        ``git_status`` віддає сирий вивід для ока програміста.
+        """
+        from . import git_repo
+
+        current = git_repo.state(self.root)
+        lines = [current.describe()]
+        if current.ok:
+            lines.append(f"тека: {current.root}")
+            lines.append(f"origin: {current.remote or '— не налаштовано —'}")
+            lines.append("це GitHub: " + ("так" if current.is_github else "ні"))
+            if current.changed:
+                lines.append("змінені файли (" + str(len(current.changed)) + "):")
+                lines.extend(f"- {name}" for name in current.changed[:40])
+                if len(current.changed) > 40:
+                    lines.append(f"… ще {len(current.changed) - 40}")
+            secrets = current.has_secrets()
+            if secrets:
+                lines.append("УВАГА: серед змін є файли з секретами: "
+                             + ", ".join(secrets))
+            ready, reason = git_repo.is_clean_enough(self.root)
+            lines.append("можна відправляти: " + ("так" if ready else f"ні — {reason}"))
+        return "\n".join(lines)
+
+    def git_publish(self, message: str = "", confirm: bool = False) -> str:
+        """Закомітити й відправити зміни на ``origin``.
+
+        ``confirm`` обов'язковий: ``push`` — незворотна зовнішня дія. Модель
+        не має права відправити щось на GitHub сама, лише після того, як
+        користувач відповів «так». Тому без ``confirm=true`` інструмент
+        НЕ виконує нічого й повертає пояснення.
+        """
+        from . import git_repo
+
+        if not confirm:
+            return ("✗ Не відправлено: потрібна згода користувача. Спитай "
+                    "його прямо й виклич цей інструмент із confirm=true лише "
+                    "після відповіді «так».")
+        token = str(getattr(self, "git_token", "") or "")
+        result = git_repo.publish(self.root, message=message, token=token)
+        if not result.ok:
+            return "✗ " + (result.message or "не вдалось відправити")
+        return ("✓ " + result.message
+                + (f"\nкоміт: {result.commit}" if result.commit else ""))
+
+    def git_push_allowed(self) -> bool:
+        """Чи налаштовано хоч щось для відправки (для підказок в інтерфейсі)."""
+        from . import git_repo
+
+        ready, _reason = git_repo.is_clean_enough(self.root)
+        return ready
 
     def _git(self, args: str) -> str:
         try:
@@ -1662,6 +1783,45 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "git_status",
             "description": "Стан git-репозиторію (status --short --branch).",
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_remote_info",
+            "description": (
+                "Стан git-репозиторію проєкту й адреса GitHub: гілка, origin, "
+                "перелік змінених файлів, чи можна відправляти. Виклич ПЕРЕД "
+                "тим, як питати користувача «оновити файли на GitHub?» — щоб "
+                "назвати справжню адресу, а не вигадану."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_publish",
+            "description": (
+                "Закомітити зміни й відправити їх на GitHub (origin). "
+                "НЕЗВОРОТНА зовнішня дія: викликай ЛИШЕ після того, як "
+                "користувач прямо відповів «так» на питання про оновлення "
+                "файлів на GitHub. Без confirm=true нічого не робить."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "повідомлення коміту; порожнє — зберу сам",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "true лише після згоди користувача",
+                    },
+                },
+                "required": ["confirm"],
+            },
         },
     },
     {

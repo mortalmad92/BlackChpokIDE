@@ -446,13 +446,30 @@ def test_git_parsing() -> None:
     folder = temp_dir("gitfake")
     try:
         write(folder / "new.py", "a\nb\nc\n")
-        status = " M src/app.py\0?? new.py\0R  lib/new.py\0lib/old.py\0 M .buildtmp/x.py\0 M old.pyc\0"
+        # ── Шляхи git відносні до КОРЕНЯ репозиторію, не до теки ──────────
+        # ``temp_dir`` створює теку ВСЕРЕДИНІ справжнього репозиторію
+        # (``.buildtmp/dstats-…``), тому справжній ``git -C <тека> status``
+        # віддає шляхи з префіксом (``.buildtmp/dstats-…/src/app.py``).
+        # Перевірено наживо:
+        #   git -C blackchpok_ide status --porcelain → ' M blackchpok_ide/agent.py'
+        #
+        # Раніше підробка повертала шляхи БЕЗ префікса, і код їх «пробачав».
+        # Наслідок у продукті: фільтр за префіксом теки відкидався наступним
+        # рядком (``entries = _parse_porcelain_z(raw)``), тож для вкладеної
+        # теки панель показувала файли з УСЬОГО репозиторію. Тепер підробка
+        # поводиться як справжній git, і дефект більше не сховається.
+        prefix = ds._repo_prefix(folder)
+        status = (
+            f" M {prefix}src/app.py\0?? {prefix}new.py\0"
+            f"R  {prefix}lib/new.py\0{prefix}lib/old.py\0"
+            f" M {prefix}.buildtmp/x.py\0 M {prefix}old.pyc\0"
+        )
 
         def fake_git(root: Path, args: list[str], timeout: float) -> str | None:
             if args and args[0] == "status":
                 return status
             if args[:2] == ["diff", "--numstat"]:
-                return "12\t3\tsrc/app.py\n"
+                return f"12\t3\t{prefix}src/app.py\n"
             return None
 
         with unittest.mock.patch.object(ds, "_run_git", fake_git):
@@ -461,6 +478,11 @@ def test_git_parsing() -> None:
               change_set.source if change_set else "None")
         found = {item.path: item for item in (change_set.files if change_set else [])}
         check("git_changes: службові шляхи відкинуто", ".buildtmp/x.py" not in found and "old.pyc" not in found, str(sorted(found)))
+        check(
+            "git_changes: префікс теки знято (усі шляхи відносні до неї)",
+            all(not path.startswith(prefix) for path in found),
+            str(sorted(found))[:120],
+        )
         check(
             "git_changes: modified +12 -3",
             found.get("src/app.py") is not None

@@ -102,7 +102,8 @@ class Budget:
 
 
 def resolve_window(*, settings: Any = None, props_ctx: int = 0,
-                   gguf_ctx: int = 0, model_params_b: float = 0.0) -> Window:
+                   gguf_ctx: int = 0, model_params_b: float = 0.0,
+                   source: str = "") -> Window:
     """Визначити справжнє вікно контексту з усіх доступних джерел.
 
     Пріоритет навмисний — від найнадійнішого до найобережнішого:
@@ -115,6 +116,10 @@ def resolve_window(*, settings: Any = None, props_ctx: int = 0,
        числом, модель не вміє далі.
     3. налаштування IDE (``engine.ctx_size``) — те, що попросив користувач.
     4. обережний запас за розміром моделі.
+
+    ``source`` — людська назва джерела для пункту 1. У вбудованого рушія
+    немає ``/props``: там вікно читається з контексту в пам'яті, і писати
+    «сервер /props» означало б збрехати користувачу про походження числа.
     """
     floor = MIN_USABLE_WINDOW
     if props_ctx and props_ctx > 0:
@@ -122,8 +127,8 @@ def resolve_window(*, settings: Any = None, props_ctx: int = 0,
         # Модель не вміє більше за своє тренувальне вікно — не обманюємось.
         if gguf_ctx and gguf_ctx > 0:
             tokens = min(tokens, int(gguf_ctx))
-        return Window(tokens=max(floor, tokens), source="сервер /props",
-                      measured=True)
+        return Window(tokens=max(floor, tokens),
+                      source=(source or "сервер /props"), measured=True)
     if gguf_ctx and gguf_ctx > 0:
         return Window(tokens=max(floor, int(gguf_ctx)),
                       source="метадані моделі", measured=True)

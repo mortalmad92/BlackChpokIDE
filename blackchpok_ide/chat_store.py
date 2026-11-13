@@ -31,6 +31,22 @@ from typing import Any, Iterable
 
 from .config import app_data_dir
 
+
+def same_folder(left: str, right: str) -> bool:
+    """Чи два записи вказують на одну й ту саму теку.
+
+    Порівняння йде через ``resolve``: ``C:/a`` і ``C:\\a\\`` — одна папка.
+    Якщо шлях не вдається розкрити, лишається порівняння тексту.
+    """
+    a = str(left or "").strip()
+    b = str(right or "").strip()
+    if not a or not b:
+        return False
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return a.casefold() == b.casefold()
+
 LOG = logging.getLogger("blackchpok.chats")
 
 #: Дозволені ролі повідомлень.
@@ -279,6 +295,19 @@ class Chat:
     #: «на що посилалось „воно“». Без цього після перезапуску агент знову
     #: питав би те, що людина вже пояснила.
     state: dict[str, Any] = field(default_factory=dict)
+    #: Git-публікація, прив'язана до ЦЬОГО чату й ЦЬОГО проєкту.
+    #:
+    #: Навіщо в чаті, а не в налаштуваннях. Користувач працює в кількох
+    #: проєктах одночасно, і «на GitHub» у кожного своя адреса. Спільне
+    #: поле в налаштуваннях означало б, що чат проєкту А відправив зміни
+    #: в репозиторій проєкту Б.
+    #:
+    #: ``git_remote`` — адреса, яку агент показав у питанні (для журналу);
+    #: ``git_last_push`` — час останньої успішної відправки (epoch);
+    #: ``git_auto_ask`` — чи питати «оновити файли на GitHub?» після роботи.
+    git_remote: str = ""
+    git_last_push: float = 0.0
+    git_auto_ask: bool = True
 
     # ── серіалізація ───────────────────────────────────────────────────────
     def to_dict(self) -> dict[str, Any]:
@@ -296,6 +325,9 @@ class Chat:
             "status": self.status,
             "context": _clean_context(self.context),
             "state": dict(self.state) if isinstance(self.state, dict) else {},
+            "git_remote": _as_text(self.git_remote),
+            "git_last_push": _as_float(self.git_last_push, 0.0),
+            "git_auto_ask": bool(self.git_auto_ask),
             "messages": [message.to_dict() for message in self.messages],
         }
 
@@ -339,6 +371,9 @@ class Chat:
             status=normalise_status(data.get("status")),
             context=_clean_context(data.get("context")),
             state=data.get("state") if isinstance(data.get("state"), dict) else {},
+            git_remote=_as_text(data.get("git_remote")),
+            git_last_push=_as_float(data.get("git_last_push"), 0.0),
+            git_auto_ask=_as_bool(data.get("git_auto_ask", True), True),
         )
 
     # ── вміст ──────────────────────────────────────────────────────────────
@@ -571,6 +606,77 @@ class ChatStore:
         self.active_id = chat.id
         self.save()
         return chat
+
+    def bind_workspace(self, chat_id: str, folder: str) -> str:
+        """Прив'язати чат до однієї теки.
+
+        Порожня тека чату заповнюється. Якщо тека вже записана, друга
+        інша адреса не замінює її: чат не переїжджає в чужий проєкт.
+        Повертає ``set``, ``same``, ``refused`` або ``missing``.
+        """
+        chat = self.get(chat_id)
+        clean = str(folder or "").strip()
+        if chat is None or not clean:
+            return "missing"
+        if str(chat.workspace or "").strip():
+            return "same" if same_folder(chat.workspace, clean) else "refused"
+        try:
+            chat.workspace = str(Path(clean).resolve())
+        except OSError:
+            chat.workspace = clean
+        self.save()
+        return "set"
+
+    def chat_for_workspace(self, folder: str) -> Chat | None:
+        """Найсвіжіший чат, уже прив'язаний до цієї теки."""
+        clean = str(folder or "").strip()
+        if not clean:
+            return None
+        found = [chat for chat in self.chats
+                 if same_folder(chat.workspace, clean)]
+        if not found:
+            return None
+        found.sort(key=lambda chat: chat.updated_at, reverse=True)
+        return found[0]
+
+    # ── git-публікація (прив'язка до чату й проєкту) ────────────────────────
+    def git_remote(self, chat_id: str) -> str:
+        """Адреса GitHub, запам'ятована для цього чату (``""`` — невідома)."""
+        chat = self.get(chat_id)
+        return _as_text(getattr(chat, "git_remote", "")) if chat else ""
+
+    def remember_git(self, chat_id: str, *, remote: str = "",
+                     pushed_at: float | None = None) -> bool:
+        """Запам'ятати адресу й/або час останньої відправки для чату.
+
+        ``pushed_at=None`` — лише адреса (напр. після перевірки стану);
+        ``pushed_at`` числом — позначає успішну відправку.
+        """
+        chat = self.get(chat_id)
+        if chat is None:
+            return False
+        changed = False
+        clean = _as_text(remote).strip()
+        if clean and chat.git_remote != clean:
+            chat.git_remote = clean
+            changed = True
+        if pushed_at is not None and float(pushed_at) != float(chat.git_last_push):
+            chat.git_last_push = float(pushed_at)
+            changed = True
+        if changed:
+            self.save()
+        return changed
+
+    def set_git_auto_ask(self, chat_id: str, value: bool) -> bool:
+        """Увімкнути/вимкнути питання «оновити файли на GitHub?»."""
+        chat = self.get(chat_id)
+        if chat is None:
+            return False
+        wanted = bool(value)
+        if chat.git_auto_ask != wanted:
+            chat.git_auto_ask = wanted
+            self.save()
+        return chat.git_auto_ask
 
     def delete(self, chat_id: str) -> bool:
         """Остаточно видалити розмову.

@@ -93,5 +93,44 @@ class TestBridgeContract(unittest.TestCase):
         self.assertEqual(from_obj["prompt_tokens_details"]["cached_tokens"], 2)
 
 
+class TestModelReplacement(unittest.TestCase):
+    """Нова локальна модель замінює попередню, а не лишається поруч."""
+
+    def tearDown(self) -> None:
+        bridge.set_runtime(None)
+        bridge.remember_model("")
+
+    def test_same_model_by_stem(self) -> None:
+        self.assertTrue(bridge.same_model(
+            r"D:\models\Qwen2.5-Coder-14B.gguf", "Qwen2.5-Coder-14B"))
+        self.assertFalse(bridge.same_model(
+            r"D:\models\Qwen2.5-Coder-14B.gguf", "Mistral-14B"))
+
+    def test_ensure_loaded_replaces_other_model(self) -> None:
+        class Engine:
+            def __init__(self) -> None:
+                self.loaded = True
+                self.model_path = r"D:\models\old.gguf"
+
+        class Runtime:
+            def __init__(self) -> None:
+                self.engine = Engine()
+                self.loaded_keys: list[str] = []
+
+            def load_model(self, key: str) -> None:
+                self.loaded_keys.append(key)
+                self.engine.model_path = key
+                self.engine.loaded = True
+
+        runtime = Runtime()
+        bridge.set_runtime(runtime)
+        bridge._ensure_loaded("old")
+        self.assertEqual(runtime.loaded_keys, [])
+        bridge._ensure_loaded("new-model")
+        self.assertEqual(runtime.loaded_keys, ["new-model"])
+        bridge._ensure_loaded("new-model")
+        self.assertEqual(runtime.loaded_keys, ["new-model"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

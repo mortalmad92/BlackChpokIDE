@@ -88,6 +88,18 @@ def main() -> int:
     app = BlackChpokIDE(settings)
     app.update_idletasks()
     app.update()
+    # ── Тека мусить бути текою ТЕСТУ ─────────────────────────────────────
+    # Вікно відновлює робочу теку з активної сесії. Коли в сховищі є чат з
+    # іншою текою, застосунок (цілком законно) перемикається на неї — і
+    # перевірки «пошук у проєкті» та «скіли знайдено» дивляться не туди.
+    # Саме через це smoke падав лише в ізольованому середовищі реєстру
+    # (``BLACKCHPOK_HOME`` без збережених чатів дає інший стан, ніж машина
+    # розробника).
+    if app._project_root() != ROOT:
+        app._apply_workspace(ROOT)
+        app.update()
+    check("робоча тека — тека тесту", app._project_root() == ROOT,
+          str(app._project_root()))
     check("вікно створено", app.winfo_exists() == 1, app.title())
     check("меню підключене", bool(app.cget("menu")), f"menu={app.cget('menu')!r}")
     check("панель стану на місці", app.status_bar.winfo_ismapped() == 1)
@@ -131,6 +143,13 @@ def main() -> int:
     history = app.chat.history.get("1.0", "end")
     check("офлайн-агент відповів", "list_dir" in history or "list_dir" in history.lower(),
           history[-120:].replace("\n", " "))
+
+    # Хід агента міг створити/відновити чат, а чат несе ВЛАСНУ робочу теку.
+    # Повертаємо теку тесту, інакше «пошук у проєкті» й «скіли» дивляться в
+    # чужу папку (на машині розробника — ``C:\AI\site``).
+    if app._project_root() != ROOT:
+        app._apply_workspace(ROOT)
+        pump(app, 0.5)
 
     # панелі
     app.toggle_sidebar()

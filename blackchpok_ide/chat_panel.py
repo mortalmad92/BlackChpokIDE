@@ -46,6 +46,13 @@ _DEFAULT_BODY_LINES = 60
 #: тисячі рядків усе одно треба обмежити — інакше вона просто зникне.
 _HARD_TEXT_LINES = 400
 
+#: Скільки разів опитувати планувальник, перш ніж здатись і почати без плану.
+#:
+#: 150 мс × 120 = 18 с. Цього досить, щоб локальна модель склала план, і
+#: мало, щоб користувач не чекав вічно: раніше ліміту не було взагалі й
+#: спінер «міркую…» міг висіти безкінечно (див. ``_poll_planner``).
+PLANNER_DEADLINE_TICKS = 120
+
 
 class Transcript:
     """Плоский текстовий журнал чату (для експорту, копіювання й тестів)."""
@@ -358,6 +365,9 @@ class ChatPanel(tk.Frame):
         #: Кожна подія агента (status / tool_call / tool_result / done) —
         #: для панелі «Справи», яка показує роботу крок за кроком.
         self.on_event: Optional[Callable[["AgentEvent"], None]] = None
+        #: Агент питає «оновити файли на GitHub?». Оболонка показує кнопки
+        #: «Так / Ні» й виконує відправку ЛИШЕ після згоди.
+        self.on_git_offer: Optional[Callable[[dict], None]] = None
         #: Новий запит користувача — привід відкрити справу в панелі «Справи».
         self.on_case_start: Optional[Callable[[str], None]] = None
         self.on_permission_change: Optional[Callable[[str], None]] = None
@@ -380,6 +390,8 @@ class ChatPanel(tk.Frame):
         #: із «модель недоступна» (реальний лог: старт 19:03, вивантаження
         #: 19:08, помилка 19:10 — модель «не стартувала», хоч стартувала).
         self.before_send: Optional[Callable[[], None]] = None
+        # Повертає False, якщо запит не можна слати (тека чату недоступна).
+        self.folder_guard: Optional[Callable[[], bool]] = None
         #: Назва чату змінилась — оболонка оновлює заголовок сесії.
         self.on_title_change: Optional[Callable[[str], None]] = None
         self.speak_last: bool = False
@@ -1974,6 +1986,17 @@ class ChatPanel(tk.Frame):
         # Перевіряємо ПЕРЕД стартом роботи: якщо модель пішла з пам'яті,
         # оболонка підніме її, і запит не впаде з «модель недоступна».
         safe.call_quiet(self.before_send, where="підйом моделі перед запитом")
+        guard = getattr(self, "folder_guard", None)
+        if guard is not None:
+            try:
+                allowed = guard()
+            except Exception:  # noqa: BLE001 - сторож теки не має валити відправку
+                LOG.debug("Перевірка теки чату не вдалась", exc_info=True)
+                allowed = True
+            if allowed is False:
+                self._note("Запит лишається в теці цього чату. Інша папка не відкрита.",
+                           kind="error")
+                return False
         # Етапи показуємо ОДРАЗУ, до будь-якого розгалуження: людина має
         # бачити поділ задачі навіть тоді, коли далі йде глибокий аналіз
         # або черга. Розбиття локальне (без моделі), тож затримки не додає.
@@ -2018,7 +2041,13 @@ class ChatPanel(tk.Frame):
         if want_deep:
             self._plan_deep(text)
             return True
-        return self._start_with_stages(text, fresh=plan_step)
+        started = self._start_with_stages(text, fresh=plan_step)
+        # ``set_busy(True)`` уже стоїть вище. Якщо агент запит не прийняв і
+        # потоку немає, індикатор «працює» лишався назавжди: події ``done``
+        # не буде, бо хід не починався.
+        if not started and not (self.runner and self.runner.busy):
+            self.set_busy(False)
+        return started
 
     # ── етапи задачі ───────────────────────────────────────────────────────
     def _arrow_thought(self, text: str, *, show: bool = True) -> None:
@@ -2143,7 +2172,9 @@ class ChatPanel(tk.Frame):
         llm = getattr(settings, "llm", None)
         if llm is None or not str(getattr(llm, "model", "") or "").strip():
             self._deep_narration("Модель не вибрана — працюю без плану, одразу дією.")
-            self._start_with_stages(text)
+            started = self._start_with_stages(text)
+            if not started and not (self.runner and self.runner.busy):
+                self.set_busy(False)
             return
         self._planner_queue: "queue.Queue[tuple[list[str], str]]" = queue.Queue()
         # Тека проєкту: без неї модель планує «взагалі» й вигадує чужий
@@ -2157,17 +2188,33 @@ class ChatPanel(tk.Frame):
         threading.Thread(target=work, daemon=True).start()
         self._poll_planner(text)
 
-    def _poll_planner(self, text: str) -> None:
-        """Дочекатись плану в головному потоці й запустити агента."""
+    def _poll_planner(self, text: str, *, attempt: int = 0) -> None:
+        """Дочекатись плану в головному потоці й запустити агента.
+
+        Опікун дедлайну. Раніше ``after(150)`` планувався без ліміту:
+        якщо ``deep_mode.plan_tasks`` не повертав нічого (модель повисла,
+        рушій зайнятий іншим запитом), опитування й спінер «міркую…»
+        лишались назавжди — зовні це виглядало як зависання програми, хоч
+        інтерфейс жив. Після ``PLANNER_DEADLINE_TICKS`` чесно йдемо далі
+        без плану: агент і без нього виконує завдання.
+        """
         pending = getattr(self, "_planner_queue", None)
         if pending is None:
             return
         try:
             steps, error = pending.get_nowait()
         except queue.Empty:
+            if attempt >= PLANNER_DEADLINE_TICKS:
+                # План не прийшов — не тримаємо користувача в очікуванні.
+                self._planner_queue = None
+                self._deep_narration(
+                    "План не надійшов вчасно — починаю одразу з роботи.")
+                self._start_with_stages(text)
+                return
             try:
                 if self._timer_alive():
-                    self.after(150, lambda: self._poll_planner(text))
+                    self.after(150, lambda: self._poll_planner(text,
+                                                               attempt=attempt + 1))
             except tk.TclError:
                 pass
             return
@@ -2182,7 +2229,9 @@ class ChatPanel(tk.Frame):
         if stages:
             self.stage_strip.update_stage(stages[0].index,
                                           task_plan.STAGE_RUNNING)
-        self._start_with_stages(text)
+        started = self._start_with_stages(text)
+        if not started and not (self.runner and self.runner.busy):
+            self.set_busy(False)
 
     def _remember(self, role: str, text: str) -> None:
         """Зберегти повідомлення в історію чатів (якщо підключено).
@@ -2273,9 +2322,13 @@ class ChatPanel(tk.Frame):
             stats = event.data.get("step_stats")
             if stats is not None:
                 self.stats_bar.set_stats(stats)
+        elif event.kind == "git_offer":
+            self._add_git_offer(event)
         elif event.kind == "error":
             self._note(event.text, kind="error")
             self.end_deep(ok=False)
+            if self.runner is None or not self.runner.busy:
+                self.set_busy(False)
         elif event.kind == "done":
             ok = bool(event.data.get("ok", True))
             self._finish_work_log(ok=ok)
@@ -2333,7 +2386,22 @@ class ChatPanel(tk.Frame):
         widget = self._stream_widget
         if widget is None:
             # Перший шматок: створюємо картку відповіді й пишемо в неї.
-            self._finish_work_log(ok=True)
+            #
+            # ── ЖУРНАЛ ТУТ НЕ ЗАКРИВАЄМО ──────────────────────────────────
+            # Раніше стояв ``_finish_work_log(ok=True)``: журнал закривався
+            # на ПЕРШОМУ ж токені відповіді. Через це наступний виклик
+            # інструмента створював НОВИЙ журнал (``_work_log`` бачив
+            # ``self._log is None``), і одна задача розсипалась на кілька
+            # карток: журнал зі статусами → відповідь → журнал з кроком
+            # інструмента → відповідь…
+            #
+            # Заміряно живим прогоном: за один хід «покажи файли» з'явилось
+            # 6 карток журналу, і крок ``list_dir`` опинявся в ІНШІЙ картці,
+            # ніж статуси. Користувач бачив «Готово · 0 кроків», хоч
+            # інструмент справді відпрацював.
+            #
+            # Тепер журнал живе до кінця ходу (закривається в ``done``), і
+            # всі кроки — статуси, інструменти, нотатки — в одній картці.
             card = self._new_card(ROLE_AGENT, accent=theme.CHAT_OK, bg=theme.BG_CARD)
             widget = tk.Text(
                 card.content, wrap="word", height=1, width=1, bd=0,
@@ -2844,6 +2912,43 @@ class ChatPanel(tk.Frame):
             return
         self.transcript.add(f"\n✦ {text}\n")
         self._scroll_to_end()
+
+    def _add_git_offer(self, event: AgentEvent) -> None:
+        """Показати питання «оновити файли на GitHub?» із кнопками.
+
+        Чому кнопки, а не лише текст: ``push`` незворотний, і «так» мусить
+        бути усвідомленою дією. Водночас написати «так» у поле вводу теж
+        працює — агент розпізнає відповідь (див. ``_answers_git_offer``),
+        бо людина не зобов'язана цілитись мишкою.
+        """
+        remote = str(event.data.get("remote") or "")
+        branch = str(event.data.get("branch") or "")
+        changed = list(event.data.get("changed") or [])
+        message = str(event.data.get("message") or "")
+        head = event.text or "Оновити файли на GitHub?"
+        lines = [f"\n**{head}**\n"]
+        if remote:
+            lines.append(f"- репозиторій: `{remote}`")
+        if branch:
+            lines.append(f"- гілка: `{branch}`")
+        if changed:
+            shown = ", ".join(f"`{name}`" for name in changed[:6])
+            more = f" та ще {len(changed) - 6}" if len(changed) > 6 else ""
+            lines.append(f"- файли: {shown}{more}")
+        if message:
+            lines.append(f"- коміт: _{message}_")
+        lines.append("")
+        self.transcript.add("\n".join(lines) + "\n")
+        self._scroll_to_end()
+        if self.on_git_offer is None:
+            # Без обробника лишається текст: людина відповість словами.
+            return
+        try:
+            self.on_git_offer(
+                {"remote": remote, "branch": branch,
+                 "message": message, "changed": changed})
+        except tk.TclError:
+            return
 
     def _add_status(self, text: str) -> None:
         """Службовий статус агента — у журнал, без окремих ноток.

@@ -1,0 +1,15 @@
+---
+description: Одне повідомлення стає планом і чергою кроків
+globs: blackchpok_ide/planner.py,blackchpok_ide/task_planner.py,blackchpok_ide/queue_engine.py,blackchpok_ide/task_executor.py,blackchpok_ide/chat_panel.py
+alwaysApply: false
+---
+
+# План з одного повідомлення
+
+Великий текст розпізнає `planner.is_big_task`. Тоді `main_window._split_task_to_queue` кличе `task_planner.plan_with_model` (окремий виклик моделі, не потік агента). Кроки кладуться в `TaskQueue` з `chat_id` цього чату.
+
+- Чат має існувати до кроків: `_ensure_owner_chat`. Інакше кроки без власника ніхто не виконає.
+- Насос `_queue_pump` бере лише `next_pending(chat_id)` і лише коли агент вільний. Чужий чат і сирота без `chat_id` не виконуються в цій теці.
+- Крок іде в `chat._send(..., plan_step=True)`. Якщо `_send` повернув False — зняти «працює» і повернути крок у очікування (`_release_unstarted`), не палити ліміт спроб.
+- Всередині кроку модель бачить короткий план з `planning.build_plan` (без другої моделі). Закривати крок лише після реальної зміни або чесної відповіді. Офлайн-роутер — це `degraded`, крок не «готово».
+- Складну програму збирати кроками черги в теці чату. Наступний крок стартує, коли попередній закритий і залежності `depends_on` виконані.

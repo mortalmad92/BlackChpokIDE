@@ -275,12 +275,29 @@ def predict(report: ModelReport, profile: HardwareProfile,
 
 
 def _ctx_candidates(context_train: int, want: int) -> list[int]:
-    """Драбина контекстів: від більшого до меншого, з урахуванням тренування."""
+    """Драбина контекстів: від більшого до меншого, з урахуванням тренування.
+
+    ВАЖЛИВО про явний ``want``. Раніше при заданому ``ctx`` поверталось
+    РІВНО ОДНЕ значення (``[min(want, ceiling)]``), і ``_pick_ctx`` фізично
+    не міг зменшити контекст: якщо він не влазив у VRAM, функція все одно
+    віддавала його ж як ``fallback``. Тобто «підбір під залізо» не працював
+    саме тоді, коли він найпотрібніший — коли користувач явно попросив
+    великий контекст (заміряно: запит 32768 при 12 ГБ VRAM давав 32768 же).
+
+    Тепер явний ``want`` — це СТЕЛЯ драбини: беремо найбільший із тих, що
+    не перевищують прохання. Хто просить менше за нижній щабель (напр.
+    3000), отримує рівно своє число.
+    """
     ladder = [32768, 24576, 16384, 12288, 8192, 6144, 4096, 2048]
     ceiling = context_train or 32768
+    steps = [value for value in ladder if value <= ceiling]
     if want:
-        return [min(want, ceiling)]
-    return [value for value in ladder if value <= ceiling]
+        wanted = min(int(want), ceiling)
+        steps = [value for value in steps if value <= wanted]
+        if not steps or steps[0] < wanted:
+            steps = sorted({wanted, *steps}, reverse=True)
+        return steps
+    return steps or [2048]
 
 
 def _pick_ctx(report: ModelReport, choices: list[int],

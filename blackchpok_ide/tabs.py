@@ -18,6 +18,18 @@ from .editor import CodeEditor
 MODIFIED_DOT = "●"
 
 
+def _char_index(text: str, offset: int) -> str:
+    """Позиція символу ``offset`` у тексті як індекс ``tk.Text``."""
+    if offset <= 0 or not text:
+        return "1.0"
+    if offset >= len(text):
+        return "end"
+    line = text.count("\n", 0, offset) + 1
+    last_nl = text.rfind("\n", 0, offset)
+    col = offset if last_nl < 0 else offset - last_nl - 1
+    return f"{line}.{col}"
+
+
 class _TabLabel(tk.Frame):
     """Одна вкладка в смузі: назва, крапка змін, хрестик закриття."""
 
@@ -220,7 +232,7 @@ class EditorTabs(tk.Frame):
         return frame_id, editor
 
     # ── відкриття ──────────────────────────────────────────────────────────
-    def open_file(self, path: Path, *, line: int = 0) -> bool:
+    def open_file(self, path: Path, *, line: int = 0, focus: bool = True) -> bool:
         path = Path(path)
         try:
             key = str(path.resolve())
@@ -231,7 +243,8 @@ class EditorTabs(tk.Frame):
             self.select(existing)
             if line:
                 self.editors[existing].goto_line(line)
-            self.editors[existing].text.focus_set()
+            if focus:
+                self.editors[existing].text.focus_set()
             return True
         try:
             content, encoding = ws.read_text_file(path)
@@ -249,12 +262,104 @@ class EditorTabs(tk.Frame):
         self.paths[frame_id] = path
         self._by_path[key] = frame_id
         self.select(frame_id)
-        editor.text.focus_set()
+        if focus:
+            editor.text.focus_set()
         if line:
             editor.goto_line(line)
         if self.on_status:
             self.on_status(f"Відкрито {path.name} · {len(content.splitlines())} рядків · {encoding}")
         return True
+
+    def show_model_text(self, path: Path, content: str, *, typewrite: bool = False) -> bool:
+        """Відкрити файл і показати текст моделі у вкладці.
+
+        ``typewrite`` набирає змінену частину видимими шматками, щоб у
+        відкритому чаті було видно, як файл змінюється. Великий файл
+        з'являється одразу: інакше набір на тисячі символів лише заважав би.
+        """
+        path = Path(path)
+        self._type_token = int(getattr(self, "_type_token", 0)) + 1
+        token = self._type_token
+        editor = self.by_path(path)
+        if editor is None:
+            frame_id, editor = self._new_editor(path.name, path.name)
+            editor.path = path
+            editor.filename = path.name
+            editor.set_text("")
+            self.editors[frame_id] = editor
+            self.paths[frame_id] = path
+            try:
+                key = str(path.resolve())
+            except OSError:
+                key = str(path)
+            self._by_path[key] = frame_id
+            self.select(frame_id)
+        else:
+            try:
+                key = str(path.resolve())
+            except OSError:
+                key = str(path)
+            frame_id = self._by_path.get(key, "")
+            if frame_id:
+                self.select(frame_id)
+        current = editor.get_text()
+        if current == content:
+            editor.schedule_analysis()
+            return True
+        if not typewrite or len(content) > 8000:
+            editor.set_text(content)
+            editor.modified = False
+            return True
+        self._type_change(editor, current, content, token)
+        return True
+
+    def _type_change(self, editor: CodeEditor, old: str, new: str, token: int) -> None:
+        """Замінити відмінну середину тексту короткими вставками."""
+        prefix = 0
+        limit = min(len(old), len(new))
+        while prefix < limit and old[prefix] == new[prefix]:
+            prefix += 1
+        suffix = 0
+        room = limit - prefix
+        while suffix < room and old[-1 - suffix] == new[-1 - suffix]:
+            suffix += 1
+        middle = new[prefix:len(new) - suffix] if suffix else new[prefix:]
+        if len(middle) > 2400:
+            editor.set_text(new)
+            editor.modified = False
+            return
+        start = _char_index(old, prefix)
+        end = _char_index(old, len(old) - suffix if suffix else len(old))
+        try:
+            editor.text.configure(state="normal")
+            if start != end:
+                editor.text.delete(start, end)
+            editor.text.mark_set("insert", start)
+            editor.text.see("insert")
+        except tk.TclError:
+            editor.set_text(new)
+            return
+        pieces = [middle[index:index + 64] for index in range(0, len(middle), 64)]
+
+        def step(index: int = 0) -> None:
+            if token != getattr(self, "_type_token", token):
+                return
+            try:
+                if index >= len(pieces):
+                    editor.modified = False
+                    editor.text.edit_modified(False)
+                    editor._refresh_gutter(force=True)
+                    editor.schedule_analysis()
+                    return
+                editor.text.insert("insert", pieces[index])
+                editor.text.see("insert")
+                editor.modified = True
+                editor._refresh_gutter()
+                editor.after(12, lambda i=index + 1: step(i))
+            except tk.TclError:
+                return
+
+        step()
 
     def new_file(self) -> CodeEditor:
         frame_id, editor = self._new_editor("Без назви", "untitled.txt")

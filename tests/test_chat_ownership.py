@@ -2,9 +2,8 @@
 
 Три скарги користувача, які ці тести фіксують:
 
-1. **«Новий чат» створював порожній запис.** Кожне натискання додавало в
-   список рядок «Без назви» з нулем повідомлень. Тепер запис народжується
-   на перше повідомлення.
+1. **«Новий чат» одразу питає одну теку.** Запис з'являється вже з цією
+   текою. Чернетка без теки лишається лише для першого запуску без чатів.
 2. **Задачі лишались «сиротами».** Три задачі висіли в панелі
    «Автоматизації» після видалення чату, бо додавались без ``chat_id``.
 3. **Автономний режим і автоматизації стояли в лівому меню** й виглядали
@@ -30,7 +29,7 @@ def _store(tmp: Path):
 
 
 class TestEmptyChatNotCreated(unittest.TestCase):
-    """«Новий чат» готує чернетку, але не пише її у сховище."""
+    """«Новий чат» одразу питає теку і створює запис уже з нею."""
 
     @staticmethod
     def _source(name: str) -> str:
@@ -57,17 +56,20 @@ class TestEmptyChatNotCreated(unittest.TestCase):
                 names.add(func.id)
         return names
 
-    def test_new_chat_session_does_not_create_record(self) -> None:
-        """Головна вимога: натискання не має створювати запис у сховищі."""
+    def test_new_chat_session_asks_folder_then_creates(self) -> None:
+        """Новий чат не з'являється, доки людина не вкаже одну теку."""
         calls = self._calls_in(self._source("new_chat_session"))
-        self.assertNotIn("create", calls,
-                         "«Новий чат» не має створювати порожній запис")
-        self.assertIn("set_active", calls,
-                      "попередній чат має зніматись з активності")
+        self.assertIn("askdirectory", calls,
+                      "новий чат має одразу питати робочу теку")
+        self.assertIn("_start_chat_in", calls)
+        started = self._calls_in(self._source("_start_chat_in"))
+        self.assertIn("create", started,
+                      "запис чату створюється разом із вибраною текою")
+        self.assertIn("_apply_workspace", started)
 
-    def test_new_chat_session_marks_pending(self) -> None:
-        source = self._source("new_chat_session")
-        self.assertIn("_pending_chat", source)
+    def test_new_chat_keeps_previous_context(self) -> None:
+        source = self._source("_start_chat_in")
+        self.assertIn("_save_chat_context", source)
 
     def test_remember_message_creates_on_first_message(self) -> None:
         calls = self._calls_in(self._source("_remember_message"))

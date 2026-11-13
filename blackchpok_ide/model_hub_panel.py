@@ -14,6 +14,7 @@ from __future__ import annotations
 import queue
 import tempfile
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -33,16 +34,28 @@ SOURCE_ORDER = ("huggingface", "github", "civitai")
 # Символи джерел для компактного списку.
 SOURCE_MARK = {"huggingface": "🤗", "github": "🐙", "civitai": "🎨", "tensorart": "🅣"}
 
+#: Стеля очікування на результати пошуку моделей (секунди).
+#:
+#: Це не таймаут запиту, а захист від «мертвого» джерела: якщо один із
+#: пошукових майданчиків не відповідає, потік збирання результатів мусить
+#: завершитись і сказати про це, а не висіти вічно (див. ``_collect_search``).
+SEARCH_DEADLINE_S = 45.0
+
 
 class ModelHubPanel(ttk.Frame):
     """Вікно-панель хабу моделей з живою смугою завантаження."""
 
     def __init__(self, master: tk.Misc, fonts: theme.Theme, settings,
-                 on_model_ready: Optional[Callable[[str, str], None]] = None) -> None:
+                 on_model_ready: Optional[Callable[[str, str], None]] = None,
+                 on_before_delete: Optional[Callable[[str], bool]] = None) -> None:
         super().__init__(master, style="Panel.TFrame")
         self.fonts = fonts
         self.settings = settings
         self.on_model_ready = on_model_ready
+        self.on_before_delete = on_before_delete
+        #: Шляхи, які хаб уже показував. Якщо файл зник з диска, рядок
+        #: лишається зі станом «видалено», а не зникає без пояснення.
+        self._seen_models: set[str] = set()
         self.profile = hw.HardwareProfile()
         self.hits: list[hub.ModelHit] = []
         self.search_job: Optional[hub.SearchJob] = None
@@ -256,14 +269,16 @@ class ModelHubPanel(ttk.Frame):
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(0, weight=1)
 
-        self.local_list = ttk.Treeview(frame, columns=("caps", "name", "size"),
+        self.local_list = ttk.Treeview(frame, columns=("caps", "name", "size", "state"),
                                        show="headings", selectmode="browse")
         self.local_list.heading("caps", text="🔨🧠🖼🎙")
         self.local_list.column("caps", width=74, anchor="center", stretch=False)
         self.local_list.heading("name", text="Файл моделі")
-        self.local_list.column("name", width=320, anchor="w")
+        self.local_list.column("name", width=280, anchor="w")
         self.local_list.heading("size", text="Розмір")
-        self.local_list.column("size", width=90, anchor="e", stretch=False)
+        self.local_list.column("size", width=80, anchor="e", stretch=False)
+        self.local_list.heading("state", text="На диску")
+        self.local_list.column("state", width=110, anchor="w", stretch=False)
         self.local_list.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.local_list.yview)
         scroll.grid(row=0, column=1, sticky="ns")
@@ -287,7 +302,13 @@ class ModelHubPanel(ttk.Frame):
         refresh_btn = ttk.Button(actions, text="Оновити", style="Icon.TButton",
                                  command=self.refresh_local)
         refresh_btn.pack(side="left", padx=(6, 0))
-        widgets.Tip(refresh_btn, "Перечитати теку моделей з диска")
+        widgets.Tip(refresh_btn, "Перечитати теку моделей з диска і перевірити, "
+                                 "чи файли ще існують")
+        delete_btn = ttk.Button(actions, text="Видалити файл", style="Icon.TButton",
+                                command=self.delete_local)
+        delete_btn.pack(side="left", padx=(6, 0))
+        widgets.Tip(delete_btn, "Видалити вибраний .gguf з диска. "
+                                "Спершу треба підтвердити")
         folder_btn = ttk.Button(actions, text="Тека моделей", style="Icon.TButton",
                                 command=self._open_models_folder)
         folder_btn.pack(side="left", padx=(6, 0))
@@ -328,9 +349,16 @@ class ModelHubPanel(ttk.Frame):
 
     # ── залізо ─────────────────────────────────────────────────────────────
     def start(self) -> None:
-        """Запустити фонове визначення заліза і перший пошук."""
-        threading.Thread(target=self._detect_hardware, daemon=True).start()
+        """Показати локальні моделі. Залізо визначаємо один раз.
+
+        Повторний виклик (клік по вкладці) лише оновлює список файлів і
+        не затирає вже введений пошуковий запит.
+        """
         self.refresh_local()
+        if getattr(self, "_hardware_started", False):
+            return
+        self._hardware_started = True
+        threading.Thread(target=self._detect_hardware, daemon=True).start()
 
     def _detect_hardware(self) -> None:
         try:
@@ -405,12 +433,28 @@ class ModelHubPanel(ttk.Frame):
         threading.Thread(target=self._collect_search, args=(job,), daemon=True).start()
 
     def _collect_search(self, job: hub.SearchJob) -> None:
-        """Чекати результати кожного джерела й одразу додавати їх у список."""
+        """Чекати результати кожного джерела й одразу додавати їх у список.
+
+        Чому тут дедлайн. Раніше цикл виходив ЛИШЕ коли ``job.running`` стало
+        хибним І черга порожня. Якщо хоч одне джерело повисло (мережа без
+        відповіді, ``urllib`` без таймауту всередині), потік не завершувався
+        НІКОЛИ: статус вічно показував «Шукаю…», а новий пошук запускав ще
+        один такий самий потік. Тепер є стеля часу: після неї чесно кажемо,
+        що частина джерел не відповіла, і звільняємо потік.
+        """
+        deadline = time.monotonic() + SEARCH_DEADLINE_S
         while True:
             try:
                 source, hits, error = job.results.get(timeout=0.3)
             except Exception:  # noqa: BLE001 - queue.Empty
                 if not job.running and job.results.empty():
+                    break
+                if time.monotonic() > deadline:
+                    LOG.warning("Пошук моделей не завершився за %s с — "
+                                "показую те, що встигло прийти", SEARCH_DEADLINE_S)
+                    self._ui(self._note_error, "пошук",
+                             f"частина джерел не відповіла за "
+                             f"{int(SEARCH_DEADLINE_S)} с")
                     break
                 continue
             if error:
@@ -604,14 +648,45 @@ class ModelHubPanel(ttk.Frame):
             self.local_list.delete(*self.local_list.get_children(""))
         except (tk.TclError, AttributeError):
             return
-        for path in hub.local_models():
+        ordered: list[Path] = []
+        seen: set[str] = set()
+
+        def _take(path: Path) -> None:
             try:
-                size = path.stat().st_size
+                key = str(path.resolve())
+            except OSError:
+                key = str(path)
+            if key in seen:
+                return
+            seen.add(key)
+            ordered.append(path)
+
+        for path in hub.local_models():
+            _take(path)
+        engine = getattr(self.settings, "engine", None)
+        for raw in (getattr(engine, "native_model", ""), getattr(engine, "model_path", "")):
+            text = str(raw or "").strip()
+            if text.lower().endswith(".gguf"):
+                _take(Path(text))
+        for remembered in list(self._seen_models):
+            _take(Path(remembered))
+        for path in ordered:
+            exists = path.is_file()
+            try:
+                key = str(path.resolve())
+            except OSError:
+                key = str(path)
+            if exists:
+                self._seen_models.add(key)
+            try:
+                size = path.stat().st_size if exists else 0
             except OSError:
                 size = 0
+                exists = False
             # local_path передаємо, щоб значок зору означав ФАКТ (є проєктор
             # на диску), а не лише слово в назві файлу.
-            caps = model_caps.detect(path.name, filename=path.name, local_path=path)
+            caps = model_caps.detect(path.name, filename=path.name,
+                                     local_path=path if exists else None)
             # ── Доказ важливіший за припущення ────────────────────────────
             # Якщо модель перевірено кнопкою «Перевірити можливості»,
             # показуємо результат ТЕСТУ. Якщо ні — значки з назви файлу
@@ -628,10 +703,12 @@ class ModelHubPanel(ttk.Frame):
                 # Немає тесту — показуємо «?» замість вигаданих значків.
                 guessed = caps.icon_text()
                 icons = f"? {guessed}" if guessed else "?"
+            state = "на диску" if exists else "видалено"
             self.local_list.insert("", "end", text=str(path), values=(
                 icons,
                 path.name,
-                f"{size / 2**30:.2f} ГБ" if size else "—"))
+                f"{size / 2**30:.2f} ГБ" if size else "—",
+                state))
 
     def _selected_local(self) -> Optional[Path]:
         selection = self.local_list.selection()
@@ -645,7 +722,69 @@ class ModelHubPanel(ttk.Frame):
         if path is None:
             self._set_status("Вибери модель у списку «Локальні».")
             return
+        if not path.is_file():
+            self._set_status(f"Файлу немає на диску: {path.name}. Його вже видалено.")
+            self.refresh_local()
+            return
         self._activate_model(path)
+
+    def delete_local(self) -> None:
+        """Видалити вибраний файл моделі з диска після підтвердження."""
+        path = self._selected_local()
+        if path is None:
+            self._set_status("Вибери модель у списку «Локальні».")
+            return
+        if not path.is_file():
+            self._seen_models.discard(str(path))
+            try:
+                self._seen_models.discard(str(path.resolve()))
+            except OSError:
+                pass
+            self._set_status(f"Файлу вже немає: {path.name}")
+            self.refresh_local()
+            return
+        if not messagebox.askyesno(
+                "Видалити модель",
+                f"Видалити файл з диска?\n\n{path}\n\nЦе не скасувати.",
+                parent=self.winfo_toplevel()):
+            return
+        guard = getattr(self, "on_before_delete", None)
+        if guard is not None:
+            try:
+                allowed = bool(guard(str(path)))
+            except Exception as exc:  # noqa: BLE001 - видалення не має падати
+                self._set_status(f"Не вдалось звільнити модель: {exc}")
+                return
+            if not allowed:
+                return
+        try:
+            hub.delete_local_model(path)
+        except OSError as exc:
+            messagebox.showerror("Видалення", f"Файл не видалено: {exc}",
+                                 parent=self.winfo_toplevel())
+            return
+        try:
+            gone = str(path.resolve())
+        except OSError:
+            gone = str(path)
+        self._seen_models.discard(gone)
+        self._seen_models.discard(str(path))
+        engine = getattr(self.settings, "engine", None)
+        if engine is not None:
+            for field_name in ("native_model", "model_path"):
+                current = str(getattr(engine, field_name, "") or "")
+                try:
+                    same = bool(current) and Path(current).resolve() == Path(gone)
+                except OSError:
+                    same = current == str(path)
+                if same:
+                    setattr(engine, field_name, "")
+            try:
+                self.settings.save()
+            except OSError:
+                LOG.debug("Налаштування після видалення не записано", exc_info=True)
+        self.refresh_local()
+        self._set_status(f"Видалено {path.name}")
 
     def _open_models_folder(self) -> None:
         folder = hub.models_dir()

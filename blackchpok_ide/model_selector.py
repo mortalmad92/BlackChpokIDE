@@ -51,6 +51,7 @@ class ModelSelector(tk.Toplevel):
         on_pick: Optional[Callable[[providers.ModelEntry], None]] = None,
         on_refresh: Optional[Callable[[], None]] = None,
         on_manage: Optional[Callable[[], None]] = None,
+        on_delete: Optional[Callable[[providers.ModelEntry], None]] = None,
     ) -> None:
         super().__init__(master)
         self.fonts = fonts
@@ -58,6 +59,7 @@ class ModelSelector(tk.Toplevel):
         self.on_pick = on_pick
         self.on_refresh = on_refresh
         self.on_manage = on_manage
+        self.on_delete = on_delete
         self.entries: list[providers.ModelEntry] = []
         self.query = ""
         self._rows: list[tk.Frame] = []
@@ -204,11 +206,19 @@ class ModelSelector(tk.Toplevel):
         if active:
             tk.Label(row, text="✓", bg=bg, fg=theme.ACCENT,
                      font=(ROW_FONT, ROW_NAME_SIZE, "bold")).grid(
-                row=0, column=2, padx=(4, 10))
+                row=0, column=2, padx=(4, 4))
+
+        forget = None
+        if entry.path and str(entry.path).lower().endswith(".gguf"):
+            forget = tk.Label(row, text="×", bg=bg, fg=theme.FG_FAINT,
+                              font=(ROW_FONT, ROW_NAME_SIZE), cursor="hand2")
+            forget.grid(row=0, column=3, padx=(0, 8))
+            widgets.Tip(forget, "Видалити зі списку і з диска")
+            forget.bind("<Button-1>", lambda _event, item=entry: self._delete(item))
 
         meta = tk.Label(row, text=entry.meta_text, bg=bg, fg=theme.FG_DIM,
                         font=(ROW_FONT, ROW_META_SIZE), anchor="w")
-        meta.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(0, ROW_PAD_Y))
+        meta.grid(row=1, column=1, columnspan=3, sticky="ew", pady=(0, ROW_PAD_Y))
 
         labels = (dot, name, meta)
         for widget in (row, *labels):
@@ -235,6 +245,11 @@ class ModelSelector(tk.Toplevel):
         if self.on_pick is not None:
             self.on_pick(entry)
         self.close()
+
+    def _delete(self, entry: providers.ModelEntry) -> None:
+        """Хрестик не вибирає модель: лише просить оболонку її видалити."""
+        if self.on_delete is not None:
+            self.on_delete(entry)
 
     def _refresh(self) -> None:
         if self.on_refresh is not None:

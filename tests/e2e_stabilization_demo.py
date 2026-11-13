@@ -258,6 +258,23 @@ def check_agent_counts(base_url: str, model: str) -> None:
           f"{real_count} .py; на диску {disk_count} у теці, "
           f"{disk_recursive} з підтеками")
 
+    # ── ЯКЕ ЧИСЛО ВВАЖАТИ ПРАВИЛЬНИМ ──────────────────────────────────────
+    # Раніше «правдою» вважався ЛИШЕ верхній рівень (``list_dir``), і
+    # відповідь «150» позначалася як вигадка — хоча 150 і є справжньою
+    # кількістю Python-файлів із підтеками, а модель дістала її саме з
+    # ``find_files`` (рекурсивний пошук).
+    #
+    # Заміряно живим прогоном: агент викликав ``find_files`` І ``list_dir``,
+    # назвав 150, а тест оголосив це провалом правила доказів, бо порівнював
+    # із 127. Тест був неправий, не модель.
+    #
+    # Питання звучить як «скільки Python-файлів у теці» — без слова
+    # «вкладених». Обидві відповіді законні, тож приймаємо ОБИДВІ: верхній
+    # рівень і рекурсивно. Головна вимога ТЗ лишається: впевнене ЧУЖЕ число
+    # без позначки — провал.
+    acceptable_counts = {real_count, disk_count, disk_recursive}
+    acceptable_counts.discard(0)
+
     # Чи відповідь агента підтверджена й чи називає вона правильне число.
     items = runner.evidence_items()
     verdict = evidence.check(answer, items, requires_project_fact=True)
@@ -283,23 +300,27 @@ def check_agent_counts(base_url: str, model: str) -> None:
         parts = answer.split("\n\n", 1)
         core = parts[1] if len(parts) > 1 else ""
     numbers = {int(n) for n in re.findall(r"\b(\d{1,4})\b", core)}
-    names_truth = real_count in numbers
+    # Правильним вважаємо будь-яке з реальних чисел: верхній рівень теки або
+    # рекурсивно (див. коментар вище про ``acceptable_counts``).
+    names_truth = bool(acceptable_counts & numbers)
     marked = bool(disclaimer_mark)
 
     check("правило доказів: відповідь або точна, або позначена неперевіреною",
           names_truth or marked,
-          f"названо {sorted(numbers) or '—'}, справді {real_count}, "
+          f"названо {sorted(numbers) or '—'}, "
+          f"справді {sorted(acceptable_counts)}, "
           f"позначено: {'так' if marked else 'ні'}")
     if names_truth:
         check("агент назвав справжню кількість файлів", True,
-              f"{real_count}")
+              f"{sorted(acceptable_counts & numbers)}")
     else:
         # Чесний підсумок: модель помилилась, але система це виявила.
-        print(f"[NOTE] Модель назвала {sorted(numbers)} замість {real_count}. "
+        print(f"[NOTE] Модель назвала {sorted(numbers)} замість "
+              f"{sorted(acceptable_counts)}. "
               f"Правило доказів спрацювало: відповідь НЕ видана як факт.")
         EVIDENCE.append(
             f"вигадку виявлено й позначено: названо {sorted(numbers)}, "
-            f"справді {real_count}")
+            f"справді {sorted(acceptable_counts)}")
 
     runner.cancel()
 

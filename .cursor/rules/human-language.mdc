@@ -1,0 +1,15 @@
+---
+description: Як агент розуміє звичайну мову без команд
+globs: blackchpok_ide/agent.py,blackchpok_ide/intent_engine.py,blackchpok_ide/conversation.py,blackchpok_ide/planning.py
+alwaysApply: false
+---
+
+# Людська мова
+
+Людина пише як замовник. Команд і JSON від неї не вимагати.
+
+- До моделі: `AgentRunner._prepare_understanding` рахує намір (`intent_engine`) і стан (`conversation.ConversationState`). Правила детерміновані й працюють без моделі.
+- Одразу після цього `_recall_memory` підкладає факти й обмеження з NEUROMESH. Модель не має сама згадувати `memory_search`, щоб не перепитати вже сказане.
+- У промпт іде мета, обмеження і згадані файли (`_context_block`). Шляхи — відносно теки чату.
+- Коротке «додай кнопку» продовжує поточну мету стану, а не починає новий проєкт. Якщо намір не actionable — відповісти текстом, не плодити кроки.
+- Не вигадуй успіх. Підсумок спирається на результати інструментів (`evidence`), не на обіцянку моделі.

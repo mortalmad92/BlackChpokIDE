@@ -287,6 +287,7 @@ class MemoryBridge:
         try:
             remember(body, kind=kind, source=source[:200],
                      files=[str(item) for item in files][:8],
+                     task=str(task or "")[:120],
                      confidence=max(0.0, min(1.0, float(confidence))))
         except TypeError:
             # Старіший сервіс без частини параметрів.
@@ -298,8 +299,39 @@ class MemoryBridge:
         except Exception:                            # noqa: BLE001
             LOG.info("Спогад не збережено", exc_info=True)
             return False
-        del task
         return True
+
+    def archive_messages(self, messages: Sequence[Mapping[str, Any]], *,
+                         task: str = "") -> bool:
+        """Перенести викинутий із вікна контекст у довгострокову пам'ять.
+
+        У вікні лишається кінець розмови. Сюди йде короткий зміст того,
+        що вже не вміщається: репліки людини й агента та перший рядок
+        результату інструмента. Сирий дамп файлу в пам'ять не кладемо.
+        """
+        lines: list[str] = []
+        for message in messages or ():
+            if not isinstance(message, Mapping):
+                continue
+            role = str(message.get("role") or "")
+            body = " ".join(str(message.get("content") or "").split())
+            if role == "tool":
+                if not body:
+                    continue
+                name = str(message.get("name") or "tool")
+                lines.append(f"{name}: {body[:180]}")
+                continue
+            if role not in ("user", "assistant") or len(body) < 12:
+                continue
+            lines.append(f"{role}: {body[:360]}")
+        if not lines:
+            return False
+        text = "Вивільнено з контексту. " + " | ".join(lines)
+        if len(text) > 900:
+            text = text[:899] + "…"
+        return self.remember_fact(
+            text, kind="task", source="контекст: вивільнено з вікна",
+            task=task, confidence=0.45)
 
     def record_turn(self, *, task: str, action: str, status: str = "ok",
                     detail: str = "", files: Sequence[str] = (),

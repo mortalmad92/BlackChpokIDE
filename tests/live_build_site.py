@@ -148,7 +148,7 @@ def main() -> int:
     pump(app, 1.0)
     check("тека проєкту створена", TARGET.is_dir(), str(TARGET))
     check("IDE бачить проєкт", app.has_project(), str(app.settings.workspace))
-    app.new_chat_session()
+    app.new_chat_session(TARGET)
     pump(app, 0.5)
 
     print()

@@ -72,20 +72,33 @@ class StreamingDecoder:
         if not self._pending:
             return ""
         raw = bytes(self._pending)
-        if final:
-            self._pending.clear()
-            return raw.decode("utf-8", "replace")
-        # Знаходимо найдовший коректний префікс: ріжемо лише незавершений
-        # хвіст, а не додаємо «заміну символу».
+        # ── Обірваний хвіст: ОБРІЗАТИ, а не позначати «заміною» ────────────
+        # Останній токен може бути половиною символа (кирилиця й емодзі
+        # займають по кілька байтів). Наприкінці генерації цей хвіст раніше
+        # декодувався з ``errors="replace"``, і користувач бачив ``�``
+        # останнім знаком відповіді — замірено живим прогоном на
+        # Ministral-3-14B: «… як моє щастя.** �».
+        #
+        # Неповний байт — це не вміст, а обрив: відкидаємо щонайбільше
+        # 3 байти хвоста. Проміжні шматки притримують його до наступного
+        # токена (так само, як ``codecs``-декодер), а останній просто
+        # відкидає.
         for trim in range(0, min(4, len(raw)) + 1):
             candidate = raw[: len(raw) - trim] if trim else raw
             try:
                 text = candidate.decode("utf-8")
             except UnicodeDecodeError:
                 continue
-            del self._pending[: len(candidate)]
+            if final:
+                self._pending.clear()
+            else:
+                # Незавершений хвіст лишається до наступного токена.
+                del self._pending[: len(candidate)]
             return text
-        return ""
+        # Справді зіпсовані байти (не обірваний хвіст) — лише тоді заміна,
+        # інакше втратили б весь шматок.
+        self._pending.clear()
+        return raw.decode("utf-8", "replace")
 
 
 class Tokenizer:

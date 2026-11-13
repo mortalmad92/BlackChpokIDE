@@ -60,10 +60,12 @@ class StatsBar(tk.Frame):
         self.fill_label.pack(side="left")
 
         # Клік або наведення на індикатор показує розбивку контексту.
-        for widget in (self.gauge, self.fill_label):
+        for widget in (self.gauge, self.fill_label, self.tokens_label):
             widget.bind("<Button-1>", lambda _e: self.toggle_popover())
             widget.bind("<Enter>", lambda _e: self._schedule_popover())
             widget.bind("<Leave>", lambda _e: self._cancel_popover())
+        self.fill_label.configure(cursor="hand2")
+        self.tokens_label.configure(cursor="hand2")
 
         # Підказка з деталями по наведенню на весь рядок.
         self._tip = widgets.Tip(self, "Ще немає даних від моделі.")

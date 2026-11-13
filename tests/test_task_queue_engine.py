@@ -271,6 +271,20 @@ class TestQueuePlan(unittest.TestCase):
         self.assertEqual(progress["errors"], 1)
         self.assertAlmostEqual(self.queue.percent_done(), 100 / 3)
 
+    def test_progress_and_clear_stay_inside_one_chat(self) -> None:
+        mine = self.queue.add("мій крок", chat_id="chat-a")
+        other = self.queue.add("чужий крок", chat_id="chat-b")
+        self.queue.mark_done(mine.id, "ок")
+        self.queue.mark_done(other.id, "ок")
+        only_mine = self.queue.progress(chat_id="chat-a")
+        self.assertEqual(only_mine["total"], 1)
+        self.assertEqual(only_mine["done"], 1)
+        self.assertEqual(self.queue.progress()["total"], 2)
+        removed = self.queue.clear_finished("chat-a")
+        self.assertEqual(removed, 1)
+        self.assertIsNone(self.queue.get(mine.id))
+        self.assertIsNotNone(self.queue.get(other.id))
+
     def test_old_queue_file_still_loads(self) -> None:
         """Черга, збережена до появи нових полів, має читатись."""
         path = self.folder / "old.json"
@@ -354,6 +368,28 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(self.queue.get(task.id).status, queue_engine.RUNNING)
         self.assertTrue(self.executor.busy)
 
+    def test_rejected_start_returns_step_and_frees_queue(self) -> None:
+        """Агент не прийняв крок — черга не зависає в «аналіз».
+
+        ``retry()`` відхиляє активний крок, тож раніше ``running_id``
+        лишався, а наступні кроки назавжди стояли в «очікує».
+        """
+        tasks = self.queue.add_steps(["a", "b"], chat_id="c1")
+        rejected = task_executor.QueueExecutor(
+            self.queue,
+            on_run_step=lambda task, prompt: False,
+            chat_id_provider=lambda: "c1",
+        )
+        self.assertIsNone(rejected.start_next())
+        first = self.queue.get(tasks[0].id)
+        self.assertEqual(first.status, queue_engine.PENDING)
+        self.assertEqual(first.attempts, 0)
+        self.assertEqual(self.queue.running_id, "")
+        self.assertFalse(rejected.busy)
+        nxt = rejected.next_task()
+        self.assertIsNotNone(nxt)
+        self.assertEqual(nxt.id, tasks[0].id)
+
     def test_only_one_step_at_a_time(self) -> None:
         self.queue.add_steps(["a", "b"], chat_id="c1")
         self.executor.start_next()
@@ -414,6 +450,35 @@ class TestExecutor(unittest.TestCase):
         limited.finish(ok=True, answer="Я зроблю це далі.")
         self.assertEqual(self.queue.get(task.id).status, queue_engine.FAILED,
                          "після вичерпання спроб — збій")
+
+    def test_rejected_retry_does_not_fail_the_plan(self) -> None:
+        """Повтор не стартував (агент зайнятий) — крок знову «очікує», не «помилка»."""
+        calls = {"n": 0}
+
+        def run(_task, _prompt) -> bool:
+            calls["n"] += 1
+            return calls["n"] == 1
+
+        limited = task_executor.QueueExecutor(
+            self.queue,
+            validator=task_executor.TaskValidator(lambda: self.folder),
+            on_run_step=run,
+            chat_id_provider=lambda: "c1",
+            max_attempts=3,
+        )
+        tasks = self.queue.add_steps(
+            [{"text": "a"}, {"text": "b", "depends_on": [1]}], chat_id="c1")
+        limited.start_next()
+        limited.finish(ok=True, answer="Я зроблю це далі.")
+        first = self.queue.get(tasks[0].id)
+        second = self.queue.get(tasks[1].id)
+        self.assertEqual(first.status, queue_engine.PENDING)
+        self.assertEqual(second.status, queue_engine.PENDING)
+        self.assertEqual(self.queue.running_id, "")
+        self.assertFalse(limited.busy)
+        nxt = limited.next_task()
+        self.assertIsNotNone(nxt)
+        self.assertEqual(nxt.id, tasks[0].id)
 
     def test_retry_hint_mentions_tools(self) -> None:
         """Підказка при повторі має прямо казати «виклич інструмент»."""

@@ -826,6 +826,19 @@ def safe_filename(name: str) -> str:
     return cleaned or "model.gguf"
 
 
+def delete_local_model(path: Path | str) -> Path:
+    """Видалити файл моделі з диска.
+
+    Лише ``.gguf``. Каталог, проєкт і будь-який інший файл цей метод
+    не чіпає — виклик із селектора вже показав вікно підтвердження.
+    """
+    target = Path(path)
+    if not target.is_file() or not is_gguf(target.name):
+        raise OSError(f"Це не файл моделі: {target}")
+    target.unlink()
+    return target
+
+
 def local_models() -> list[Path]:
     """Уже завантажені GGUF-файли."""
     folder = models_dir()

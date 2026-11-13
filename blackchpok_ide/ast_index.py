@@ -437,6 +437,42 @@ def unparse(node: ast.AST) -> str:
         return type(node).__name__
 
 
+def replace_symbol_source(text: str, old: str, new: str) -> tuple[str, str] | None:
+    """Замінити цілий символ Python, якщо ``old`` збігається з його тілом.
+
+    Повертає ``(новий текст, ім'я символу)`` або ``None``, коли збіг не
+    один. Правка йде по дереву AST: декоратори й тіло лишаються цілими.
+    """
+    needle = (old or "").strip()
+    if not needle or needle == (new or "").strip():
+        return None
+    result = analyse(text or "", use_cache=False)
+    if not result.ok or result.tree is None:
+        return None
+    lines = (text or "").splitlines(keepends=True)
+    hits: list[tuple[int, int, str]] = []
+    for node in ast.walk(result.tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        start = int(node.lineno or 1)
+        for decorator in getattr(node, "decorator_list", []) or []:
+            start = min(start, int(getattr(decorator, "lineno", start) or start))
+        end = int(getattr(node, "end_lineno", node.lineno) or node.lineno)
+        if end < start or start < 1 or end > len(lines):
+            continue
+        chunk = "".join(lines[start - 1:end]).strip()
+        if chunk == needle:
+            hits.append((start, end, node.name))
+    if len(hits) != 1:
+        return None
+    start, end, name = hits[0]
+    body = new or ""
+    if body and not body.endswith("\n"):
+        body += "\n"
+    updated = "".join(lines[:start - 1]) + body + "".join(lines[end:])
+    return updated, name
+
+
 def tree_rows(tree: Optional[ast.AST], *, limit: int = 400) -> list[tuple[int, str, str]]:
     """Рядки для перегляду AST: (глибина, тип вузла, короткий текст)."""
     rows: list[tuple[int, str, str]] = []
@@ -479,6 +515,7 @@ __all__ = [
     "VARIABLE",
     "analyse",
     "clear_cache",
+    "replace_symbol_source",
     "describe_line",
     "digest",
     "tree_rows",

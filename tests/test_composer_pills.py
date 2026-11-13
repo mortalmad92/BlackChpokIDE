@@ -156,6 +156,29 @@ class TestComposerPills(unittest.TestCase):
             finally:
                 menu.destroy()
 
+    def test_workspace_menu_forget_does_not_open_folder(self) -> None:
+        from blackchpok_ide.workspace_menu import WorkspaceMenu
+
+        picked: list[str] = []
+        forgotten: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "one"
+            second = Path(tmp) / "two"
+            first.mkdir()
+            second.mkdir()
+            menu = WorkspaceMenu(
+                self.root, self.fonts, current=str(first),
+                recent=[str(second)],
+                on_pick=picked.append,
+                on_forget=forgotten.append,
+            )
+            try:
+                menu._forget(str(second))
+                self.assertEqual(forgotten, [str(second)])
+                self.assertEqual(picked, [])
+            finally:
+                menu.destroy()
+
 
 class TestShellWiring(unittest.TestCase):
     """Оболонка: пігулки підключені до реальних дій, а не до заглушок."""
@@ -171,6 +194,8 @@ class TestShellWiring(unittest.TestCase):
         # Вибір теки йде ТІЄЮ Ж логікою, що й шапка.
         pick = inspect.getsource(main_window.BlackChpokIDE._pick_workspace_from_chat)
         self.assertIn("set_workspace", pick)
+        menu = inspect.getsource(main_window.BlackChpokIDE.show_workspace_menu)
+        self.assertIn("on_forget=self.forget_recent_folder", menu)
 
     def test_set_project_updates_pill(self) -> None:
         import inspect

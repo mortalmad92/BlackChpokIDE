@@ -387,12 +387,39 @@ class EngineContext:
             lib.llama_batch_free(batch)
         if code == 0:
             return True
-        if code == _abi.DECODE_ABORTED or self.cancelled:
+        if code == _abi.DECODE_ABORTED:
+            # ── Скасування: рушій лишив пораховані ubatch-і в пам'яті ─────
+            # ``llama.h`` прямо каже: «aborted (processed ubatches will
+            # remain in the context's memory)». Наша мітка кешу про них не
+            # знає, тож без синхронізації наступний хід декодує з хибної
+            # позиції й дістає ``-1``. Заміряно: мітка 0 проти 1536
+            # реальних токенів, і контекст заклинювало до перезавантаження
+            # моделі — ззовні це «модель перестала відповідати».
             self._aborted = True
+            if self.cache is not None:
+                try:
+                    self.cache.resync()
+                except Exception:                    # noqa: BLE001 - не маємо падати
+                    LOG.debug("Синхронізація KV після скасування не вдалась",
+                              exc_info=True)
             return False
+        # ── Решта кодів — ЦЕ ЗБІЙ, а не скасування ────────────────────────
+        # Раніше умова була ``code == DECODE_ABORTED or self.cancelled``:
+        # справжній збій під час скасування маскувався під «cancelled», і
+        # користувач не бачив справжньої причини. Тепер коди розрізняються.
+        if self.cancelled:
+            self._aborted = True
+            if self.cache is not None:
+                try:
+                    self.cache.resync()
+                except Exception:                    # noqa: BLE001
+                    LOG.debug("KV не синхронізовано після скасування",
+                              exc_info=True)
+            return False
+        detail = _abi.DECODE_ERROR_TEXT.get(code, "невідомий код")
         raise EngineError(
-            f"Декодування не вдалось (код {code}). Можливо, контекст переповнено "
-            f"або бракує пам'яті.")
+            f"Декодування не вдалось (код {code}: {detail}). "
+            f"Можливо, контекст переповнено або бракує пам'яті.")
 
     def clear_cache(self) -> None:
         if self.cache is not None:
@@ -453,6 +480,9 @@ class NativeEngine:
         self.context: EngineContext | None = None
         self._lock = threading.RLock()
         self._formatter: Any = None
+        #: Кеш діалекту інструментів: ``(id(моделі), Dialect)``. Рахуємо один
+        #: раз на модель — шаблон у пам'яті не змінюється.
+        self._dialect_cache: tuple[int, Any] | None = None
         self._stats = {
             "loads": 0, "unloads": 0, "generations": 0,
             "tokens_generated": 0, "tokens_prompted": 0,
@@ -544,6 +574,7 @@ class NativeEngine:
                     self.model, self.context = model, context
                     self._stats["loads"] += 1
                     self._formatter = None
+                    self._dialect_cache = None
                     info = self.describe()
                     LOG.info("Модель завантажена за %.1f с: %s",
                              model.load_ms / 1000.0, info["description"])
@@ -616,6 +647,7 @@ class NativeEngine:
             self.model = None
             self.context = None
             self._formatter = None
+            self._dialect_cache = None
             if had:
                 gc.collect()
             return had
@@ -660,13 +692,32 @@ class NativeEngine:
         return self._formatter
 
     @property
-    def supports_native_tools(self) -> bool:
-        from .chatfmt import has_native_tool_support
+    def dialect(self):
+        """Формат виклику інструментів, який очікує САМЕ ця модель.
+
+        Читаємо шаблон із GGUF: у ньому буквально записано, як модель зве
+        інструмент (``[TOOL_CALLS]`` у Mistral, ``<tool_call>`` у Qwen).
+        Без цього IDE показувала всім моделям один текстовий протокол, і
+        модель, яка слухняно відповідала своїм форматом, виглядала як
+        «порожня відповідь» (заміряно на Ministral-3-14B у GUI).
+        """
+        from .. import tool_dialect
 
         model = self.model
         if model is None:
-            return False
-        return has_native_tool_support(model.chat_template)
+            return tool_dialect.Dialect()
+        key = id(model)
+        cached = self._dialect_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        dialect = tool_dialect.dialect_for_template(model.chat_template)
+        self._dialect_cache = (key, dialect)
+        return dialect
+
+    @property
+    def supports_native_tools(self) -> bool:
+        """Чи шаблон моделі має ВЛАСНИЙ формат виклику інструментів."""
+        return bool(self.dialect.native)
 
     def render_chat(self, messages: list[dict], *,
                     add_assistant: bool = True) -> str:
@@ -805,7 +856,8 @@ class NativeEngine:
             } - {""}
             if known_tools:
                 schema_names |= {str(name) for name in known_tools if str(name).strip()}
-            tool_parser = ToolCallParser(known=schema_names or None)
+            tool_parser = ToolCallParser(known=schema_names or None,
+                                         dialect=self.dialect)
             produced: list[int] = []
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
@@ -927,7 +979,21 @@ class NativeEngine:
         # ``tool_parser.text`` накопичує САМЕ той хвіст, який було
         # приховано, — там і лежить виклик.
         searchable = tool_parser.text or full_text
-        tool_calls = self._extract_calls(searchable, tools, matcher.stopped)
+        # Спершу — ВЛАСНИЙ формат моделі: ``[TOOL_CALLS]`` у Mistral не є
+        # JSON, тож загальний розбирач його не бачить і виклик губився.
+        tool_calls = tool_parser.native_calls()
+        if not tool_calls:
+            tool_calls = self._extract_calls(searchable, tools, matcher.stopped)
+        else:
+            # Розбирач уже віддав виклики; про всяк випадок додаємо те, що
+            # знайшов рушій у прихованому тексті.
+            seen = {(call["function"]["name"], call["function"]["arguments"])
+                    for call in tool_calls}
+            for call in self._extract_calls(searchable, tools, matcher.stopped):
+                key = (call["function"]["name"], call["function"]["arguments"])
+                if key not in seen:
+                    seen.add(key)
+                    tool_calls.append(call)
         if tool_calls:
             finish_reason = "tool_calls"
         payload = StreamChunk(done=True, stats=stats, finish_reason=finish_reason,
@@ -939,28 +1005,66 @@ class NativeEngine:
     # ── допоміжне ─────────────────────────────────────────────────────────
     def _prepare_prompt(self, messages: list[dict] | str,
                         tools: list[dict] | None) -> str:
+        """Збудувати промпт у ТОМУ форматі інструментів, який знає модель.
+
+        Чому це не «просто render_chat». ``LlamaChatMessage`` містить лише
+        ``role`` і ``content``: ні ``tools``, ні ``tool_calls`` у шаблон
+        фізично не потрапляють. Заміряно на Ministral-3-14B:
+
+            промпт 2-го кроку = '[INST] … [/INST] </s> Записано a.txt</s>'
+
+        Тобто модель бачила результат інструмента БЕЗ самого виклику й без
+        пояснення, що це результат, а опису інструментів у промпті не було
+        взагалі — його додавав лише загальний текстовий протокол. Модель,
+        чий шаблон очікує ``[AVAILABLE_TOOLS]`` / ``[TOOL_CALLS]``, такої
+        інструкції не розуміла й віддавала виклик у СВОЄМУ форматі, якого
+        ніщо не розпізнавало → «порожня відповідь».
+
+        Тому власні маркери моделі вписуємо в текст самі:
+
+        * блок інструментів — у системне повідомлення;
+        * виклик з історії — текстом у діалекті моделі (``tool_calls`` у
+          повідомленні лишаємо: його читають інші шаблони й HTTP-сервери).
+        """
         if isinstance(messages, str):
             return messages
+        dialect = self.dialect
         payload = list(messages)
+        # ── власний формат моделі замість загального текстового протоколу ──
         if tools:
-            from .chatfmt import tool_schemas_prompt
-
-            hint = tool_schemas_prompt(tools)
-            if hint:
+            block = dialect.tools_block(tools)
+            if block:
                 # Опис інструментів додаємо в системне повідомлення: так він
                 # не губиться в історії й не дублюється на кожен хід.
                 if payload and payload[0].get("role") == "system":
                     payload[0] = dict(payload[0])
-                    payload[0]["content"] = str(payload[0].get("content") or "") + "\n\n" + hint
+                    payload[0]["content"] = (str(payload[0].get("content") or "")
+                                             + "\n\n" + block)
                 else:
-                    payload.insert(0, {"role": "system", "content": hint})
+                    payload.insert(0, {"role": "system", "content": block})
+        # ── власний рендер, коли шаблон рушія не справляється ─────────────
+        # ``llama_chat_apply_template`` для шаблону Mistral НЕ обгортає роль
+        # ``tool`` у ``[TOOL_RESULTS]`` і не відкриває хід асистента в кінці.
+        # Замірено: промпт 2-го кроку виходив ``… [/INST] A</s> T</s>`` —
+        # модель не знала, що це результат інструмента, і не мала де почати
+        # відповідь (звідси порожній текст на другому кроці).
+        own = dialect.render_history(payload)
+        if own:
+            return own
         return self.render_chat(payload, add_assistant=True)
 
     def _extract_calls(self, text: str, tools: list[dict] | None,
                        stop_marker: str) -> list[dict[str, Any]]:
+        """Знайти виклики в тексті — спершу у ВЛАСНОМУ форматі моделі.
+
+        Порядок важливий: ``[TOOL_CALLS]`` моделі не є JSON, тож загальний
+        розбирач його не бачить. Раніше через це виклик Mistral вважався
+        звичайним текстом, текст вирізався як службовий, і агент зупинявся.
+        """
         if not tools or not text:
             if not stop_marker:
                 return []
+        from .. import tool_dialect
         from .chatfmt import extract_tool_calls
 
         known = set()
@@ -969,6 +1073,9 @@ class NativeEngine:
             name = (function or tool or {}).get("name") if isinstance(tool, dict) else None
             if name:
                 known.add(str(name))
+        native = tool_dialect.extract_native_calls(text, known or None)
+        if native:
+            return native
         calls = extract_tool_calls(text, known=known or None)
         return [call.to_openai() for call in calls]
 
@@ -1071,8 +1178,18 @@ class NativeEngine:
         if code == 0:
             return True
         if code == _abi.DECODE_ABORTED or context.cancelled:
+            # Той самий розсинхрон, що й у звичайному decode: після аборту
+            # рушій лишає пораховані ubatch-і, і мітку треба відновити.
+            if context.cache is not None:
+                try:
+                    context.cache.resync()
+                except Exception:                    # noqa: BLE001
+                    LOG.debug("KV не синхронізовано після аборту embeddings",
+                              exc_info=True)
             return False
-        raise EngineError(f"Декодування для embeddings не вдалось (код {code}).")
+        detail = _abi.DECODE_ERROR_TEXT.get(code, "невідомий код")
+        raise EngineError(
+            f"Декодування для embeddings не вдалось (код {code}: {detail}).")
 
     # ── діагностика ───────────────────────────────────────────────────────
     def stats(self) -> dict[str, Any]:

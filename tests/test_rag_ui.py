@@ -56,6 +56,24 @@ def main() -> int:
     app.geometry("1500x900")
     pump(app, 1.0)
 
+    # ── Робоча тека мусить бути текою ТЕСТУ ──────────────────────────────
+    # Вікно відновлює теку з активної сесії (``chats.json``), і на машині
+    # розробника там стоїть інша тека (``C:\AI\site``). RAG індексує САМЕ
+    # робочу теку, тож тест бачив «0 файлів» при наявному індексі на 457
+    # файлів у теці проєкту. Це не дефект продукту — це відсутня ізоляція
+    # тесту (та сама, що й у ``test_task_center_live``).
+    if app._project_root() != ROOT:
+        app._apply_workspace(ROOT)
+        pump(app, 0.8)
+    # RAG-рушій прив'язаний до кореня — перемикаємо його на теку тесту.
+    try:
+        app.rag_service.set_root(ROOT)
+    except (AttributeError, TypeError):
+        pass
+    pump(app, 0.5)
+    check("робоча тека — тека тесту", app._project_root() == ROOT,
+          str(app._project_root()))
+
     # ── панель існує й відкривається
     check("панель RAG створена", hasattr(app, "rag_panel"))
     app.show_side("rag")

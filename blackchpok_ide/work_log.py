@@ -50,6 +50,8 @@ TOOL_VIEWS: dict[str, tuple[str, str, str]] = {
     "run_command": ("❯", "Запускає", "command"),
     "git_status": ("⑂", "Стан git", ""),
     "git_diff": ("⑂", "Зміни git", "path"),
+    "git_remote_info": ("⑂", "Дивиться GitHub", ""),
+    "git_publish": ("⬆", "Оновлює GitHub", "message"),
     "project_tree": ("▦", "Будує дерево", "depth"),
     "python_check": ("✓", "Перевіряє синтаксис", "path"),
     # ── інтернет ───────────────────────────────────────────────────────────

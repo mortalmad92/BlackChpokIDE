@@ -46,8 +46,17 @@ MODE_LABELS: dict[str, tuple[str, str, str]] = {
 #: Інструменти, які нічого не змінюють.
 READ_TOOLS = frozenset({
     "read_file", "list_dir", "search_text", "find_files", "project_tree",
-    "git_status", "git_diff", "python_check", "list_skills", "read_skill",
+    "git_status", "git_diff", "git_remote_info", "python_check",
+    "list_skills", "read_skill",
 })
+
+#: Інструменти, які змінюють стан ПОЗА цією машиною (публікація).
+#:
+#: ``git_publish`` відправляє коміт на GitHub — це видно іншим людям і
+#: відкотити його локально неможливо. Тому він заборонений у режимі «лише
+#: читання» і ЗАВЖДИ вимагає підтвердження, навіть коли загальний вмикач
+#: «питати дозвіл на команди» вимкнено: ціна помилки тут інша.
+PUBLISH_TOOLS = frozenset({"git_publish"})
 
 #: Інструменти, які пишуть на диск.
 #:
@@ -196,6 +205,13 @@ def check_tool(
 
     if name in READ_TOOLS:
         return Decision(True)
+
+    if name in PUBLISH_TOOLS:
+        # Публікація на GitHub: незворотна зовнішня дія.
+        if active == READ_ONLY:
+            return Decision(False, "Режим «лише читання»: відправка на GitHub "
+                                   "заборонена.")
+        return Decision(True, needs_confirmation=True)
 
     if name in EXEC_TOOLS:
         if active == READ_ONLY:

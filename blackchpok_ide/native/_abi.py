@@ -200,10 +200,33 @@ GGML_TYPE = {
 DEVICE_TYPE = {0: "cpu", 1: "gpu", 2: "igpu", 3: "accel", 4: "meta"}
 
 #: Повернення ``llama_decode``, коли генерацію скасували через abort callback.
+#:
+#: Значення перевірено в самій бібліотеці: ``ggml_status_to_string(1)``
+#: повертає ``"warning (operation aborted)"``, а ``llama_decode`` мапить це
+#: в ``2`` (``llama.h``: «aborted (processed ubatches will remain in the
+#: context's memory)»). Тобто рядок ``graph_compute: … failed with error 1``
+#: у консолі — це НАШЕ скасування, а не збій CUDA.
 DECODE_ABORTED = 2
+
+#: Повернення ``llama_decode`` для решти випадків (для честних повідомлень).
+#:
+#: ``-1`` — неузгоджені позиції послідовності (найчастіше саме розсинхрон
+#: мітки KV-кешу після скасування), ``-2`` — не вдалось виділити пам'ять.
+DECODE_ERROR = -1
+DECODE_NO_MEMORY = -2
+
+#: Людські пояснення до кодів ``llama_decode``.
+DECODE_ERROR_TEXT: dict[int, str] = {
+    DECODE_ERROR: ("неузгоджені позиції послідовності (мітка KV-кешу "
+                   "розійшлась із рушієм)"),
+    DECODE_NO_MEMORY: "не вдалось виділити пам'ять під обчислення",
+}
 
 __all__ = [
     "DECODE_ABORTED",
+    "DECODE_ERROR",
+    "DECODE_ERROR_TEXT",
+    "DECODE_NO_MEMORY",
     "DEVICE_TYPE",
     "FLASH_ATTN",
     "GGML_TYPE",

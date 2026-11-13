@@ -223,6 +223,95 @@ def menu_layout() -> list[tuple[str, list[Command]]]:
     return groups
 
 
+def reference_text() -> str:
+    """Повний довідник користувача: команди, гарячі клавіші, слеш-команди.
+
+    Навіщо генерувати, а не писати руками. Довідник, написаний окремо від
+    реєстру, завжди відстає від коду: команда з'явилась, а в довідці її
+    немає — і користувач шукає можливість, якої «не існує». Тут текст
+    складається з ТИХ САМИХ ``Command``-об'єктів, які реально
+    зареєстровані, тож розбіжність неможлива за побудовою.
+
+    Що входить:
+
+    * команди, згруповані за категорією, з гарячими клавішами;
+    * позначка «недоступно» для тих, кому бракує умов (проєкту, вкладки) —
+      користувач бачить, ЩО треба зробити, щоб команда стала доступною;
+    * слеш-команди композера (``/файл``, ``/план``, ``/дозвіл`` …);
+    * фрази, які агент розуміє без слеша (з :mod:`tool_router`).
+
+    Текст такий, що його можна скопіювати в чат або зберегти: звичайний
+    текст із заголовками, без залежності від конкретного віджета.
+    """
+    lines = ["ДОВІДНИК КОРИСТУВАЧА", ""]
+    lines.append("Команди можна викликати трьома способами:")
+    lines.append("  • гарячі клавіші;")
+    lines.append("  • палітра команд — Ctrl+Shift+P (пошук за назвою й категорією);")
+    lines.append("  • слеш-команди у полі введення — почни з «/».")
+    lines.append("")
+
+    # ── Команди за категоріями ─────────────────────────────────────────────
+    by_category: dict[str, list[Command]] = {}
+    for command in _REGISTRY.values():
+        by_category.setdefault(command.category or "Інше", []).append(command)
+    for category in categories_present():
+        items = by_category.get(category) or []
+        if not items:
+            continue
+        lines.append(f"— {category} " + "─" * max(0, 56 - len(category)))
+        for command in sorted(items, key=lambda item: item.label):
+            shortcut = f"  [{command.shortcut}]" if command.shortcut else ""
+            state = "" if command.is_enabled() else "   (недоступно зараз)"
+            lines.append(f"  {command.label}{shortcut}{state}")
+            if command.tip:
+                lines.append(f"      {command.tip}")
+        lines.append("")
+
+    # ── Слеш-команди композера ─────────────────────────────────────────────
+    try:
+        from . import slash_commands
+
+        lines.append("— Слеш-команди в полі введення " + "─" * 26)
+        for command in sorted(slash_commands.COMMANDS,
+                              key=lambda item: item.order):
+            names = ", ".join(f"/{alias}"
+                              for alias in (command.name, *command.aliases))
+            argument = " <аргумент>" if command.takes_argument else ""
+            lines.append(f"  {names}{argument} — {command.hint}")
+        lines.append("")
+    except Exception:  # noqa: BLE001 - довідка не має падати через підмодуль
+        LOG.debug("Слеш-команди недоступні для довідки", exc_info=True)
+
+    # ── Фрази, які агент розуміє без слеша ─────────────────────────────────
+    try:
+        from . import tool_router
+
+        lines.append("— Що можна просто написати словами " + "─" * 21)
+        for name, when, example in tool_router.TOOL_CATALOG[:40]:
+            lines.append(f"  «{example}» — {when}")
+        lines.append("")
+        lines.append("Повний перелік дій агента: " +
+                     ", ".join(name for name, _w, _e in tool_router.TOOL_CATALOG))
+        lines.append("")
+    except Exception:  # noqa: BLE001
+        LOG.debug("Каталог дій недоступний для довідки", exc_info=True)
+
+    lines.append("Порада: якщо не пам'ятаєш назву — натисни Ctrl+Shift+P "
+                 "і почни вводити будь-яке слово з опису.")
+    return "\n".join(lines)
+
+
+def reference_lines() -> list[tuple[str, str, Callable[[], None]]]:
+    """Той самий довідник, але рядками для палітри (пошук працює як завжди)."""
+    rows: list[tuple[str, str, Callable[[], None]]] = []
+    for command in all_commands():
+        hint = command.shortcut or ""
+        if command.tip:
+            hint = (hint + "   " if hint else "") + command.tip
+        rows.append((f"{command.category} · {command.label}", hint, command.run))
+    return rows
+
+
 __all__ = [
     "CATEGORIES",
     "Command",
@@ -239,6 +328,8 @@ __all__ = [
     "header_layout",
     "menu_layout",
     "palette_items",
+    "reference_lines",
+    "reference_text",
     "register",
     "register_many",
     "reset",

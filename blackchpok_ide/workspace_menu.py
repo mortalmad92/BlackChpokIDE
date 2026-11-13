@@ -50,12 +50,14 @@ class WorkspaceMenu(tk.Toplevel):
         recent: Iterable[str] = (),
         on_pick: Optional[Callable[[str], None]] = None,
         on_add: Optional[Callable[[], None]] = None,
+        on_forget: Optional[Callable[[str], None]] = None,
     ) -> None:
         super().__init__(master)
         self.fonts = fonts
         self.current = str(current or "")
         self.on_pick = on_pick
         self.on_add = on_add
+        self.on_forget = on_forget
         self._rows: list[tk.Frame] = []
         self._anchor: Optional[tk.Misc] = None
         self._outside_bid: Optional[str] = None
@@ -129,7 +131,8 @@ class WorkspaceMenu(tk.Toplevel):
             other.columnconfigure(0, weight=1)
             for path in self.recent:
                 self._row(other, self._name_of(path) or path, path,
-                          command=lambda p=path: self._pick(p))
+                          command=lambda p=path: self._pick(p),
+                          forgettable=True)
 
         tk.Frame(body, bg=theme.BORDER, height=1).grid(
             row=4, column=0, sticky="ew", padx=10, pady=4)
@@ -148,7 +151,8 @@ class WorkspaceMenu(tk.Toplevel):
                          theme.BG_ELEVATED, self._add)
 
     def _row(self, host: tk.Misc, title: str, path: str, *, active: bool = False,
-             command: Optional[Callable[[], None]] = None) -> tk.Frame:
+             command: Optional[Callable[[], None]] = None,
+             forgettable: bool = False) -> tk.Frame:
         bg = theme.BG_ACTIVE if active else theme.BG_ELEVATED
         row = tk.Frame(host, bg=bg, cursor="hand2", height=ROW_HEIGHT)
         row.pack(fill="x", pady=1)
@@ -166,20 +170,33 @@ class WorkspaceMenu(tk.Toplevel):
 
         mark = tk.Label(row, text="✓" if active else "", bg=bg, fg=theme.ACCENT,
                         font=("Segoe UI", 9), width=2, anchor="center")
-        mark.grid(row=0, column=2, padx=(4, 8), pady=6)
+        mark.grid(row=0, column=2, padx=(4, 4 if forgettable else 8), pady=6)
+
+        forget = None
+        if forgettable:
+            forget = tk.Label(row, text="×", bg=bg, fg=theme.FG_FAINT,
+                              font=("Segoe UI", 11), width=2, anchor="center",
+                              cursor="hand2")
+            forget.grid(row=0, column=3, padx=(0, 6), pady=6)
+            widgets.Tip(forget, "Прибрати зі списку. Папку на диску не чіпає.")
+            forget.bind("<Button-1>", lambda _event, p=path: self._forget(p))
 
         widgets.Tip(icon, path or "теку не обрано")
         self._rows.append(row)
         self._hover_bind(row, [icon, name, mark], bg,
-                         command or (lambda: self._pick(path)))
+                         command or (lambda: self._pick(path)),
+                         extra=[forget] if forget is not None else ())
         return row
 
     def _hover_bind(self, row: tk.Misc, labels: list[tk.Misc], bg: str,
-                    command: Callable[[], None]) -> None:
+                    command: Callable[[], None],
+                    extra: tuple = ()) -> None:
+        painted = [item for item in (*labels, *extra) if item is not None]
+
         def enter(_e=None) -> None:
             try:
                 row.configure(bg=theme.BG_HOVER)
-                for label in labels:
+                for label in painted:
                     label.configure(bg=theme.BG_HOVER)
             except tk.TclError:
                 pass
@@ -189,7 +206,7 @@ class WorkspaceMenu(tk.Toplevel):
             # і без цього після наведення позначка «✓» гасла.
             try:
                 row.configure(bg=bg)
-                for label in labels:
+                for label in painted:
                     label.configure(bg=bg)
             except tk.TclError:
                 pass
@@ -202,6 +219,11 @@ class WorkspaceMenu(tk.Toplevel):
             widget.bind("<Enter>", enter)
             widget.bind("<Leave>", leave)
             widget.bind("<Button-1>", click)
+        for widget in extra:
+            if widget is None:
+                continue
+            widget.bind("<Enter>", enter)
+            widget.bind("<Leave>", leave)
 
     # ── дії ────────────────────────────────────────────────────────────────
     def _pick(self, path: str) -> None:
@@ -217,6 +239,12 @@ class WorkspaceMenu(tk.Toplevel):
     def _add(self) -> None:
         if self.on_add is not None:
             self.on_add()
+
+    def _forget(self, path: str) -> None:
+        """Прибрати теку зі списку недавніх. Саму папку не видаляє."""
+        self.hide()
+        if self.on_forget is not None:
+            self.on_forget(path)
 
     # ── показ ──────────────────────────────────────────────────────────────
     def show_at(self, anchor: tk.Misc) -> None:

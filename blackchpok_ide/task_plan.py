@@ -602,6 +602,8 @@ TOOL_LABELS: dict[str, str] = {
     "run_command": "команда",
     "git_status": "стан git",
     "git_diff": "diff",
+    "git_remote_info": "стан репозиторію й GitHub",
+    "git_publish": "відправка на GitHub",
     "project_tree": "дерево проєкту",
     "python_check": "перевірка синтаксису",
     "app_start": "запуск застосунку",

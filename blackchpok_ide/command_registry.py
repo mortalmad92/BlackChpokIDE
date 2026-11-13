@@ -246,6 +246,14 @@ def register_all(window) -> None:
             key, label, "Git", lambda c=command: window.terminal.run(c),
             group="git", level=commands.MENU, enabled=window.has_project))
 
+    # Оновлення на GitHub — не сира команда в терміналі, а дія з
+    # підтвердженням: ``push`` незворотний, і показувати його як
+    # ``git push`` у терміналі означало б приховати питання про згоду.
+    register(commands.Command(
+        "git.publish", "Оновити файли на GitHub…", "Git",
+        window.github_publish, group="git", level=commands.MENU,
+        enabled=window.has_project))
+
     # ── Вигляд
     register(commands.Command(
         "view.settings", "Налаштування…", "Вигляд", window.open_settings,
@@ -319,6 +327,10 @@ def register_all(window) -> None:
             level=commands.PALETTE))
 
     # ── Довідка
+    register(commands.Command(
+        "help.guide", "Довідник користувача", "Довідка", window.show_user_guide,
+        "F1", level=commands.PALETTE, icon="?",
+        tip="Усі команди, слеш-команди й фрази, які агент розуміє"))
     register(commands.Command(
         "help.shortcuts", "Гарячі клавіші", "Довідка", window.show_shortcuts,
         level=commands.PALETTE))

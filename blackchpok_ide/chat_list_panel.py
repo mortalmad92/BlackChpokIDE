@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import tkinter as tk
+from pathlib import Path
 from typing import Callable, Optional
 
 from . import pulse, theme, widgets
@@ -99,9 +100,12 @@ class _SessionRow(tk.Frame):
         )
         self.title_label.grid(row=0, column=1, sticky="ew", padx=(0, 4), pady=(8, 0))
 
-        preview = (chat.preview(72) or "Порожня сесія")
+        folder_name = ""
+        if str(getattr(chat, "workspace", "") or "").strip():
+            folder_name = Path(chat.workspace).name
+        preview = chat.preview(72) or folder_name or "Порожня сесія"
         if compact:
-            preview = (chat.preview(40) or "Порожня сесія")
+            preview = chat.preview(40) or folder_name or "Порожня сесія"
         self.preview_label = tk.Label(
             self, text=preview, bg=bg, fg=theme.FG_FAINT,
             font=("Segoe UI", 8), anchor="w", justify="left",

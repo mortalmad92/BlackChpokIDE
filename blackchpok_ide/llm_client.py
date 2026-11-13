@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Optional
 
-from . import provider_adapters, secrets
+from . import provider_adapters, secrets, tool_dialect
 
 LOG = logging.getLogger("blackchpok.llm")
 
@@ -166,6 +166,20 @@ def extract_tool_calls(content: str, tools: list[dict[str, Any]],
     names = _recover_names(tools, known_names)
     if not names:
         return []
+
+    # ── 0. ВЛАСНИЙ формат моделі ──────────────────────────────────────────
+    # ``[TOOL_CALLS]write_file[ARGS]{…}`` (Mistral/Ministral) і
+    # ``<tool_call>{…}</tool_call>`` (Qwen/Hermes). Обидва розбирає
+    # :mod:`tool_dialect`; JSON-формат нижче їх НЕ бачить, бо аргументи там
+    # стоять після маркера, а не в об'єкті.
+    #
+    # Заміряно на Ministral-3-14B у GUI: модель слухняно віддавала виклик
+    # СВОЇМ форматом, ``extract_tool_calls`` повертав ``[]``, текст
+    # викидався як службовий — і користувач бачив «Модель повернула порожню
+    # відповідь» замість створених файлів.
+    native = tool_dialect.extract_native_calls(content, names)
+    if native:
+        return native
 
     payloads: list[Any] = []
     # 1. Явні теги <tool_call>…</tool_call>
@@ -390,8 +404,13 @@ def strip_tool_json(content: str, tools: list[dict[str, Any]] | None = None) -> 
     і тоді сирий JSON лишався в тексті відповіді. Користувач бачив у чаті
     ``{"name": "router:search_web", "arguments": …}`` замість відповіді
     (це видно на його скріншоті).
+
+    Тепер ще й ``[TOOL_CALLS]ім'я[ARGS]{…}`` (Mistral) і ``<tool_call>``
+    (Qwen): інакше в чаті лишався б рядок ``[TOOL_CALLS]write_file[ARGS]``
+    з обірваним початком файлу.
     """
-    text = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL)
+    text = tool_dialect.strip_native_calls(content)
+    text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL)
     # Обгортка <tools>…</tools> (qwen2.5-coder у llama.cpp) — теж службова.
     text = re.sub(r"<tools>.*?</tools>", "", text, flags=re.DOTALL)
     text = re.sub(r"```(?:json)?\s*(?:\{.*?\}|\[.*?\])\s*```", "", text, flags=re.DOTALL)
@@ -967,6 +986,10 @@ class LLMClient:
                 # написаний моделлю ТЕКСТОМ, якщо інструмента немає серед
                 # переданих схем (лінивий режим передає ≈15 із 50+).
                 known_tools=known_tools,
+                # Без цього потоковий шлях ігнорував тайм-аут налаштувань
+                # і тримав агента до типових 600 с. Черга весь цей час
+                # стояла: агент зайнятий, кроки в «очікує».
+                timeout=float(self.timeout or 0) or None,
             )
         except Exception as exc:                    # noqa: BLE001
             raise LLMError(f"Вбудований рушій: {exc}") from exc

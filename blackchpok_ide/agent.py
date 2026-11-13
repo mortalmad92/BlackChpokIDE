@@ -164,6 +164,15 @@ TEXT_PROTOCOL_ATTEMPTS = 2
 #: Третій означає, що модель застрягла й сама не вийде.
 REPEAT_LIMIT = 2
 
+#: Скільки разів просити модель діяти, коли вона відповіла ПОРОЖНЬО.
+#:
+#: Навіщо окремий лічильник. Раніше перший же порожній хід завершував
+#: роботу словами «Модель повернула порожню відповідь» — і користувач, який
+#: просив сайт, отримував діагностику замість файлів (заміряно в GUI).
+#: Один повтор дешевий (prefill уже в кеші) і часто виправляє справу:
+#: локальна модель іноді «забуває» почати відповідь після eos.
+EMPTY_ANSWER_RETRIES = 1
+
 #: Після стількох однакових ПОВТОРІВ роботу припиняємо загалом.
 HARD_REPEAT_LIMIT = 4
 
@@ -441,6 +450,9 @@ class AgentSession:
         #: Реальне вікно контексту моделі в токенах (0 = невідоме).
         #: Задається ззовні через ``AgentRunner.set_context_limit``.
         self.context_limit: int = 0
+        #: Виклик перед тим, як старий блок історії зникає з вікна.
+        #: Раннер передає його в NEUROMESH, щоб зміст не губився.
+        self.on_evict: Optional[Callable[[list[dict[str, Any]]], None]] = None
 
     def reset(self) -> None:
         self.messages.clear()
@@ -605,7 +617,9 @@ class AgentSession:
         if len(self.messages) <= 1:
             return 0
         removed_chars = 0
+        dropped: list[dict[str, Any]] = []
         first = self.messages.pop(0)
+        dropped.append(first)
         removed_chars += len(str(first.get("content") or ""))
         calls = first.get("tool_calls")
         wanted: set[str] = set()
@@ -620,8 +634,20 @@ class AgentSession:
             if wanted and call_id and call_id not in wanted:
                 break                    # чужий результат — лишаємо
             self.messages.pop(0)
+            dropped.append(nxt)
             removed_chars += len(str(nxt.get("content") or ""))
+        self._notify_evict(dropped)
         return removed_chars or 1
+
+    def _notify_evict(self, messages: list[dict[str, Any]]) -> None:
+        """Віддати викинутий блок у довгострокову пам'ять, якщо її підключено."""
+        hook = getattr(self, "on_evict", None)
+        if not callable(hook) or not messages:
+            return
+        try:
+            hook([dict(item) for item in messages if isinstance(item, dict)])
+        except Exception:  # noqa: BLE001 - підрізання не має падати через пам'ять
+            LOG.debug("Вивільнений контекст не збережено", exc_info=True)
 
     def _fit_into_window(self) -> None:
         """Гарантувати, що запит (промпт + схеми + історія) вміщається у вікно.
@@ -850,6 +876,50 @@ def forget_server_context(base_url: str = "", api_key: str = "") -> None:
             root = root[:-3]
         for key in [k for k in _SERVER_CTX_CACHE if k[0] == root]:
             _SERVER_CTX_CACHE.pop(key, None)
+
+
+def _is_embedded_base(base_url: str) -> bool:
+    """Чи адреса означає ВБУДОВАНИЙ рушій (``native://blackchpok``).
+
+    Імпорт усередині функції: ``native.bridge`` тягне ``api`` → ``engine`` →
+    ctypes-бібліотеку, і робити це під час імпорту агента не можна (тести й
+    черга імпортують агента без рушія взагалі).
+    """
+    try:
+        from .native import bridge
+
+        return bool(bridge.is_embedded_url(str(base_url or "")))
+    except Exception:                                # noqa: BLE001
+        # Запасна перевірка без імпорту: маркери стабільні.
+        low = str(base_url or "").strip().lower()
+        return low.startswith(("native://", "inproc://", "blackchpok://"))
+
+
+def _embedded_context_window() -> int:
+    """СПРАВЖНЄ вікно вбудованого рушія — читаємо з контексту в пам'яті.
+
+    Навіщо окрема функція. ``/props`` існує лише в llama-server; у власного
+    рушія немає ні порту, ні HTTP-шару. Без цього читання агент вважав, що
+    вікно «невідоме», і брав половину заявленого — тобто 8192 замість 16384.
+
+    Повертає 0, якщо рушій не завантажений або не може відповісти: тоді
+    працюють інші джерела (метадані GGUF, налаштування).
+    """
+    try:
+        from .native import bridge
+
+        runtime = bridge.runtime()
+    except Exception:                                # noqa: BLE001
+        return 0
+    engine = getattr(runtime, "engine", None)
+    context = getattr(engine, "context", None) if engine is not None else None
+    if context is None:
+        return 0
+    try:
+        value = int(getattr(context, "n_ctx", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, value)
 
 
 def _gguf_context(model_name: str) -> int:
@@ -1118,6 +1188,7 @@ class AgentRunner:
         self.agent_settings = agent_settings
         self.workspace = Path(workspace)
         self.session = AgentSession(agent_settings, self.workspace)
+        self.session.on_evict = self._archive_evicted_context
         self._cancel = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.events: "queue.Queue[AgentEvent]" = queue.Queue()
@@ -1133,6 +1204,18 @@ class AgentRunner:
         #: True, якщо моделі вже казали «ти пообіцяв, але не зробив».
         #: Друге попередження не має сенсу — тоді завершуємо чесно.
         self._promise_warned: bool = False
+        #: Скільки разів модель відповідала порожньо (без тексту й без
+        #: викликів). Див. :data:`EMPTY_ANSWER_RETRIES`.
+        self._empty_turns: int = 0
+        #: True, якщо моделі вже казали «тут треба створити річ, а не шукати».
+        self._build_nudged: bool = False
+        #: True, якщо моделі вже казали «допиши почате» (вона питала дозволу).
+        self._continue_asked: bool = False
+        #: True, якщо питання «оновити файли на GitHub?» уже поставлено в
+        #: цьому ході. Друге питання поспіль було б настирливим.
+        self._git_asked: bool = False
+        #: True, якщо зміни цього ходу вже відправлено на GitHub.
+        self._git_published: bool = False
         # Статистика й підказки живуть з самого початку: reset() і
         # set_context_limit() можуть викликатись до першого start().
         self.stats = context_stats.ContextStats()
@@ -1238,7 +1321,8 @@ class AgentRunner:
         self.session.context_limit = max(0, int(limit or 0))
 
     def adopt_context_window(self, *, props_ctx: int = 0, gguf_ctx: int = 0,
-                             counter: Any = None) -> "context_budget.Budget":
+                             counter: Any = None,
+                             source: str = "") -> "context_budget.Budget":
         """Визначити СПРАВЖНЄ вікно контексту й узяти його в роботу.
 
         Викликається перед першим запитом, коли сервер уже відповідає (тоді
@@ -1247,12 +1331,16 @@ class AgentRunner:
         агент надсилав завеликий промпт, і сервер обривав з'єднання
         (``WinError 10054``), що виглядало як «модель не працює».
 
+        ``source`` — звідки взято число, для показу користувачу. Для
+        вбудованого рушія це не ``/props``: у нього немає HTTP-шару.
+
         Повертає :class:`context_budget.Budget` — розподіл вікна, який
         далі використовує стискання історії.
         """
         window = context_budget.resolve_window(
             props_ctx=int(props_ctx or 0),
-            gguf_ctx=int(gguf_ctx or 0))
+            gguf_ctx=int(gguf_ctx or 0),
+            source=source)
         # Число стає джерелом правди для сесії й смуги статистики.
         self.set_context_limit(window.usable)
         self._context_window = window
@@ -1301,6 +1389,40 @@ class AgentRunner:
         """
         props_ctx = 0
         base = str(getattr(self.llm_settings, "base_url", "") or "").rstrip("/")
+        # ── Вбудований рушій: вікно берёмо В ПАМ'ЯТІ, а не через HTTP ──────
+        # ``/props`` — це ендпоінт llama-server. У вбудованого рушія немає ні
+        # порту, ні HTTP: запит до ``native://blackchpok/props`` завжди падає,
+        # і код ішов у запасну гілку «половина від заявлених». Заміряно на
+        # справжньому вікні: рушій створено з ``ctx 16384``, а агент працював
+        # із **8192** — тобто половина контексту губилась без жодної причини.
+        # Наслідки були видимі: бюджет схем падав до 2048, вмикався лінивий
+        # режим на 15 схем із 52, а історія різалась удвічі раніше.
+        if base and _is_embedded_base(base):
+            embedded = _embedded_context_window()
+            gguf_ctx = _gguf_context(str(getattr(self.llm_settings, "model", "") or ""))
+            if embedded > 0:
+                return self.adopt_context_window(
+                    props_ctx=embedded, gguf_ctx=gguf_ctx, counter=counter,
+                    source="вбудований рушій (контекст у пам'яті)")
+            # ── Модель ще не в пам'яті: беремо заявлене БЕЗ ділення ───────
+            # Ділення навпіл — це захист від ПОДІЛУ НА СЛОТИ, який робить
+            # llama-server (``--ctx-size 32768`` при двох слотах → 16384).
+            # У вбудованого рушія слотів немає: скільки попросили в
+            # ``engine.ctx_size``, стільки контекст створив і тримає. Тому
+            # половина тут — не «обережність», а втрата половини вікна:
+            # заміряно 8192 замість реальних 16384, через що бюджет схем
+            # падав до 2048 і вмикався лінивий режим на 15 схемах із 52.
+            #
+            # Коли рушій справді зменшив контекст (OOM-відкат), наступна
+            # проба прочитає справжнє ``n_ctx`` із контексту в пам'яті —
+            # тобто правда все одно переможе оцінку.
+            requested = int(getattr(self, "_requested_ctx", 0) or 0)
+            if requested > 0:
+                LOG.info("Вбудований рушій: модель ще не в пам'яті — беру "
+                         "заявлене вікно %s (без ділення на слоти)", requested)
+                return self.adopt_context_window(
+                    props_ctx=requested, gguf_ctx=gguf_ctx, counter=counter,
+                    source="вбудований рушій (налаштування)")
         if base:
             props_ctx = _server_slot_context(
                 base, str(getattr(self.llm_settings, "api_key", "") or ""))
@@ -1403,6 +1525,11 @@ class AgentRunner:
         self._error = ""
         self._degraded = False
         self._promise_warned = False
+        self._empty_turns = 0
+        self._build_nudged = False
+        self._continue_asked = False
+        self._git_asked = False
+        self._git_published = False
         self._text_protocol_asked = 0
         self._hints_need_continue = False
         # Скидаємо статистику, зберігши ліміт контексту (він задається
@@ -1499,6 +1626,24 @@ class AgentRunner:
         self._thread = threading.Thread(target=self._run, args=(text,), daemon=True)
         self._thread.start()
         return True
+
+    def _archive_evicted_context(self, messages: list) -> None:
+        """Стислий зміст викинутого з вікна блоку — у NEUROMESH, не в RAG.
+
+        RAG лишається індексом файлів проєкту. Розмова, яку вікно вже не
+        тримає, має жити в пам'яті, інакше наступний крок черги починається
+        з нуля. Приватний режим нічого не записує.
+        """
+        if getattr(self.state, "private", False):
+            return
+        bridge = getattr(self, "memory_bridge", None)
+        if bridge is None or not hasattr(bridge, "archive_messages"):
+            return
+        goal = str(getattr(self.state, "goal", "") or "")
+        try:
+            bridge.archive_messages(messages, task=goal)
+        except Exception:  # noqa: BLE001
+            LOG.debug("Архів контексту не записано", exc_info=True)
 
     def _recall_memory(self, text: str) -> None:
         """Підкласти в контекст те, що пам'ять знає про цей запит."""
@@ -2714,6 +2859,23 @@ class AgentRunner:
         # краще зайва вимога, ніж прихована бездіяльність.
         return True
 
+    def _asks_to_build(self) -> bool:
+        """Чи просить користувач СТВОРИТИ річ (а не дізнатись факт).
+
+        Джерело правди — початковий запит. Потрібно, щоб не дати моделі
+        підмінити будівництво пошуком в інтернеті: заміряно живим прогоном,
+        як на «напиши сайт блогу й форуму з API» вона тричі викликала
+        ``search_web`` і не створила жодного файлу.
+        """
+        text = ""
+        for message in self.session.messages:
+            if message.get("role") == "user":
+                text = str(message.get("content") or "")
+                break
+        if not text:
+            return False
+        return tool_router._is_build_request(text.lower())  # noqa: SLF001
+
     def _asks_for_change(self) -> bool:
         """Чи просить користувач змінити файл (а не лише подивитись).
 
@@ -2801,6 +2963,20 @@ class AgentRunner:
                     self._emit("status", f"Контекст: {budget.text()}")
             except Exception:  # noqa: BLE001 - бюджет не має ламати хід
                 LOG.debug("Вікно контексту не визначено", exc_info=True)
+            # ── Відповідь на наше ж питання про GitHub ─────────────────────
+            # Користувач бачить «Оновити файли на GitHub?» і відповідає
+            # «так». Без цієї гілки агент сприйняв би «так» як нове
+            # завдання й пішов би до моделі шукати, що саме оновити.
+            # Тут відповідь однозначна: відправляємо зміни (або пояснюємо,
+            # чому ні) і завершуємо хід.
+            if self._answers_git_offer(text):
+                self._emit("status", "Відповідь на питання про GitHub — "
+                                     "відправляю зміни.")
+                outcome = self.publish_to_git()
+                ok = outcome.ok
+                if not ok:
+                    self._error = outcome.output
+                return
             # Спершу дивимось, чи фраза взагалі просить дію. Якщо так —
             # кажемо моделі, які саме інструменти тут доречні: малі локальні
             # моделі часто «розмовляють» замість того, щоб викликати tool.
@@ -2919,6 +3095,11 @@ class AgentRunner:
             self._pending_hint = []
             self._record_trace(ok=ok and not self._error)
             self._remember_outcome(ok=ok and not self._error)
+            # ── «Оновити файли на GitHub?» — ЛИШЕ після успішної роботи ────
+            # Питаємо тут, у ``finally``: до цього моменту вже відомо, чи
+            # робота справді відбулась, і чи є що відправляти. Питання перед
+            # ``done`` — щоб людина бачила його одразу після відповіді.
+            self._offer_git_publish(ok=ok and not self._error)
             # ``ok`` лишається правдивим для локального роутера (це справжня
             # відповідь), але ``_degraded`` каже викликачу, що модель не
             # працювала: крок плану тоді не закривається як виконаний.
@@ -2929,6 +3110,108 @@ class AgentRunner:
                                      self._last_answer or self._error)
                 except Exception:  # noqa: BLE001
                     LOG.debug("on_finished впав", exc_info=True)
+
+    def _answers_git_offer(self, text: str) -> bool:
+        """Чи це ствердна відповідь на питання «оновити файли на GitHub?».
+
+        Умови вузькі навмисно: питаємо ЛИШЕ тоді, коли ми щойно самі
+        поставили це питання (``_git_asked``), і лише на коротку ствердну
+        відповідь. Інакше «так» у звичайній розмові перетворювалось би на
+        ``git push`` — а це незворотна зовнішня дія.
+
+        Слова порівнюємо за МЕЖАМИ слів, а не підрядком: «так» входить у
+        «тактика», а «ок» — у «потік». Підрядковий збіг відправив би зміни
+        на GitHub у відповідь на «розкажи про тактику».
+        """
+        if not self._git_asked or self._git_published:
+            return False
+        body = str(text or "").strip().lower()
+        if not body or len(body) > 60:
+            return False
+        no_words = ("ні", "no", "пізніше", "later", "скасуй", "ніколи")
+        for word in no_words:
+            if re.search(rf"(?<![\w\u0400-\u04FF]){re.escape(word)}"
+                         rf"(?![\w\u0400-\u04FF])", body):
+                return False
+        yes_words = ("так", "ага", "давай", "ок", "ok", "yes", "yep", "sure",
+                     "онови", "оновити", "відправ", "запуш", "publish", "push",
+                     "звісно", "да")
+        for word in yes_words:
+            if re.search(rf"(?<![\w\u0400-\u04FF]){re.escape(word)}"
+                         rf"(?![\w\u0400-\u04FF])", body):
+                return True
+        return False
+
+    def _offer_git_publish(self, *, ok: bool) -> None:
+        """Спитати людину, чи оновити файли на GitHub (лише коли є що).
+
+        Умови навмисно вузькі, щоб питання не стало настирливим шумом:
+
+        * хід завершився успішно;
+        * агент СПРАВДІ змінив файли (інакше відправляти нічого);
+        * репозиторій готовий: є ``origin`` і немає файлів із секретами;
+        * питання ще не ставили в цьому ході.
+
+        Сама відправка не робиться ніколи: ``push`` незворотний, тож
+        рішення ухвалює людина. Питання ставиться окремою подією
+        ``git_offer``, а інтерфейс показує кнопки «Так / Ні».
+        """
+        if not ok or not self._touched_files:
+            return
+        if self._git_asked or self.state.private:
+            return
+        if not getattr(self.agent_settings, "git_offer_publish", True):
+            return
+        try:
+            from . import git_repo
+
+            ready, reason = git_repo.is_clean_enough(self.workspace)
+        except Exception:  # noqa: BLE001 - питання не має ламати хід
+            LOG.debug("Стан git не перевірено", exc_info=True)
+            return
+        if not ready:
+            # Причину показуємо лише тоді, коли вона корисна: «не git-
+            # репозиторій» — це нормальний стан для теки без контролю версій,
+            # і повідомляти про це після кожної правки було б шумом.
+            if "origin не налаштовано" in reason or "секрет" in reason:
+                self._emit("status", "GitHub: " + reason)
+            return
+        current = git_repo.state(self.workspace)
+        self._git_asked = True
+        changed = len(current.changed)
+        self._emit(
+            "git_offer",
+            f"Оновити файли на GitHub? Змін: {changed} · "
+            f"{current.remote} · гілка {current.branch}",
+            remote=current.remote,
+            branch=current.branch,
+            changed=list(current.changed),
+            message=git_repo.default_message(current.changed),
+        )
+
+    def publish_to_git(self, *, message: str = "") -> ToolResult:
+        """Закомітити й відправити на GitHub — виклик ЛИШЕ після «так».
+
+        Живе на раннері, а не в реєстрі інструментів, щоб не було двох
+        шляхів: модель кличе ``git_publish`` лише з ``confirm=true``, а
+        кнопка «Так» у чаті кличе цей метод. Обидва йдуть в
+        :func:`git_repo.publish`, тож поведінка однакова.
+        """
+        from . import git_repo
+
+        token = str(getattr(self.registry, "git_token", "") or "")
+        result = git_repo.publish(self.workspace, message=message, token=token)
+        if not result.ok:
+            text = result.message or "не вдалось відправити"
+            self._emit("assistant", "Не вдалося оновити GitHub.\n\n" + text,
+                       final=True)
+            self._last_answer = text
+            return ToolResult(False, text)
+        self._emit("assistant", "GitHub оновлено.\n\n" + result.message,
+                   final=True)
+        self._last_answer = result.message
+        self._git_published = True
+        return ToolResult(True, result.message)
 
     def _remember_outcome(self, *, ok: bool) -> None:
         """Записати в пам'ять те, що СПРАВДІ підтвердилось у цьому ході.
@@ -3408,22 +3691,78 @@ class AgentRunner:
                         self._last_answer = fallback
                         self._emit("assistant", fallback, step=step, final=True)
                         return
-                    self._error = "Модель повернула порожню відповідь."
-                    self._emit("error", self._error)
+                    # ── Порожній хід БЕЗ жодного інструмента — не кінець ────
+                    # ЗАМІРЯНО ЖИВИМ ПРОГОНОМ У GUI: модель віддала власний
+                    # виклик у форматі, якого ніщо не розпізнало. Текст
+                    # вирізався як службовий, інструментів не було — і агент
+                    # одразу писав «Модель повернула порожню відповідь»,
+                    # витративши на завдання один крок. Користувач просив
+                    # сайт, а не діагностику формату.
+                    #
+                    # Тому спершу намагаємось ЗРОБИТИ щось корисне:
+                    #   1) підказки роутера (якщо фраза явно про дію);
+                    #   2) ще один хід із прямою вимогою діяти;
+                    # і лише потім — чесна причина з поясненням.
+                    if (self._pending_hint and not self._observations
+                            and step < self.max_steps - 1):
+                        self._emit("status",
+                                   "Модель мовчить — пробую виконати дію напряму.")
+                        if self._run_hints():
+                            return
+                    if self._empty_turns < EMPTY_ANSWER_RETRIES \
+                            and step < self.max_steps - 1:
+                        self._empty_turns += 1
+                        self._emit("status",
+                                   "Модель відповіла без тексту — прошу "
+                                   "виконати завдання інструментами.")
+                        self.session.add_user(
+                            "Ти не дав ні тексту, ні виклику інструмента. "
+                            "Виконай завдання зараз: виклич потрібний "
+                            "інструмент (напр. write_file для кожного файлу) "
+                            "і продовжуй, доки робота не буде зроблена. "
+                            "Якщо чогось бракує — скажи це одним реченням."
+                        )
+                        continue
+                    self._error = self._empty_answer_reason()
+                    # Відповідь із поясненням, а не сама лише помилка: людина
+                    # має знати, ЩО сталося і що робити далі.
+                    self._last_answer = self._error
+                    self._emit("assistant", self._error, final=True)
                     return
                 # Модель написала код у чат замість того, щоб створити файли
                 # («Створимо package.json:» + блок ```). Без цього повтору
                 # агент завершувався з порожньою роботою на диску.
-                if step < self.max_steps - 1 and self._wrote_code_in_chat(result.content):
-                    self._emit("status", "Код у відповіді замість файлів — "
-                                         "прошу створити файли інструментом.")
-                    self.session.add_user(
-                        "Ти написав код у чаті, але файлів на диску немає. "
-                        "Не пояснюй і не повторюй код у тексті — одразу виклич "
-                        "інструмент write_file для кожного файлу окремо "
-                        "(path + повний content), потім продовжуй роботу."
-                    )
-                    continue
+                if self._wrote_code_in_chat(result.content):
+                    # ── Спершу СПРОБУВАТИ ЗБЕРЕГТИ, а не просити заново ──
+                    # Заміряно: модель дає цілком робочий код блоками
+                    # ```html``` / ```python```, але не викликає write_file.
+                    # Раніше така відповідь лише породжувала нагадування, і
+                    # якщо модель не вміла інакше — робота зникала. Тепер
+                    # вміст, який вона САМА підписала назвою файлу, лягає на
+                    # диск, і хід триває вже з реальними файлами.
+                    saved = self._salvage_code_files(result.content)
+                    if saved:
+                        self.session.add_assistant(
+                            {"role": "assistant",
+                             "content": f"Збережено файлів: {saved}."})
+                        self.session.add_user(
+                            "Твої файли збережено на диску. Продовжуй роботу: "
+                            "перевір синтаксис (python_check) і додай те, чого "
+                            "ще бракує, викликаючи інструменти. Не повторюй "
+                            "уже збережений код у чаті."
+                        )
+                        if step < self.max_steps - 1:
+                            continue
+                    if step < self.max_steps - 1:
+                        self._emit("status", "Код у відповіді замість файлів — "
+                                             "прошу створити файли інструментом.")
+                        self.session.add_user(
+                            "Ти написав код у чаті, але файлів на диску немає. "
+                            "Не пояснюй і не повторюй код у тексті — одразу виклич "
+                            "інструмент write_file для кожного файлу окремо "
+                            "(path + повний content), потім продовжуй роботу."
+                        )
+                        continue
                 # Модель відповіла словами, але фраза явно вимагає дії:
                 # виконуємо її самі, інакше агент «розмовляє» замість роботи.
                 #
@@ -3554,6 +3893,35 @@ class AgentRunner:
                                final=True)
                     self._last_answer = _promise_notice(result.content)
                     return
+                # ── Робота почата, але модель питає «продовжити?» ───────────
+                # Заміряно живим прогоном у вікні: модель створила 3 файли з
+                # потрібних семи й написала «Смакуй, як продовжити.» /
+                # «Наступні кроки: …». Користувач просив САЙТ, а не план.
+                #
+                # Раніше цей випадок проходив повз усі перевірки: інструменти
+                # вже працювали (``_observations`` не порожні), а «обіцянка»
+                # тут не звучить — модель ніби звітує.
+                #
+                # Тому для завдання «створити річ» даємо ОДИН хід, щоб вона
+                # дописала почате. Це не нескінченний цикл: прапорець
+                # ``_continue_asked`` дозволяє рівно одне таке продовження.
+                if (self._asks_to_build()
+                        and self._touched_files
+                        and not self._continue_asked
+                        and step < self.max_steps - 1
+                        and _asks_permission_or_next(result.content)):
+                    self._continue_asked = True
+                    self._emit("status",
+                               "Завдання ще не завершене — прошу дописати решту.")
+                    self.session.add_user(
+                        "Робота ще НЕ завершена: у проєкті бракує файлів, "
+                        "без яких він не працює. Не питай дозволу й не "
+                        "пропонуй наступні кроки — ВИКОНАЙ їх зараз, "
+                        "викликаючи інструменти (write_file для кожного "
+                        "файлу). Коли справді все створено — коротко "
+                        "переліч, що зроблено."
+                    )
+                    continue
                 # Синтаксис перевіряється нижче, спільним кодом: і для ходу
                 # з інструментами, і для ходу без них.
                 if self._broken_python():
@@ -3571,6 +3939,33 @@ class AgentRunner:
                 self._emit("tool_call", f"{name}({pretty})", name=name,
                            arguments=pretty, call_id=call_id)
             outcomes = self.orchestrator.run_batch(prepared) if prepared else []
+            # ── «Знайшов інтернет» замість роботи: повертаємо до завдання ──
+            # Заміряно живим прогоном у вікні: на «напиши сайт блогу й
+            # форуму з API» модель викликала ``search_web`` — тричі поспіль
+            # і з різними запитами, — а потім написала огляд фреймворків.
+            # Файлів на диску не з'явилося ЖОДНОГО. Мережа тут не потрібна:
+            # це завдання створити річ, а не дізнатись факт.
+            #
+            # Тому, якщо завдання — «створити», а модель лише шукає, кажемо
+            # їй прямо, що робити далі. Це не заборона інтернету взагалі:
+            # одне попередження на хід, і лише коли жодного файлу ще немає.
+            if (not self._touched_files
+                    and not self._build_nudged
+                    and prepared
+                    and all(name in _WEB_LOOKUP_TOOLS for name, _a, _c in prepared)
+                    and self._asks_to_build()):
+                self._build_nudged = True
+                self._emit("status",
+                           "Це завдання створити річ, а не знайти факт — "
+                           "переходжу до файлів.")
+                self.session.add_user(
+                    "Пошук в інтернеті тут не потрібен: користувач просить "
+                    "СТВОРИТИ річ, а не дізнатись факт. Не шукай більше — "
+                    "створи файли зараз: list_dir (що вже є), далі write_file "
+                    "для кожного файлу окремо (path + повний content). "
+                    "Почни з головного файлу й поступово додавай решту."
+                )
+                continue
             for where, ((name, arguments, call_id), observation) in enumerate(
                     zip(prepared, outcomes)):
                 # Результат мусить відповідати ВИКЛИКУ за id: інакше сервер
@@ -4102,6 +4497,42 @@ class AgentRunner:
         )
         return True
 
+    def _empty_answer_reason(self) -> str:
+        """Пояснити порожню відповідь ТАК, щоб було зрозуміло, що робити.
+
+        Раніше тут стояло одне речення «Модель повернула порожню відповідь».
+        Воно нічого не пояснювало: людина не знала ні причини, ні наступного
+        кроку. Тим часом причина майже завжди одна з трьох, і кожна має своє
+        рішення — саме їх і називаємо.
+        """
+        model = str(getattr(self.llm_settings, "model", "") or "модель")
+        lines = [
+            "Модель не дала ні тексту, ні виклику інструмента — тому я нічого "
+            "не змінив на диску.",
+            "",
+            "Що це може бути:",
+            f"- **{model}** не вміє викликати інструменти у своєму форматі;",
+            "- обірвалась відповідь (модель спинилась на першому ж токені);",
+            "- завдання завелике для одного ходу — тоді варто розбити його.",
+            "",
+            "Що зробити:",
+            "- повторити запит (іноді досить одного повтору);",
+            "- вибрати іншу модель у шапці (краще та, що вміє function "
+            "calling: Qwen2.5-Coder, Mistral, Llama 3.1+);",
+            "- або сформулювати вужче: «створи index.html зі списком постів» "
+            "замість «зроби сайт».",
+        ]
+        # Збої інструментів важливіші за загальні поради: якщо щось падало,
+        # саме це й завадило роботі.
+        failed = [item for item in (self._observations or ()) if not item.ok]
+        if failed:
+            lines.insert(3, "**Не вдалося:**")
+            for item in failed[:3]:
+                lines.insert(4, f"- {item.name}: "
+                                + response_engine.clean_for_chat(
+                                    item.error or "", limit=160))
+        return "\n".join(lines)
+
     def _answer_from_tools(self) -> str:
         """Зібрати відповідь із результатів інструментів, коли модель мовчить.
 
@@ -4136,7 +4567,134 @@ class AgentRunner:
         draft = response_engine.answer_from_observations(rebuilt)
         return draft.text
 
+    def _salvage_code_files(self, text: str) -> int:
+        """Записати на диск файли з блоків коду у ВІДПОВІДІ моделі.
+
+        Повертає кількість реально записаних файлів.
+
+        Навіщо. Заміряно живим прогоном: модель цілком коректно писала код
+        блоками (``html``, ``python``, ``css``) у ЧАТ, але не викликала
+        ``write_file``. Раніше агент у такому разі лише просив модель
+        «створи файли інструментом» — і якщо вона не вміла, робота зникала
+        разом із контекстом.
+
+        Тепер код не губиться: блоки з явною назвою файлу зберігаються самі.
+        Це НЕ «вигадування дії» — вміст узятий дослівно з відповіді моделі,
+        а назва файлу мусить бути в самій відповіді (у заголовку блоку або
+        в рядку перед ним). Без назви блок не пишемо: вгадувати шлях і
+        затирати наявний файл неприпустимо.
+
+        Правила безпеки:
+
+        * пишемо лише якщо назву файлу справді названо;
+        * наявний НЕпорожній файл не перезаписуємо — дописуємо лише
+          відсутнє (чужий вміст дорожчий за здогад);
+        * пишемо не більше ``_SALVAGE_LIMIT`` файлів за один хід.
+        """
+        blocks = self._code_blocks(text)
+        if not blocks:
+            return 0
+        written = 0
+        notes: list[str] = []
+        for path, body in blocks[:_SALVAGE_LIMIT]:
+            if self._cancel.is_set():
+                break
+            if not self._safe_salvage_name(path):
+                continue
+            if self._salvage_would_overwrite(path):
+                # Файл уже має вміст: мовчазний перезапис знищив би роботу
+                # попередніх кроків. Такий блок лишаємо моделі — хай
+                # вирішить сама через edit_file.
+                continue
+            try:
+                outcome = self.call_tool("write_file",
+                                         {"path": path, "content": body})
+            except Exception:  # noqa: BLE001 - порятунок не має ламати хід
+                LOG.debug("Блок коду не записано у %s", path, exc_info=True)
+                continue
+            if not outcome.ok:
+                continue
+            written += 1
+            notes.append(path)
+            self._emit("tool_call", f"write_file(path={path})", name="write_file",
+                       arguments=f"path={path}", call_id=f"salvage_{written}",
+                       auto=True)
+            self._emit("tool_result", outcome.output, name="write_file", ok=True,
+                       call_id=f"salvage_{written}")
+            self._touched_files.append(path)
+        if written:
+            self._emit("status",
+                       "Код був у чаті, а не у файлах — зберіг файли сам: "
+                       + ", ".join(notes))
+        return written
+
     @staticmethod
+    def _code_blocks(text: str) -> list[tuple[str, str]]:
+        """Пари «(шлях, вміст)» з блоків коду, де шлях справді названо.
+
+        Назву беремо з двох місць, у порядку надійності:
+
+        1. інформаційний рядок блоку: ```` ```python app/main.py ```` —
+           так пишуть і моделі, і люди;
+        2. рядок-підпис безпосередньо перед блоком: «app/models.py:».
+
+        Незакритий блок теж приймаємо. Заміряно живим прогоном у вікні:
+        модель спинилась посеред ``app.py`` (``finish_reason = length``),
+        і саме цей файл — головний у проєкті — на диску так і не з'явився.
+        При цьому закриті блоки вже були записані. Тому останній блок без
+        закривної огорожі беремо як є: краще неповний файл, який модель
+        допише наступним кроком, ніж відсутній.
+        """
+        body = text or ""
+        found: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        pattern = re.compile(r"```([^\n`]*)\n(.*?)(?:```|\Z)", re.DOTALL)
+        for match in pattern.finditer(body):
+            info = (match.group(1) or "").strip()
+            content = match.group(2) or ""
+            if len(content.strip()) < 20:
+                continue
+            path = _path_from_caption(info, body, match.start())
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            found.append((path, content))
+        return found
+
+    def _salvage_would_overwrite(self, path: str) -> bool:
+        """Чи в цьому файлі вже є вміст, який не можна мовчки затерти.
+
+        Порятунок коду з чату — це «останній шанс», а не спосіб переписати
+        те, що вже працює. Наявний непорожній файл лишаємо як є: модель
+        побачить його через ``read_file`` і сама вирішить, що змінити.
+        """
+        try:
+            target = self.registry.resolve(path)
+        except Exception:  # noqa: BLE001 - резолв не має ламати хід
+            return True
+        try:
+            if not target.is_file():
+                return False
+            return bool(target.read_text(encoding="utf-8",
+                                        errors="replace").strip())
+        except OSError:
+            # Не читається — вважаємо, що займати не можна.
+            return True
+
+    @staticmethod
+    def _safe_salvage_name(path: str) -> bool:
+        """Чи безпечно писати файл із цією назвою (без виходу з теки)."""
+        clean = str(path or "").strip().replace("\\", "/")
+        if not clean or len(clean) > 180:
+            return False
+        if clean.startswith("/") or ":" in clean or ".." in clean.split("/"):
+            return False
+        name = clean.rsplit("/", 1)[-1]
+        if not name or "." not in name:
+            return False
+        suffix = name.rsplit(".", 1)[-1].lower()
+        return suffix in _CODE_SUFFIXES
+
     def _looks_like_file_list(body: str) -> bool:
         """Чи це перелік шляхів (тоді краще маркований список).
 
@@ -4218,6 +4776,83 @@ class AgentRunner:
         answer = self._enforce_evidence(answer, step=self.max_steps)
         self._last_answer = answer
         self._emit("assistant", answer, offline=True)
+
+
+#: Інструменти, які лише ДИВЛЯТЬСЯ в інтернет (нічого не створюють).
+_WEB_LOOKUP_TOOLS: frozenset[str] = frozenset({
+    "search_web", "fetch_url", "web_api", "web_open", "internet_status",
+})
+
+#: Ознаки того, що модель ПИТАЄ ДОЗВОЛУ або пропонує «наступні кроки»
+#: замість того, щоб їх виконати. Заміряно живим прогоном у вікні: після
+#: трьох створених файлів модель написала «Наступний крок: створити
+#: маршрути API. Скажи, як продовжити.» — і зупинилась.
+_NEXT_STEP_MARKERS: tuple[str, ...] = (
+    "наступні кроки", "наступний крок", "далі треба", "далі потрібно",
+    "як продовжити", "кажи, як", "скажи, як", "скажіть, як", "продовжити?",
+    "продовжувати?", "хочеш, щоб я", "бажаєте, щоб я", "next steps",
+    "shall i continue", "would you like me to", "let me know if",
+)
+
+
+def _asks_permission_or_next(text: str) -> bool:
+    """Чи це «скажи, як продовжити» замість виконаної роботи."""
+    body = (text or "").strip()
+    if not body or "```" in body:
+        return False
+    low = body.lower()
+    return any(marker in low for marker in _NEXT_STEP_MARKERS)
+
+#: Скільки файлів максимум рятуємо з одного ходу, коли модель поклала код
+#: у чат замість виклику інструмента. Більше — це вже «масове» записування,
+#: і краще попросити модель зробити це через ``write_file``.
+_SALVAGE_LIMIT = 12
+
+#: Розширення, які має сенс витягти з чату у файл. Список навмисно вузький:
+#: ```text`` чи ``bash`` найчастіше показують ПРИКЛАД, а не вміст файлу.
+_CODE_SUFFIXES: frozenset[str] = frozenset({
+    "py", "pyw", "js", "mjs", "cjs", "ts", "tsx", "jsx", "html", "htm",
+    "css", "scss", "sass", "less", "json", "jsonc", "yml", "yaml", "toml",
+    "ini", "cfg", "env", "txt", "md", "rst", "sql", "sh", "bat", "ps1",
+    "go", "rs", "java", "kt", "c", "h", "cpp", "hpp", "cs", "rb", "php",
+    "vue", "svelte", "xml", "svg", "csv", "dockerfile", "gitignore",
+})
+
+#: Назва файлу з розширенням — рівно один «токен», без пробілів.
+_FILE_TOKEN = re.compile(
+    r"([A-Za-z0-9_][A-Za-z0-9_./\\\-]{0,120}\."
+    r"(?:" + "|".join(sorted(_CODE_SUFFIXES, key=len, reverse=True)) + r"))\b",
+    re.IGNORECASE,
+)
+
+
+def _path_from_caption(info: str, body: str, start: int) -> str:
+    """Витягти назву файлу для блоку коду (порожньо — назви немає).
+
+    ``info`` — те, що стоїть після ``` у відкривальній лінії блоку.
+    ``body`` і ``start`` — щоб подивитись рядок-підпис ПЕРЕД блоком.
+
+    Обережність важлива: якщо написати код у «якийсь» файл, можна затерти
+    чужий вміст. Тому приймаємо лише явну назву з розширенням, яку модель
+    сама поставила в заголовку блоку чи в рядку перед ним.
+    """
+    # 1. Заголовок блоку. Дозволяємо і «python app/main.py», і «app/main.py».
+    caption = (info or "").strip().strip("{}").strip()
+    if caption:
+        match = _FILE_TOKEN.search(caption)
+        if match:
+            candidate = match.group(1).strip("`\"'")
+            # Мова після назви («```python script.py») — не частина шляху.
+            return candidate.replace("\\", "/")
+    # 2. Рядок-підпис перед блоком: «app/models.py:», «Файл app/urls.py».
+    before = body[:start].rstrip()
+    if before:
+        line = before.splitlines()[-1].strip()
+        if line and len(line) <= 160:
+            match = _FILE_TOKEN.search(line)
+            if match:
+                return match.group(1).strip("`\"'").replace("\\", "/")
+    return ""
 
 
 def _arguments_dict(raw: str | dict[str, Any]) -> dict[str, Any]:

@@ -377,13 +377,22 @@ class TaskCenter(tk.Frame):
         return f"{task.number:02d}" if task.number else "—"
 
     def _latest(self) -> Optional[queue_engine.QueueTask]:
-        tasks = self.queue.tasks
+        tasks = self._visible_tasks()
         return tasks[-1] if tasks else None
+
+    def _visible_tasks(self) -> list[queue_engine.QueueTask]:
+        """Кроки лише відкритого чату. Без чату — нічого з чужих розмов."""
+        chat_id = self._chat_id()
+        if not chat_id:
+            return [task for task in self.queue.tasks
+                    if not str(getattr(task, "chat_id", "") or "").strip()]
+        return [task for task in self.queue.tasks
+                if str(getattr(task, "chat_id", "") or "") == chat_id]
 
     # ── малювання ──────────────────────────────────────────────────────────
     def refresh(self) -> None:
-        """Оновити панель зі справжнього стану черги."""
-        progress = self.queue.progress()
+        """Оновити панель зі справжнього стану черги цього чату."""
+        progress = self.queue.progress(chat_id=self._chat_id())
         for key in ("total", "done", "pending", "errors"):
             label = self.count_labels.get(key)
             if label is not None:
@@ -403,7 +412,7 @@ class TaskCenter(tk.Frame):
 
     def _paint_stage(self, progress: dict[str, int]) -> None:
         """Короткий підпис того, що зараз відбувається."""
-        active = next((t for t in self.queue.tasks if t.active), None)
+        active = next((t for t in self._visible_tasks() if t.active), None)
         if active is not None:
             text = task_executor.describe_status(active)
             head = f"{self._number(active)} · {text}"
@@ -477,11 +486,12 @@ class TaskCenter(tk.Frame):
 
     def _paint_rows(self) -> None:
         """Перемалювати список кроків (лише коли вміст справді змінився)."""
-        signature = tuple(
+        tasks = self._visible_tasks()
+        signature = (self._chat_id(), tuple(
             (task.id, task.status, task.number, task.current_step,
              task.title, len(task.history))
-            for task in self.queue.tasks
-        )
+            for task in tasks
+        ))
         selected = self.selected_id
         if signature == self._signature and selected == self._last_selected:
             return
@@ -496,7 +506,6 @@ class TaskCenter(tk.Frame):
         self._rows.clear()
         self._dots.clear()
 
-        tasks = self.queue.tasks
         try:
             if tasks:
                 if self.empty_label.winfo_manager():

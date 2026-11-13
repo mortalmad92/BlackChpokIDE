@@ -312,8 +312,19 @@ def test_real_file() -> None:
           any(sym.depth >= 1 for sym in result.symbols))
 
 
+def test_replace_symbol() -> None:
+    source = "def keep():\n    return 1\n\n\ndef greet():\n    return 'hi'\n"
+    updated, name = ast_index.replace_symbol_source(
+        source, "def greet():\n    return 'hi'", "def greet():\n    return 'так'")
+    check("AST замінив функцію", name == "greet" and "return 'так'" in updated, name)
+    check("сусідня функція лишилась", "def keep():" in updated)
+    missing = ast_index.replace_symbol_source(source, "def nope():\n    pass", "x")
+    check("немає символу — немає заміни", missing is None)
+
+
 def main() -> int:
     test_parse()
+    test_replace_symbol()
     test_metrics()
     test_errors()
     test_lookup()

@@ -256,6 +256,7 @@ class QueueExecutor:
         total = len([t for t in self.queue.tasks if t.number])
         prompt = task_planner.step_prompt(task, total=total)
         if self.on_run_step is None:
+            self._release_unstarted(task)
             self._notify("Виконання кроку не підключене до агента.")
             return None
         try:
@@ -265,16 +266,35 @@ class QueueExecutor:
             self.finish(ok=False, answer=f"{type(exc).__name__}: {exc}")
             return None
         # ``on_run_step`` повертає False, якщо запит НЕ пішов агенту (він ще
-        # зайнятий, теки проєкту немає тощо). Без цієї перевірки крок
-        # лишався в стані «аналіз» назавжди: агент вільний, а робота не
-        # почалась — саме це й виглядало як зависання моделі.
+        # зайнятий, теки проєкту немає тощо). ``retry()`` тут не годиться:
+        # крок уже в статусі «аналіз», а ``retry`` активні кроки відхиляє.
+        # ``running_id`` лишався зайнятим, ``next_task()`` вічно повертав
+        # None, і решта плану стояла в «очікує», поки агент був зайнятий.
         if started is False:
-            self.current_id = ""
-            self.queue.retry(task.id)
+            self._release_unstarted(task)
             self._notify("Крок не запустився — повернуто в чергу.")
-            self._changed()
             return None
         return task
+
+    def _release_unstarted(self, task: queue_engine.QueueTask) -> None:
+        """Повернути крок у «очікує», якщо агент його не прийняв.
+
+        Спроба не відбулась (агент зайнятий, немає теки, старт не
+        підключений), тож ліміт спроб не спалюємо: інакше кілька відмов
+        поспіль знімали б крок як «перевищено ліміт», хоч модель його
+        навіть не бачила.
+        """
+        self.current_id = ""
+        task.attempts = max(0, int(getattr(task, "attempts", 0) or 0) - 1)
+        if self.queue.running_id == task.id:
+            self.queue.requeue_running()
+        elif task.active:
+            task.status = queue_engine.PENDING
+            task.current_step = ""
+            task.finished_at = 0.0
+            task.add_history("requeue", "повернуто в чергу: старт не відбувся")
+            self.queue._changed()
+        self._changed()
 
     # ── зворотний зв'язок від агента ───────────────────────────────────────
     def note_step(self, text: str, *, status: str = "") -> None:
@@ -385,11 +405,14 @@ class QueueExecutor:
             started = self.on_run_step(task, prompt)
         except Exception as exc:  # noqa: BLE001
             LOG.exception("Повтор кроку %s не запустився", task.id)
-            self.current_id = ""
-            return False
+            self._release_unstarted(task)
+            return True
         if started is False:
-            self.current_id = ""
-            return False
+            # Агент зайнятий або теки немає. Це не провал кроку: інакше
+            # ``finish`` зняв би крок і всі залежні, хоч модель його не бачила.
+            self._release_unstarted(task)
+            self._notify("Повтор не стартував — крок знову в черзі.")
+            return True
         return True
 
     def _fail(self, task: queue_engine.QueueTask, message: str, *,
@@ -462,7 +485,7 @@ class QueueExecutor:
         return done
 
     def clear_finished(self) -> int:
-        removed = self.queue.clear_finished()
+        removed = self.queue.clear_finished(self.chat_id())
         if removed:
             self.queue.renumber(chat_id=self.chat_id())
             self._changed()
@@ -472,10 +495,10 @@ class QueueExecutor:
     def report(self, *, chat_id: str = "") -> str:
         """Підсумковий звіт по плану (Markdown для чату)."""
         tasks = [t for t in self.queue.tasks
-                 if not chat_id or not t.chat_id or t.chat_id == chat_id]
+                 if not chat_id or str(getattr(t, "chat_id", "") or "") == chat_id]
         if not tasks:
             return "Черга порожня — звітувати нема про що."
-        progress = self.queue.progress()
+        progress = self.queue.progress(chat_id=chat_id)
         lines = ["**Підсумок роботи агента**", ""]
         lines.append(f"Усього кроків: {progress['total']} · "
                      f"завершено: {progress['done']} · "

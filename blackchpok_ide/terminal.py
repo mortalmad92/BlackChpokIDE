@@ -271,8 +271,10 @@ class TerminalPanel(tk.Frame):
             session = self._session
         if session is not None and session.running:
             def worker() -> None:
-                code, output = session.run(command)
-                self._ui_queue.put(("done", (code, output)))
+                code, _output = session.run(command)
+                # Рядки вже прийшли через on_output. Повторно їх не друкуємо:
+                # інакше кожна команда з'являлась у вікні двічі.
+                self._ui_queue.put(("done", (code, "")))
 
             threading.Thread(target=worker, daemon=True).start()
             return

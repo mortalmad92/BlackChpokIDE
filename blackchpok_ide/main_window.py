@@ -280,6 +280,7 @@ class BlackChpokIDE(tk.Tk):
             root = Path.cwd()
         self.settings.workspace = str(root)
         self.registry = ToolRegistry(root, confirm_commands=settings.agent.confirm_commands)
+        self.registry.on_editor = self._agent_show_file
         self.registry.command_guard = self._confirm_command
         # Збережений режим дозволів діє одразу після старту.
         self.permission_mode = permissions.normalise_mode(settings.agent.permission_mode)
@@ -859,11 +860,29 @@ class BlackChpokIDE(tk.Tk):
                 bar.set_command_enabled(key, command.is_enabled())
 
     def _git_badge_state(self) -> tuple[str, int]:
-        """Гілка й кількість змін для шапки (кеш 15 с, щоб не смикати git).
+        """Гілка й кількість змін для шапки — БЕЗ блокування інтерфейсу.
 
-        ``git`` — зовнішній процес; викликати його на кожне оновлення шапки
-        означало б десятки запусків на секунду. Тому кешуємо, а git-команда
-        йде лише коли тека справді є репозиторієм.
+        Чому це критично. ``_refresh_header`` кличеться після КОЖНОЇ команди
+        шапки, меню й палітри, тобто в головному потоці. Усередині
+        ``diff_stats.detect_changes`` → ``git_changes`` виконується
+        ``git status`` (таймаут 20 с) плюс зведений ``git diff --numstat``
+        (20 с) і — для шляхів, яких немає у зведенні, — ТОЧКОВИЙ
+        ``git diff --numstat HEAD -- <path>`` для кожного файлу (до
+        ``MAX_FILES = 400``), кожен теж із таймаутом 20 с. На холодному або
+        великому репозиторії це десятки секунд застиглого кадру: вікно
+        виглядає як «програма зависла», хоч агент тут ні до чого.
+
+        Тепер правило просте: **головний потік ніколи не чекає на git**.
+
+        * є свіжий кеш — показуємо його одразу;
+        * кешу немає або він застарів — показуємо останній відомий стан і
+          запускаємо ОДИН фоновий перерахунок (повторні виклики не плодять
+          паралельних ``git``);
+        * результат фонового потоку повертається в інтерфейс через
+          ``_ui_call`` і лише перемальовує чип.
+
+        Поведінка для користувача та сама (чип показує реальний стан), але
+        кадр більше не застигає.
         """
         root = self._project_root()
         if root is None:
@@ -872,17 +891,44 @@ class BlackChpokIDE(tk.Tk):
         cached = getattr(self, "_git_badge_cache", None)
         if cached is not None and (now - cached[0]) < 15.0:
             return cached[1], cached[2]
-        branch = ""
-        changes = 0
+        # Застаріле значення показуємо одразу — краще трохи старі цифри,
+        # ніж застигле вікно.
+        if not getattr(self, "_git_badge_busy", False):
+            self._git_badge_busy = True
+
+            def work() -> None:
+                branch = ""
+                changes = 0
+                try:
+                    branch = diff_stats.git_branch(root)
+                    if branch:
+                        change_set = diff_stats.detect_changes(root, prefer_git=True)
+                        changes = len(getattr(change_set, "files", []) or [])
+                except Exception:  # noqa: BLE001 - шапка не має ламати вікно
+                    LOG.debug("Стан git для шапки недоступний", exc_info=True)
+                self._git_badge_cache = (time.time(), branch, changes)
+                self._git_badge_busy = False
+                self._ui_call(self._apply_git_badge)
+
+            try:
+                threading.Thread(target=work, daemon=True,
+                                 name="git-badge").start()
+            except RuntimeError:                     # інтерпретатор завершується
+                self._git_badge_busy = False
+        if cached is not None:
+            return cached[1], cached[2]
+        return "", 0
+
+    def _apply_git_badge(self) -> None:
+        """Перемалювати git-чип після фонового перерахунку стану."""
+        bar = getattr(self, "header_bar", None)
+        cached = getattr(self, "_git_badge_cache", None)
+        if bar is None or cached is None:
+            return
         try:
-            branch = diff_stats.git_branch(root)
-            if branch:
-                change_set = diff_stats.detect_changes(root, prefer_git=True)
-                changes = len(getattr(change_set, "files", []) or [])
-        except Exception:  # noqa: BLE001 - шапка не має ламати вікно
-            LOG.debug("Стан git для шапки недоступний", exc_info=True)
-        self._git_badge_cache = (now, branch, changes)
-        return branch, changes
+            bar.set_git(cached[1], cached[2])
+        except (tk.TclError, AttributeError):
+            LOG.debug("Git-чип не оновлено", exc_info=True)
 
     def _header_menu(self, which: str, anchor=None) -> None:
         """Меню шапки: ``git`` і «⋯».
@@ -1300,10 +1346,18 @@ class BlackChpokIDE(tk.Tk):
         # «модель недоступна», і здавалось, що вона взагалі не стартує
         # (реальний лог: старт о 19:03, вивантаження о 19:08, помилка о 19:10).
         self.chat.before_send = self._before_agent_request
+        # Запит не стартує, якщо тека агента розійшлась із текою цього чату.
+        self.chat.folder_guard = self._chat_folder_ready
         self.chat.on_title_change = self.header.set_title
+        # GitHub: токен і прапорець «питати після роботи» живуть у
+        # налаштуваннях, а агент і реєстр лише читають їх.
+        self._sync_git_settings()
         # «Справи»: кожен запит → справа, кожна подія агента → крок у ній.
         self.chat.on_case_start = self._case_begin
         self.chat.on_event = self._case_on_event
+        # Агент питає «оновити файли на GitHub?» — показуємо справжній
+        # діалог із адресою й гілкою. Відправка ЛИШЕ після «Так».
+        self.chat.on_git_offer = self._on_git_offer
         # Стан чату (спінер, назва, доступність моделі) показуємо в заголовку.
         self.chat.bind_header(self.header.title_label, self.header.status_dot)
         self._apply_voice_settings()
@@ -1379,7 +1433,8 @@ class BlackChpokIDE(tk.Tk):
                                             self._project_root)
         self.project_search.on_open = lambda path, line: self.open_path(path, line)
         self.model_hub = ModelHubPanel(self.bottom_tabs, self.theme, self.settings,
-                                       on_model_ready=self._on_hub_model_ready)
+                                       on_model_ready=self._on_hub_model_ready,
+                                       on_before_delete=self._release_model_file)
         self.preview = LivePreviewPanel(self.bottom_tabs, self.theme,
                                         self._project_root,
                                         on_status=self.set_status,
@@ -1405,6 +1460,7 @@ class BlackChpokIDE(tk.Tk):
         self.bottom_tabs.add(self.project_search, text="  Пошук  ")
         self.bottom_tabs.add(self.model_hub, text="  Хаб моделей  ")
         self.bottom_tabs.add(self.preview, text="  🌐 Сайт  ")
+        self.bottom_tabs.bind("<<NotebookTabChanged>>", self._on_bottom_tab)
         self._bottom_shown = False
         self._bottom_height = int(self.settings.ui.bottom_height or 200)
         if self.settings.ui.bottom_visible:
@@ -1995,6 +2051,10 @@ class BlackChpokIDE(tk.Tk):
             "<Control-Shift-T>": lambda e: self.reopen_tab(),
             "<Control-p>": lambda e: self.quick_open(),
             "<Control-Shift-P>": lambda e: self.command_palette(),
+            # F1 — довідник користувача. Клавіша зареєстрована й у
+            # ``command_registry`` (``help.guide``), щоб палітра й меню
+            # показували ту саму підказку; тут — лише прив'язка.
+            "<F1>": lambda e: self.show_user_guide(),
             "<Control-Shift-M>": lambda e: self.open_model_hub(),
             "<Control-Shift-F>": lambda e: self.open_project_search(),
             "<Control-f>": lambda e: self.open_search(),
@@ -2351,14 +2411,24 @@ class BlackChpokIDE(tk.Tk):
         if not self.has_project():
             return None
         if not getattr(self.chat_store, "chats", []):
-            created = self.new_chat_session()
-            return self.chat_store.active() if created else None
+            # Діалог теки тут не відкриваємо: його показує кнопка «Новий чат».
+            # Чернетка пам'ятає теку, з якою її створили, і не підхопить
+            # іншу, якщо пігулка встигне змінитись до першого повідомлення.
+            self._pending_chat = True
+            self._pending_workspace = str(self.settings.workspace or "")
+            return None
         try:
             chat = self.chat_store.ensure_active(workspace=str(self.settings.workspace),
                                                  model=self.settings.llm.model)
             # Контекст відновлюємо й тут: ``ensure_active`` обирає чат без
             # проходження через ``open_chat`` (напр. після вибору теки).
+            # Тека агента має збігатися з текою цього чату, а не з останньою
+            # відкритою папкою в налаштуваннях.
             if chat is not None and chat.id:
+                bound = str(chat.workspace or "").strip()
+                if bound and Path(bound).is_dir():
+                    if not chat_store.same_folder(str(self.settings.workspace or ""), bound):
+                        self._apply_workspace(Path(bound))
                 self._load_chat_context(chat.id)
             self.chat_list.refresh()
             self._sync_chat_title()
@@ -3658,20 +3728,28 @@ class BlackChpokIDE(tk.Tk):
         self.set_status(message)
 
     def create_project_folder(self) -> None:
-        """Створити нову теку проєкту й одразу її відкрити."""
-        from tkinter import simpledialog
+        """Створити нову теку проєкту через провідник і одразу її відкрити.
 
-        name = simpledialog.askstring(
-            "Новий проєкт",
-            "Назва теки проєкту (буде створена поруч із поточною):",
-            parent=self)
-        if not name or not name.strip():
+        Шлях набирати не треба: у системному вікні обираєш місце, кнопкою
+        «Нова папка» створюєш теку й підтверджуєш її. Якщо теки ще немає
+        на диску — створюємо її тут.
+        """
+        current = Path(self.settings.workspace or "")
+        if current.is_dir() and self.has_project():
+            initial = current.parent if current.parent.is_dir() else current
+        else:
+            home = Path.home()
+            projects = home / "Projects"
+            initial = projects if projects.is_dir() else home
+        chosen = filedialog.askdirectory(
+            parent=self,
+            title="Створити теку проєкту",
+            initialdir=str(initial),
+            mustexist=False,
+        )
+        if not chosen:
             return
-        clean = re.sub(r'[<>:"/\\|?*]', "_", name.strip()) or "project"
-        base = Path(self.settings.workspace)
-        if not base.is_dir() or not self.has_project():
-            base = Path.home() / "Projects"
-        target = base / clean
+        target = Path(chosen)
         try:
             target.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -3680,47 +3758,63 @@ class BlackChpokIDE(tk.Tk):
             return
         self.set_workspace(target)
 
-    def new_chat_session(self) -> bool:
-        """Підготувати новий чат. Без вибраного проєкту — спершу вибір теки.
+    def new_chat_session(self, folder: Path | None = None) -> bool:
+        """Новий чат: одразу вибір однієї робочої теки.
 
-        Чат НЕ записується у сховище одразу: запис у списку з'являється з
-        першим повідомленням (див. ``_remember_message``). Раніше кожне
-        натискання «＋ Новий чат» створювало порожній запис, і список
-        заповнювався рядками «Без назви» з нулем повідомлень — саме те, що
-        видно на скріншоті користувача.
-
-        Повертає ``True``, якщо сесію підготовлено. Кнопка «Новий чат»,
-        меню й стартовий екран ведуть сюди, тож перевірка одна на всі входи.
+        Повертає ``True``, якщо чат створено і прив'язано до теки.
+        Кнопка «Новий чат», меню й стартовий екран ведуть сюди.
+        Без вибраної теки запис не з'являється — агенту ніде працювати.
+        ``folder`` передають лише коли теку вже вибрано (провідник, тест).
         """
-        if not self.has_project():
-            self._show_project_gate(
-                reason="Чат відкриється, щойно буде вибрано теку проєкту.")
-            self.set_status("Спершу вибери папку проєкту — без неї агенту ніде працювати.")
-            return False
-        # Агент зараз працює — перемикання знищило б поточний хід: стрічка
-        # очищається, а потік агента продовжує дописувати у ВЖЕ ОЧИЩЕНУ
-        # сесію, і результат попередньої задачі зникає (а частково ще й
-        # зберігається під новим chat_id). Тому спершу зупиняємо.
         if self.agent.busy:
             self.set_status("Агент ще працює — дочекайся завершення або зупини його (■), "
                             "потім створи новий чат.")
             return False
-        self._close_project_gate()
-        # Знімаємо з активності попередній чат, але не чіпаємо його запис:
-        # розмова лишається в списку, доки в ній є повідомлення.
-        #
-        # Контекст агента зберігаємо ПЕРЕД очищенням: інакше модель
-        # втрачала все, що знала про попередню розмову, і повернутись до
-        # неї було неможливо — саме це відчувалось як «чат зник».
+        if folder is None:
+            initial = str(self.settings.workspace or "") if self.has_project() else ""
+            chosen = filedialog.askdirectory(
+                title="Робоча тека нового чату",
+                mustexist=True,
+                parent=self,
+                initialdir=initial or str(Path.home()),
+            )
+            if not chosen:
+                self.set_status("Новий чат скасовано: теку не вибрано.")
+                return False
+            folder = Path(chosen)
+        return self._start_chat_in(Path(folder))
+
+    def _start_chat_in(self, folder: Path) -> bool:
+        """Створити чат і прив'язати його рівно до ``folder``.
+
+        Попередній чат лишається зі своєю текою. Агент, провідник і термінал
+        переходять на нову теку разом із новим чатом, а не «під» старим.
+        """
+        folder = Path(folder)
+        if not folder.is_dir():
+            self.set_status(f"Теки немає: {folder}")
+            return False
+        if self.agent.busy:
+            self.set_status("Агент ще працює — дочекайся завершення або зупини його (■).")
+            return False
+        if self._autonomous_other_project(folder):
+            if not self._confirm_autonomous_project_switch(folder):
+                return False
+            self.stop_autonomous()
         previous = str(getattr(self.chat_store, "active_id", "") or "")
         if previous:
             self._save_chat_context(previous)
-        self._pending_chat = True
-        self.chat_store.set_active("")
+        self._apply_workspace(folder)
+        chat = self.chat_store.create(
+            title=folder.name or "Новий чат",
+            workspace=str(folder.resolve()),
+            model=self.settings.llm.model,
+        )
+        self._pending_chat = False
+        self._pending_workspace = ""
+        self._close_project_gate()
         self._hide_welcome()
         self.chat.reset()
-        # Новий чат починається з ЧИСТОГО контексту — жодних слідів
-        # попереднього діалогу в сесії агента.
         try:
             self.agent.session.reset()
         except AttributeError:
@@ -3730,7 +3824,7 @@ class BlackChpokIDE(tk.Tk):
         self._sync_chat_model()
         self._sync_chat_queue()
         self._focus_composer()
-        self.set_status("Новий чат: запиши перше завдання — і сесія з'явиться у списку.")
+        self.set_status(f"Чат «{chat.title}» прив'язано до теки: {folder}")
         return True
 
     def _pending_chat_active(self) -> bool:
@@ -3747,11 +3841,19 @@ class BlackChpokIDE(tk.Tk):
         if self.chat_store.active():
             self._pending_chat = False
             return
-        if not self.has_project():
+        bound = str(getattr(self, "_pending_workspace", "") or "").strip()
+        if not bound:
+            bound = str(self.settings.workspace or "").strip()
+        if not bound or not Path(bound).is_dir():
             return
-        chat = self.chat_store.create(workspace=str(self.settings.workspace),
+        # Запис народжується з текою чернетки, а не з тієї, на яку
+        # встигли перемкнути вікно після натискання «Новий чат».
+        if not chat_store.same_folder(str(self.settings.workspace or ""), bound):
+            self._apply_workspace(Path(bound))
+        chat = self.chat_store.create(workspace=str(Path(bound).resolve()),
                                       model=self.settings.llm.model)
         self._pending_chat = False
+        self._pending_workspace = ""
         self.chat_list.refresh()
         self._sync_chat_title()
         self._sync_chat_model()
@@ -3765,10 +3867,10 @@ class BlackChpokIDE(tk.Tk):
             pass
 
     def open_chat(self, chat_id: str) -> None:
-        """Відкрити збережений чат: історія й КОНТЕКСТ агента відновлюються.
+        """Відкрити збережений чат: історія, контекст і ЙОГО тека.
 
-        Без вибраної теки проєкту чат не відкривається: інакше агент почав
-        би працювати з файлами в домашній теці користувача.
+        Агент переходить у теку цього чату. Якщо в записі теки ще немає,
+        вікно питає її один раз і більше не дає замінити іншою.
 
         Головне тут — :meth:`_load_chat_context`. Раніше відкриття чату
         малювало лише стрічку, а сесія агента лишалась від попередньої
@@ -3776,31 +3878,52 @@ class BlackChpokIDE(tk.Tk):
         неможливо), або бачила ЧУЖУ. Тепер контекст перемикається разом із
         чатом, а поточний зберігається перед перемиканням.
         """
-        if not self.has_project():
-            self._show_project_gate(
-                reason="Вибери теку проєкту — і цей чат відкриється.")
-            self.set_status("Спершу вибери папку проєкту.")
-            return
         chat = self.chat_store.get(chat_id)
         if chat is None:
             return
         if self.agent.busy:
             self.set_status("Агент ще працює — дочекайся завершення або зупини його (■).")
             return
-        self._close_project_gate()
+        bound = str(chat.workspace or "").strip()
+        if not bound:
+            chosen = filedialog.askdirectory(
+                title="Робоча тека цього чату",
+                mustexist=True,
+                parent=self,
+                initialdir=str(self.settings.workspace or Path.home()),
+            )
+            if not chosen:
+                self.set_status("Чат без теки не відкривається.")
+                return
+            if self.chat_store.bind_workspace(chat.id, chosen) == "refused":
+                self.set_status("Цей чат уже прив'язаний до іншої теки.")
+                return
+            bound = str(chat.workspace or chosen)
+        folder = Path(bound)
+        if not folder.is_dir():
+            self.set_status(f"Тека цього чату недоступна: {bound}")
+            return
+        if self._autonomous_other_project(folder):
+            if not self._confirm_autonomous_project_switch(folder):
+                return
+            self.stop_autonomous()
         previous = str(getattr(self.chat_store, "active_id", "") or "")
         if previous and previous != chat_id:
             self._save_chat_context(previous)
         self._pending_chat = False
+        self._pending_workspace = ""
         self.chat_store.set_active(chat_id)
+        self._close_project_gate()
         self._hide_welcome()          # оверлей стартового екрана ховаємо
         self.chat.show_history(chat.messages)
         self._load_chat_context(chat_id)
+        # Агент працює в теці ЦЬОГО чату, навіть якщо до того була відкрита інша.
+        self._apply_workspace(folder)
         self.chat_list.refresh()
         self._sync_chat_title()
         self._sync_chat_model()
         self._sync_chat_queue()
-        self.set_status(f"Відкрито чат: {chat.title or 'Без назви'}")
+        self.set_status(f"Відкрито чат «{chat.title or 'Без назви'}» — тека {folder}")
 
     # ── контекст агента: один на чат ───────────────────────────────────────
     def _save_chat_context(self, chat_id: str) -> bool:
@@ -3896,8 +4019,7 @@ class BlackChpokIDE(tk.Tk):
         chat_id = self._active_chat_id()
         try:
             tasks = [task for task in self.task_queue.tasks
-                     if not chat_id or not getattr(task, "chat_id", "")
-                     or task.chat_id == chat_id]
+                     if chat_id and getattr(task, "chat_id", "") == chat_id]
             self.chat.set_queue_count(len(tasks), tasks)
         except (tk.TclError, AttributeError):
             LOG.debug("Не вдалось оновити бейдж черги", exc_info=True)
@@ -4445,14 +4567,76 @@ class BlackChpokIDE(tk.Tk):
         except Exception:  # noqa: BLE001 - підйом не має блокувати запит
             LOG.debug("Підйом моделі перед запитом не вдався", exc_info=True)
 
+    def _chat_folder_ready(self) -> bool:
+        """Перед запитом повернути агента в теку саме цього чату.
+
+        Якщо запис чату вказує на іншу папку, ніж зараз відкрита у вікні,
+        вікно повертається на теку чату. Запит у чужу теку не йде.
+        ``False`` — теки чату немає, і роботу починати не можна.
+        """
+        chat = self.chat_store.active()
+        if chat is None:
+            pending = str(getattr(self, "_pending_workspace", "") or "").strip()
+            if pending and Path(pending).is_dir():
+                if not chat_store.same_folder(str(getattr(self.agent, "workspace", "") or ""),
+                                              pending):
+                    self._apply_workspace(Path(pending))
+                return True
+            if not self.has_project():
+                self.set_status("Спершу вибери теку нового чату.")
+                return False
+            return True
+        bound = str(chat.workspace or "").strip()
+        if not bound or not Path(bound).is_dir():
+            self.set_status("У цього чату немає доступної теки. Відкрий його знову "
+                            "й вибери папку.")
+            return False
+        if not chat_store.same_folder(str(getattr(self.agent, "workspace", "") or ""), bound):
+            self._apply_workspace(Path(bound))
+        return chat_store.same_folder(
+            str(getattr(self.agent, "workspace", "") or ""), bound)
+
     def _idle_tick(self) -> None:
-        """Раз на кілька секунд: чи не час віддати пам'ять відеокарти."""
+        """Раз на кілька секунд: чи не час віддати пам'ять відеокарти.
+
+        ── ЧОМУ ВИВАНТАЖЕННЯ ЙДЕ У ФОНОВИЙ ПОТІК ─────────────────────────
+        Це тік головного циклу. ``model_keeper.poll(...)`` всередині, коли
+        доходить до вивантаження, кличе ``NativeRuntime.unload_model`` →
+        ``Engine.unload``, а той БЕРЕВЕ ``engine._lock`` і ``context._lock``
+        — тобто ЧЕКАЄ, поки завершиться поточний ``llama_decode``. Якщо в
+        цю мить генерація вже почалась (агент стартував між тіком і
+        перевіркою ``busy``), головний потік стояв до кінця декодування:
+        вікно «не відповідало» на секунди. Для llama-server там узагалі
+        ``process.wait(timeout=10)``.
+
+        Тепер тік лише ВИРІШУЄ, чи час вивантажувати (це дешева арифметика
+        над часом), а саме вивантаження виконується у фоновому потоці.
+        Інтерфейс більше ніколи не чекає на рушій.
+        """
         try:
             keeper = self.model_keeper
             busy = self._agent_working()
             autonomous_on = self.autonomous_engine.active
-            if keeper.poll(busy=busy, autonomous=autonomous_on):
-                self._note_model_unloaded()
+            if getattr(self, "_idle_unload_busy", False):
+                # Попереднє вивантаження ще триває — не плодимо паралельних.
+                pass
+            elif keeper.should_unload(busy=busy, autonomous=autonomous_on):
+                self._idle_unload_busy = True
+
+                def unload() -> None:
+                    try:
+                        done = keeper.unload()
+                    except Exception as exc:  # noqa: BLE001 - фон не має падати
+                        LOG.debug("Вивантаження у фоні впало: %s", exc,
+                                  exc_info=True)
+                        done = False
+                    finally:
+                        self._idle_unload_busy = False
+                    if done:
+                        self._ui_call(self._note_model_unloaded)
+
+                threading.Thread(target=unload, daemon=True,
+                                 name="idle-unload").start()
         except Exception as exc:  # noqa: BLE001 - фоновий тік не має ламати вікно
             LOG.debug("Тік простою впав: %s", exc, exc_info=True)
         try:
@@ -4479,6 +4663,7 @@ class BlackChpokIDE(tk.Tk):
         ж дія користувача піднімає модель назад.
         """
         self._model_unloaded_by_idle = True
+        self._model_proved_online = False
         # Стан сервера тепер ІНШИЙ: він більше не обслуговує модель.
         # Без цього інтерфейс продовжував показувати «online» і старе вікно
         # контексту, хоч сервер уже зупинено.
@@ -4714,7 +4899,11 @@ class BlackChpokIDE(tk.Tk):
         if not clean:
             return
         if self.agent.busy:
-            self.set_status("Агент зайнятий — розбиття поставимо після завершення.")
+            # Обіцянка в рядку стану має справдитись: текст лишається,
+            # і насос черги розіб'є його, щойно агент звільниться. Раніше
+            # запит просто зникав, а кроки так і не з'являлись.
+            self._deferred_split = clean
+            self.set_status("Агент зайнятий — розбиття почнеться, щойно він звільниться.")
             return
         if getattr(self, "_planning", False):
             LOG.info("Планування вже триває — повторний запит ігнорую")
@@ -4903,6 +5092,17 @@ class BlackChpokIDE(tk.Tk):
         if not started:
             self._plan_step_active = False
             self._running_task_id = ""
+            self._set_agent_state("очікує")
+            if chat is not None:
+                waiting = any(
+                    item.status == queue_engine.PENDING
+                    for item in self.task_queue.tasks)
+                status = "queued" if waiting else "idle"
+                self.chat_store.set_status(chat.id, status)
+                try:
+                    self.chat_list.update_row_status(chat.id, status)
+                except (tk.TclError, AttributeError):
+                    pass
             LOG.info("Крок %s не запустився — повертаю в чергу", task.id)
         return bool(started)
 
@@ -5060,7 +5260,10 @@ class BlackChpokIDE(tk.Tk):
 
     def _update_queue_badge(self) -> None:
         active_states = set(queue_engine.ACTIVE_STATUSES) | {queue_engine.PENDING}
-        pending = [t for t in self.task_queue.tasks if t.status in active_states]
+        owner = str(getattr(self.chat_store, "active_id", "") or "")
+        pending = [t for t in self.task_queue.tasks
+                   if t.status in active_states
+                   and owner and str(getattr(t, "chat_id", "") or "") == owner]
         try:
             self.chat.set_queue_count(len(pending), tasks=pending)
         except (tk.TclError, AttributeError):
@@ -5082,9 +5285,7 @@ class BlackChpokIDE(tk.Tk):
             LOG.debug("Стан агента не оновився", exc_info=True)
         # Кнопка режиму чату показує, що саме цей чат робить у фоні.
         try:
-            owner = str(getattr(self.chat_store, "active_id", "") or "")
-            mine = [t for t in pending
-                    if not getattr(t, "chat_id", "") or str(t.chat_id) == owner]
+            mine = list(pending)
             self.header.set_chat_mode(
                 autonomous=self.autonomous_engine.active, queue_count=len(mine))
         except (tk.TclError, AttributeError):
@@ -5098,6 +5299,12 @@ class BlackChpokIDE(tk.Tk):
         ніколи не завершувався б.
         """
         try:
+            # Відкладене розбиття: агент був зайнятий у момент запиту.
+            deferred = str(getattr(self, "_deferred_split", "") or "")
+            if (deferred and not self.agent.busy
+                    and not getattr(self, "_planning", False)):
+                self._deferred_split = ""
+                self._split_task_to_queue(deferred)
             # ── Кроки без власника дістають активний чат ────────────────────
             # План складається в момент, коли чату ще немає: ``_after_split``
             # бере ``_active_chat_id()``, а він порожній, бо чат створюється
@@ -5107,10 +5314,10 @@ class BlackChpokIDE(tk.Tk):
             # «очікує», 0 активних, 0 помилок (заміряно
             # ``.buildtmp/probe_next_task.py``).
             #
-            # ``_adopt_orphan_tasks`` існував, але ніхто його не кликав.
-            if (not self.task_queue.running_id and not self.agent.busy
-                    and self._active_chat_id()):
-                self._adopt_orphan_tasks()
+            # Сиріт на кожному тіку НЕ підхоплюємо. Інакше чат Б, щойно
+            # відкритий в іншій теці, забирав кроки чату А і виконував їх
+            # уже у своїй папці. Новий план отримує власника до кроків
+            # (``_ensure_owner_chat``). Старі сироти чіпає лише старт.
             if (self.settings.agent.queue_auto_run and not self.task_queue.paused
                     and not self._autonomous_stop_pending
                     and self.autonomous_engine.state != autonomous.STATE_STOPPING
@@ -5280,6 +5487,120 @@ class BlackChpokIDE(tk.Tk):
             return False, "файлів немає на диску: " + ", ".join(missing[:3])
         return True, ""
 
+    def _on_git_offer(self, details: dict) -> None:
+        """Питання «оновити файли на GitHub?» — діалог із «Так / Ні».
+
+        Чому діалог, а не автовідправка. ``git push`` незворотний: коміт
+        одразу бачать інші люди, і локальний ``reset`` цього не виправить.
+        Тому рішення ухвалює людина, а агент лише показує, ЩО саме поїде:
+        адресу, гілку, файли й текст коміту.
+
+        Кнопки — це зручність, а не єдиний шлях: відповісти «так» у полі
+        вводу теж можна (див. ``AgentRunner._answers_git_offer``).
+        """
+        remote = str(details.get("remote") or "")
+        branch = str(details.get("branch") or "")
+        changed = list(details.get("changed") or [])
+        message = str(details.get("message") or "")
+        shown = "\n".join(f"• {name}" for name in changed[:8])
+        if len(changed) > 8:
+            shown += f"\n• … та ще {len(changed) - 8}"
+        question = (
+            "Оновити файли на GitHub?\n\n"
+            f"Репозиторій: {remote or '— не налаштовано —'}\n"
+            f"Гілка: {branch or '?'}\n"
+            f"Файлів змінено: {len(changed)}\n"
+            + (f"\n{shown}\n" if shown else "")
+            + (f"\nКоміт: {message}\n" if message else "")
+            + "\nЗміни стануть видимими всім, хто має доступ до репозиторію."
+        )
+        try:
+            answer = messagebox.askyesno("GitHub", question, parent=self)
+        except tk.TclError:
+            return
+        if not answer:
+            self.set_status("GitHub не оновлено — ви змінили рішення.")
+            self.chat.transcript.add("· GitHub не оновлено.\n")
+            return
+        self.github_publish()
+
+    def github_publish(self) -> None:
+        """Закомітити й відправити зміни на GitHub (спільна точка входу).
+
+        Сюди ведуть три шляхи: відповідь «Так» у діалозі, пункт меню Git і
+        відповідь «так» у чаті. Усі три роблять ОДНЕ й те саме.
+        """
+        if not self.has_project():
+            self.set_status("Спершу вибери проєкт — тоді буде що відправляти.")
+            return
+        if self.agent.busy:
+            self.set_status("Агент ще працює — дочекайся завершення, потім "
+                            "оновимо GitHub.")
+            return
+        from . import git_repo
+
+        ready, reason = git_repo.is_clean_enough(self.settings.workspace)
+        if not ready:
+            self.set_status("GitHub: " + reason)
+            messagebox.showwarning("GitHub", reason, parent=self)
+            return
+        self.set_status("Відправляю зміни на GitHub…")
+        token = self._git_token()
+        chat_id = self._active_chat_id()
+
+        def work() -> None:
+            result = git_repo.publish(self.settings.workspace, token=token)
+
+            def report() -> None:
+                if result.ok:
+                    self.set_status("GitHub оновлено: " + result.message)
+                    self.chat.transcript.add(f"\n✓ GitHub: {result.message}\n")
+                    if chat_id and result.remote:
+                        self.chat_store.remember_git(
+                            chat_id, remote=result.remote,
+                            pushed_at=time.time())
+                else:
+                    self.set_status("GitHub: не вдалося")
+                    messagebox.showwarning("GitHub", result.message, parent=self)
+
+            self._ui_call(report)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _git_token(self) -> str:
+        """Токен GitHub із налаштувань (може бути порожнім).
+
+        Порожній — нормально: тоді працюють збережені облікові дані git
+        (Git Credential Manager). Токен передається в ``git_repo`` через
+        ``GIT_ASKPASS``, а не в командний рядок: аргументи процесу на
+        Windows видно іншим процесам.
+        """
+        try:
+            return str(self.settings.git.token or "")
+        except AttributeError:
+            return ""
+
+    def _sync_git_settings(self) -> None:
+        """Передати налаштування GitHub агенту й реєстру інструментів.
+
+        Тримаємо ОДНЕ джерело правди (``settings.git``), а агент лише читає:
+        інакше токен жив би у двох місцях і після зміни в налаштуваннях
+        ``git_publish`` ішов би зі старою копією.
+        """
+        try:
+            git_settings = self.settings.git
+        except AttributeError:
+            return
+        try:
+            self.registry.git_token = str(git_settings.token or "")
+        except AttributeError:
+            pass
+        try:
+            self.agent.agent_settings.git_offer_publish = bool(
+                git_settings.offer_after_work)
+        except AttributeError:
+            pass
+
     def _on_agent_finished(self, ok: bool, text: str) -> None:
         """Агент завершив роботу — закриваємо поточний крок плану.
 
@@ -5364,6 +5685,12 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Озвучення відповіді не вдалось", exc_info=True)
 
     def _after_task_finished(self, ok: bool) -> None:
+        # Повтор із підказкою вже крутить той самий крок. Ставити «готово»
+        # або «помилка» в цей момент — брехня в рядку стану.
+        if self.executor.busy:
+            self._set_agent_state("працює")
+            self._update_queue_badge()
+            return
         self._update_queue_badge()
         self._set_agent_state("готово" if ok else "помилка")
         # Етап у смузі над композером рухається разом із задачею черги:
@@ -5424,7 +5751,7 @@ class BlackChpokIDE(tk.Tk):
             self.chat.finish_stages(ok=True)
         except (tk.TclError, AttributeError):
             pass
-        progress = self.task_queue.progress()
+        progress = self.task_queue.progress(chat_id=self._active_chat_id())
         self.set_status(
             f"План завершено: {progress['done']} з {progress['total']} кроків"
             + (f", помилок {progress['errors']}" if progress["errors"] else ""))
@@ -5462,7 +5789,7 @@ class BlackChpokIDE(tk.Tk):
             return f"працює · крок {label} · {step[:48]}"
         if self.agent.busy:
             return "працює · відповідає на запит"
-        progress = self.task_queue.progress()
+        progress = self.task_queue.progress(chat_id=self._active_chat_id())
         if self.task_queue.paused:
             return "пауза · черга зупинена"
         if progress["errors"]:
@@ -5680,6 +6007,14 @@ class BlackChpokIDE(tk.Tk):
                 summary = getattr(self.chat.runner, "last_answer", "") if self.chat.runner else ""
                 error = getattr(self.chat.runner, "last_error", "") if self.chat.runner else ""
                 self.case_book.end(ok=ok, summary=summary, error=error)
+                # Модель щойно відповіла — шапка не має лишатись «ОФЛАЙН».
+                # Перевірка HTTP під час генерації часто не встигає, і
+                # статус брехав, хоч відповідь уже була в чаті.
+                if ok and not data.get("degraded"):
+                    self._model_proved_online = True
+                    self._refresh_model_state(online=True, detail="модель відповіла")
+                elif not data.get("degraded"):
+                    self._model_proved_online = False
         except Exception:  # noqa: BLE001 - справи не мають ламати агента
             LOG.debug("Не вдалось оновити справу", exc_info=True)
 
@@ -5876,6 +6211,9 @@ class BlackChpokIDE(tk.Tk):
         # одну модель, а працює інша.
         self._adopt_model_path_for(name)
         self.agent.llm_settings = self.settings.llm
+        path = str(getattr(self.settings.engine, "model_path", "") or "")
+        if path and bool(getattr(self.settings.engine, "native", True)):
+            self._replace_native_model(path)
         self.settings.save()
         self._invalidate_model_state(reason=f"вибір моделі {name}")
         self._apply_context_limit()
@@ -6049,7 +6387,14 @@ class BlackChpokIDE(tk.Tk):
             self.set_status("Зміну проєкту скасовано: автономний режим працює далі.")
         return bool(answer)
 
-    def set_workspace(self, folder: Path) -> None:
+    def set_workspace(self, folder: Path, *, switch_chat: bool = True) -> None:
+        """Відкрити теку. Чат при цьому не переїжджає в чужу папку.
+
+        ``switch_chat=True`` (меню, недавні, вибір з провідника): якщо
+        поточний чат уже прив'язаний до іншої теки, відкривається чат цієї
+        теки або створюється новий. Запис старого чату лишається зі своєю
+        адресою.
+        """
         folder = Path(folder).resolve()
         if not folder.is_dir():
             messagebox.showerror("Папка", f"Не існує: {folder}", parent=self)
@@ -6061,6 +6406,43 @@ class BlackChpokIDE(tk.Tk):
             if not self._confirm_autonomous_project_switch(folder):
                 return
             self.stop_autonomous()
+        if switch_chat and not self._bind_open_folder(folder):
+            return
+        self._apply_workspace(folder)
+
+    def _bind_open_folder(self, folder: Path) -> bool:
+        """Чи можна застосувати теку до поточного чату.
+
+        ``False`` — чат уже переключено (інша розмова цієї теки або нова)
+        або перехід відхилено, бо агент ще працює. ``True`` — теку треба
+        застосувати до того чату, який уже відкритий.
+        """
+        active = self.chat_store.active()
+        if active is None:
+            self._start_chat_in(folder)
+            return False
+        bound = str(active.workspace or "").strip()
+        if not bound:
+            self.chat_store.bind_workspace(active.id, str(folder))
+            return True
+        if chat_store.same_folder(bound, str(folder)):
+            return True
+        if self.agent.busy:
+            self.set_status("Агент працює в теці цього чату. Зупини його (■), "
+                            "щоб відкрити іншу папку.")
+            return False
+        other = self.chat_store.chat_for_workspace(str(folder))
+        if other is not None and other.id != active.id:
+            self.open_chat(other.id)
+            return False
+        self._start_chat_in(folder)
+        return False
+
+    def _apply_workspace(self, folder: Path) -> None:
+        """Перемкнути агента, провідник і термінал на теку. Чат не створює."""
+        folder = Path(folder)
+        if not folder.is_dir():
+            return
         self.settings.remember_workspace(str(folder))
         self.settings.save()
         self.registry.set_root(folder)
@@ -6081,11 +6463,11 @@ class BlackChpokIDE(tk.Tk):
         self.after(300, self._load_mcp_async)
         self.set_status(f"Відкрито проєкт: {folder}")
         self._refresh_header()
-        # Проєкт вибрано — тепер чат можна відкривати. Якщо користувач
-        # прийшов сюди з екрана вибору, повертаємо його в розмову.
+        # Пігулка над полем вводу, підпис у шапці й бічна панель. Без цього
+        # меню вже показувало нову теку з галочкою, а в композері лишалась
+        # стара назва (на скріні: «site» у списку і «blackchpock_ai» внизу).
+        self.set_project(str(folder))
         self._close_project_gate()
-        if not self.chat_store.active():
-            self.new_chat_session()
 
     def open_recent_folder(self, folder: str) -> None:
         """Відкрити проєкт зі списку останніх (меню проєкту в шапці)."""
@@ -6330,6 +6712,43 @@ class BlackChpokIDE(tk.Tk):
                                           initialdir=self.settings.workspace)
         if path:
             self.open_path(Path(path))
+
+    def _agent_show_file(self, path: Path, content: str, kind: str) -> None:
+        """Модель читає або пише файл — показати його поруч із чатом.
+
+        Виклик іде з потоку агента, тому саме вікно оновлюється в головному
+        циклі. Чат лишається відкритим: редактор з'являється праворуч, а
+        вкладку можна закрити хрестиком.
+        """
+        target = Path(path)
+
+        def work() -> None:
+            self._hide_welcome()
+            if getattr(self, "_focus_mode", False):
+                self.toggle_focus_mode(False)
+            if not self._chat_shown:
+                self.show_chat(True)
+            if not self._centre_in_split() or getattr(self, "_view", "") != "workspace":
+                self.set_view("workspace")
+            try:
+                if kind == "write":
+                    self.tabs.show_model_text(target, content, typewrite=True)
+                else:
+                    self.tabs.open_file(target, focus=False)
+            except (tk.TclError, OSError, AttributeError):
+                LOG.debug("Файл моделі не відкрився в редакторі", exc_info=True)
+                return
+            try:
+                self.file_tree.reveal(target)
+            except (tk.TclError, AttributeError, OSError):
+                pass
+            self.outline.update_for(self.tabs.current())
+            self._remember_tab(target)
+            name = target.name or str(target)
+            opened = self.tabs.count()
+            self.set_status(f"{name} у редакторі · відкрито файлів: {opened}")
+
+        self._ui_call(work)
 
     def open_path(self, path: Path | str, line: int = 0) -> None:
         # Публічний вхід: сюди приходять і Path, і рядки з пошуку, палітри
@@ -6858,6 +7277,27 @@ class BlackChpokIDE(tk.Tk):
             self.bottom_tabs.select(self.task_center)
         else:
             self.bottom_tabs.select(self.terminal)
+        self._activate_bottom_tab()
+
+    def _on_bottom_tab(self, _event=None) -> None:
+        """Клік по вкладці робить те саме, що пункт меню."""
+        self._activate_bottom_tab()
+
+    def _activate_bottom_tab(self) -> None:
+        """Підготувати відкриту вкладку: список моделей, фокус пошуку, черга."""
+        try:
+            current = self.bottom_tabs.nametowidget(self.bottom_tabs.select())
+        except (tk.TclError, KeyError):
+            return
+        if current is self.model_hub:
+            self.model_hub.start()
+        elif current is self.task_center:
+            self.task_center.refresh()
+        elif current is self.project_search:
+            try:
+                self.project_search.query_entry.focus_set()
+            except tk.TclError:
+                pass
 
     def _place_bottom(self, show: bool) -> None:
         """Розмістити/прибрати нижню панель разом зі смугою перетягування."""
@@ -6992,7 +7432,10 @@ class BlackChpokIDE(tk.Tk):
                 continue
             if item.ok and not self.settings.llm.model and item.models:
                 self.settings.llm.model = item.models[0]
-            self._refresh_model_state(online=item.ok, detail=item.detail)
+            # Невдала перевірка порту не скасовує відповідь, яку модель
+            # вже дала, і не скасовує завантажений вбудований рушій.
+            reachable = bool(item.ok) or self._model_should_read_online()
+            self._refresh_model_state(online=reachable, detail=item.detail)
         # Локальний стан у підвалі навігації.
         local_online = [item for item in found
                         if providers._kind_of(item.base_url) == providers.LOCAL]
@@ -7005,6 +7448,75 @@ class BlackChpokIDE(tk.Tk):
             pass
         if self._model_selector is not None and self._model_selector.visible:
             self._fill_model_selector()
+
+    def _native_serves_current(self) -> bool:
+        """Чи завантажена у вбудований рушій саме вибрана модель."""
+        try:
+            if not self.native_runtime.engine.loaded:
+                return False
+            loaded = str(self.native_runtime.model_path or "")
+        except Exception:  # noqa: BLE001
+            return False
+        wanted = (str(getattr(self.settings.engine, "model_path", "") or "")
+                  or str(self.settings.llm.model or ""))
+        if not loaded or not wanted:
+            return False
+        from .native import bridge
+        return bridge.same_model(loaded, wanted)
+
+    def _model_should_read_online(self) -> bool:
+        """Не показувати «офлайн», якщо модель уже в пам'яті або щойно відповіла."""
+        if self._native_serves_current():
+            return True
+        return bool(getattr(self, "_model_proved_online", False))
+
+    def delete_model_entry(self, entry) -> None:
+        """Прибрати модель зі списку і видалити її файл після підтвердження."""
+        path = Path(str(getattr(entry, "path", "") or ""))
+        name = str(getattr(entry, "name", "") or path.stem or "модель")
+        if not path.is_file() or path.suffix.lower() != ".gguf":
+            messagebox.showinfo(
+                "Видалення моделі",
+                "Цей пункт не є файлом на диску (хмарна модель або назва "
+                "з сервера). Видаляти нічого.",
+                parent=self)
+            return
+        if self.agent.busy:
+            self.set_status("Агент ще працює — зачекай завершення, потім видали модель.")
+            return
+        agreed = messagebox.askyesno(
+            "Видалити модель?",
+            f"Прибрати «{name}» зі списку і видалити файл з диска?\n\n"
+            f"{path}\n\n"
+            "Файл буде стерто безповоротно. Папку проєкту це не чіпає.",
+            parent=self)
+        if not agreed:
+            return
+        try:
+            if self._native_serves_current():
+                from .native import bridge
+                if bridge.same_model(str(self.native_runtime.model_path or ""), str(path)):
+                    self.native_runtime.unload_model()
+                    self._model_proved_online = False
+        except Exception:  # noqa: BLE001 - вивантаження не має блокувати видалення
+            LOG.debug("Модель не вивантажилась перед видаленням", exc_info=True)
+        try:
+            from . import model_hub
+            model_hub.delete_local_model(path)
+        except OSError as exc:
+            messagebox.showerror("Не вдалось видалити", f"{path}\n\n{exc}", parent=self)
+            return
+        selected = str(self.settings.llm.model or "")
+        from .native import bridge
+        if selected and bridge.same_model(selected, path.stem):
+            self.settings.llm.model = ""
+            self.settings.engine.model_path = ""
+            self.settings.save()
+            self._model_proved_online = False
+            self._on_model_changed()
+            self._refresh_model_state(online=False, detail="модель видалено")
+        self._fill_model_selector()
+        self.set_status(f"Модель «{name}» видалено з диска.")
 
     def _refresh_model_state(self, *, online: bool, detail: str = "") -> None:
         """Оновити показ активної моделі В УСІХ місцях — з одного джерела.
@@ -7026,6 +7538,9 @@ class BlackChpokIDE(tk.Tk):
         перетворюється на підпис.
         """
         entry = providers.current_entry(self.settings)
+        if not online and self._model_should_read_online():
+            online = True
+            detail = detail or "модель у пам'яті й уже відповідала"
         entry.online = online
         self.header.set_model(entry)
         self.chat.set_online(online, detail)
@@ -7105,6 +7620,7 @@ class BlackChpokIDE(tk.Tk):
                 on_pick=self._on_model_selected,
                 on_refresh=self.probe_providers,
                 on_manage=self.open_settings,
+                on_delete=self.delete_model_entry,
             )
         elif self._model_selector.visible:
             self._model_selector.close()
@@ -7118,6 +7634,13 @@ class BlackChpokIDE(tk.Tk):
         if self._model_selector is None:
             return
         entries = providers.catalogue(self.settings, probed=self._probe_state)
+        loaded = ""
+        try:
+            if self.native_runtime.engine.loaded:
+                loaded = str(self.native_runtime.model_path or "")
+        except Exception:  # noqa: BLE001
+            loaded = ""
+        providers.mark_resident(entries, loaded)
         local = sum(1 for entry in entries if entry.is_local and entry.online)
         summary = self._probe_summary or f"точок входу: {len(entries)}"
         if local:
@@ -7137,11 +7660,15 @@ class BlackChpokIDE(tk.Tk):
                 LOG.warning("Не вдалось зберегти модель у чаті", exc_info=True)
         self.chat.set_chat_model(entry.name, self.chat.chat_effort)
         self._on_model_changed()
+        self._model_proved_online = False
+        self._replace_loaded_model(entry)
         # Реальний стан — з перевірки провайдера, а не «модель вибрано, отже
         # онлайн». Раніше тут стояло ``entry.online or True``: умова завжди
         # істинна, тож зелений індикатор світився навіть для недоступного
         # сервера, і користувач бачив «працює» перед реальною помилкою.
-        self._refresh_model_state(online=entry.online)
+        # Вбудований рушій, у якому ця модель уже сидить, — теж доказ.
+        self._refresh_model_state(
+            online=bool(entry.online) or self._native_serves_current())
         kind = "локальна" if entry.is_local else "хмарна"
         self.set_status(f"Модель: {entry.name} · {entry.provider_label} ({kind})")
 
@@ -7182,6 +7709,7 @@ class BlackChpokIDE(tk.Tk):
             recent=list(getattr(self.settings, "recent", []) or []),
             on_pick=self._pick_workspace_from_chat,
             on_add=self.open_folder_dialog,
+            on_forget=self.forget_recent_folder,
         )
         self._workspace_menu = menu
         target = anchor or getattr(self.chat, "workspace_btn", None) \
@@ -7203,6 +7731,35 @@ class BlackChpokIDE(tk.Tk):
                 self.set_status(f"Уже працюю з текою: {folder}")
                 return
         self.set_workspace(folder)
+
+    def forget_recent_folder(self, folder: str) -> None:
+        """Прибрати теку зі списку раніше вибраних. Папку на диску не чіпає."""
+        target = str(folder or "").strip()
+        if not target:
+            return
+        try:
+            key = str(Path(target).resolve()).lower()
+        except OSError:
+            key = target.replace("/", "\\").rstrip("\\").lower()
+        kept: list[str] = []
+        removed = False
+        for item in list(getattr(self.settings, "recent", []) or []):
+            text = str(item or "").strip()
+            try:
+                same = str(Path(text).resolve()).lower() == key
+            except OSError:
+                same = text.replace("/", "\\").rstrip("\\").lower() == key
+            if same:
+                removed = True
+                continue
+            kept.append(text)
+        if not removed:
+            self.set_status("Цієї теки немає в списку недавніх.")
+            return
+        self.settings.recent = kept
+        self.settings.save()
+        name = Path(target).name or target
+        self.set_status(f"«{name}» прибрано зі списку. Папка на диску лишилась.")
 
     def show_chat_mode_menu(self) -> None:
         """Спливне меню режиму чату: автономний і автоматизації.
@@ -7332,6 +7889,32 @@ class BlackChpokIDE(tk.Tk):
         reasoning = " · reasoning" if cloud_agents.is_reasoning_model(cloud.model) else ""
         self.set_status(f"Хмарний агент: {name} · {cloud.model}{reasoning}")
         self._cloud_active = True
+        return True
+
+    def _release_model_file(self, path: str) -> bool:
+        """Звільнити файл моделі перед видаленням з диска.
+
+        Поки модель лежить у відеопам'яті, Windows не дає стерти ``.gguf``.
+        Якщо агент саме нею відповідає, видалення відкладаємо.
+        """
+        from .native import bridge
+
+        loaded = ""
+        try:
+            loaded = str(self.native_runtime.model_path or "")
+        except Exception:  # noqa: BLE001
+            loaded = ""
+        same = bool(loaded) and bridge.same_model(loaded, path)
+        if same and self.agent.busy:
+            self.set_status("Агент ще відповідає цією моделлю — видали файл після відповіді.")
+            return False
+        if same:
+            try:
+                self.native_runtime.unload_model()
+            except Exception as exc:  # noqa: BLE001
+                self.set_status(f"Не вдалось вивантажити модель: {exc}")
+                return False
+            self.set_status("Модель вивантажено — файл можна видалити.")
         return True
 
     def _on_hub_model_ready(self, base_url: str, model_name: str) -> None:
@@ -7487,6 +8070,8 @@ class BlackChpokIDE(tk.Tk):
         self.theme.set_family(self.settings.ui.font_family or self.theme.mono_family,
                               self.settings.ui.font_size)
         self.tabs.apply_settings()
+        # GitHub: токен і «питати після роботи» могли змінити у вкладці.
+        self._sync_git_settings()
         self.probe_providers(silent=True)
         self._on_model_changed()
         self._apply_voice_settings()
@@ -7510,8 +8095,15 @@ class BlackChpokIDE(tk.Tk):
         wants_native = bool(getattr(self.settings.engine, "native", True))
         if wants_native:
             if self.native_runtime.loaded:
-                # Уже завантажено — лишається переконатись, що чат дивиться
-                # саме на вбудований рушій.
+                wanted = (str(getattr(self.settings.engine, "model_path", "") or "")
+                          or str(self.settings.llm.model or ""))
+                loaded = str(self.native_runtime.model_path or "")
+                from .native import bridge
+                if wanted and loaded and not bridge.same_model(loaded, wanted):
+                    self._replace_native_model(wanted)
+                    return
+                # Уже завантажено ту саму — лишається переконатись, що чат
+                # дивиться саме на вбудований рушій.
                 if not str(self.settings.llm.base_url or "").startswith("native://"):
                     self._on_native_model(self.native_runtime.model_path or "")
                 return
@@ -7550,6 +8142,69 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Пам'ять NEUROMESH недоступна: %s", exc, exc_info=True)
             self.set_status(f"Пам'ять недоступна: {exc}")
             return None
+
+    def _replace_loaded_model(self, entry) -> None:
+        """Нова модель займає місце попередньої, а не сідає поруч.
+
+        Локальний файл у вбудованому рушії завантажується замість того,
+        що вже в пам'яті. Хмара або HTTP-сервер вбудовану модель
+        вивантажують: інакше обидві тримають відеопам'ять.
+        """
+        native = bool(getattr(self.settings.engine, "native", True))
+        path = str(getattr(entry, "path", "") or "")
+        if getattr(entry, "is_local", False) and path and native:
+            self._replace_native_model(path)
+            return
+        if not getattr(self.native_runtime, "loaded", False):
+            return
+        try:
+            self.native_runtime.unload_model()
+        except Exception as exc:  # noqa: BLE001 - вибір моделі не має падати
+            LOG.warning("Не вдалось вивантажити попередню модель: %s", exc)
+            return
+        self.set_status("Попередню локальну модель вивантажено.")
+
+    def _replace_native_model(self, path: str) -> None:
+        """Вивантажити поточну модель рушія і завантажити іншу."""
+        target = str(path or "").strip()
+        if not target:
+            return
+        from .native import bridge
+
+        loaded = ""
+        try:
+            loaded = str(self.native_runtime.model_path or "")
+        except Exception:  # noqa: BLE001
+            loaded = ""
+        if loaded and bridge.same_model(loaded, target):
+            return
+        if self.agent.busy:
+            bridge.remember_model(target)
+            self.set_status(
+                "Агент ще працює — нова модель замінить поточну на наступному запиті.")
+            return
+        self.set_status(f"Замінюю модель на «{Path(target).stem or target}»…")
+        stored_layers = int(getattr(self.settings.engine, "native_gpu_layers", -1))
+        stored_cache = str(getattr(self.settings.engine, "native_cache_type", "") or "")
+        stored_flash = str(getattr(self.settings.engine, "native_flash_attn", "auto") or "auto")
+
+        def work() -> None:
+            try:
+                info = self.native_runtime.load_model(
+                    target,
+                    ctx=int(getattr(self.settings.engine, "ctx_size", 0) or 0),
+                    gpu_layers=None if stored_layers == -1 else stored_layers,
+                    cache_type=stored_cache,
+                    flash_attn=stored_flash)
+            except Exception as exc:  # noqa: BLE001 - показ у рядку стану
+                LOG.warning("Заміна моделі не вдалась: %s", exc)
+                detail = str(exc)
+                self._ui_call(lambda: self.set_status(
+                    f"Не вдалось замінити модель: {detail}"))
+                return
+            self._on_native_model(str(info.get("path") or target))
+
+        threading.Thread(target=work, daemon=True, name="model-replace").start()
 
     def _on_native_model(self, path: str) -> None:
         """Модель завантажено у власний рушій: підключити її до чату.
@@ -7845,33 +8500,55 @@ class BlackChpokIDE(tk.Tk):
         self.run_diagnostics()
 
     def show_shortcuts(self) -> None:
-        text = (
-            "ГАРЯЧІ КЛАВІШІ\n\n"
-            "Ctrl+N          новий файл\n"
-            "Ctrl+O          відкрити файл\n"
-            "Ctrl+S          зберегти\n"
-            "Ctrl+Shift+S    зберегти як\n"
-            "Ctrl+W          закрити вкладку\n"
-            "Ctrl+P          швидке відкриття файлу\n"
-            "Ctrl+Shift+P    командна палітра\n"
-            "Ctrl+F          пошук у файлі\n"
-            "Ctrl+Shift+F    пошук у проєкті\n"
-            "Ctrl+G          перейти до рядка\n"
-            "Ctrl+/          коментувати рядок\n"
-            "Ctrl+D          дублювати рядок\n"
-            "Ctrl+B          бічна панель\n"
-            "Ctrl+Alt+B      панель агента\n"
-            "Ctrl+Alt+K      скіли агента\n"
-            "Ctrl+Alt+J      черга завдань\n"
-            "Ctrl+`          термінал\n"
-            "Ctrl+Alt+C      перервати команду в терміналі\n"
-            "Ctrl+= / Ctrl+- розмір шрифту\n"
-            "Ctrl+Alt+Enter  надіслати файл агенту\n"
-            "F5              запустити файл\n"
-            "Ctrl+F5         запустити тести\n"
-            "Ctrl+,          налаштування\n"
-        )
+        """Гарячі клавіші — ЗГЕНЕРОВАНІ з реєстру команд, а не списком.
+
+        Раніше тут лежав рукописний текст. Він уже розійшовся з кодом:
+        у переліку був ``Ctrl+D — дублювати рядок``, якого в реєстрі немає,
+        натомість бракувало команд, доданих пізніше. Користувач бачив
+        клавішу, що нічого не робить, і не бачив робочих.
+
+        Тепер перелік складається з тих самих :class:`commands.Command`, які
+        реально зареєстровані, тож розбіжність неможлива.
+        """
+        rows: list[str] = []
+        for command in sorted(commands.all_commands(),
+                              key=lambda item: (item.category, item.label)):
+            if not command.shortcut:
+                continue
+            rows.append(f"{command.shortcut:<15} {command.label}")
+        text = "ГАРЯЧІ КЛАВІШІ\n\n" + "\n".join(rows)
+        text += ("\n\nПовний довідник (усі команди, слеш-команди й фрази "
+                 "для агента) — пункт «Довідник користувача» в меню "
+                 "«Довідка».")
         messagebox.showinfo(APP_NAME, text, parent=self)
+
+    def show_user_guide(self) -> None:
+        """Відкрити довідник користувача окремою вкладкою редактора.
+
+        Чому вкладка, а не діалог: довідник довгий (усі команди, слеш-команди
+        й фрази агента), у ньому працює пошук редактора (Ctrl+F), його можна
+        скопіювати або зберегти. ``messagebox`` для такого обсягу не годиться:
+        текст не прокручується й не шукається.
+        """
+        try:
+            body = commands.reference_text()
+        except Exception as exc:  # noqa: BLE001 - довідка не має падати
+            LOG.warning("Довідник не складено: %s", exc, exc_info=True)
+            messagebox.showwarning(APP_NAME, f"Довідник недоступний: {exc}",
+                                   parent=self)
+            return
+        editor = self.tabs.new_file()
+        try:
+            editor.text.insert("1.0", body)
+            editor.text.mark_set("insert", "1.0")
+            editor.text.see("1.0")
+            # Довідник — не робочий файл: не позначаємо як змінений, щоб
+            # закриття вкладки не питало «зберегти?».
+            editor.modified = False
+            editor.title = "Довідник користувача"
+        except (tk.TclError, AttributeError):
+            LOG.debug("Довідник не вставлено у вкладку", exc_info=True)
+        self.set_status("Довідник користувача відкрито у вкладці.")
 
     def show_about(self) -> None:
         messagebox.showinfo(

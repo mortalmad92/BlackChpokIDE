@@ -21,6 +21,14 @@ for stream in (sys.stdout, sys.stderr):
 
 failures = 0
 
+#: Скільки чекати на завершення роботи агента в живому прогоні (секунди).
+#:
+#: Стеля навмисно велика: справжня локальна модель 14B на цьому залізі
+#: відповідає десятки секунд. Це не «поблажка тесту» — це єдина межа, за
+#: якою справжнє зависання справді видно. Раніше стояло фіксоване вікно
+#: 4 с, і тест падав просто тому, що модель ще працювала.
+AGENT_BUDGET_S = 180.0
+
 
 def check(name: str, condition: bool, detail: str = "") -> None:
     global failures
@@ -34,6 +42,34 @@ def pump(app, seconds: float) -> None:
     while time.time() < deadline:
         app.update()
         time.sleep(0.02)
+
+
+def pump_until(app, predicate, timeout: float) -> bool:
+    """Крутити цикл подій, доки ``predicate()`` не стане істинним.
+
+    Навіщо замість фіксованого ``pump(app, 4.0)``. Час роботи залежить від
+    того, ЧИМ відповідає агент:
+
+    * офлайн-роутер — частки секунди;
+    * справжня локальна модель на 14B — десятки секунд.
+
+    Фіксовані 4 секунди проходили лише для першого випадку. Коли агент
+    законно починає працювати з моделлю (а він це робить, щойно вона є),
+    тест падав на «справа завершилась — виконується», хоч агент просто ще
+    працював. Тепер чекаємо на СПРАВЖНЮ ознаку завершення й маємо стелю,
+    щоб справжнє зависання все одно було видно.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.update()
+        time.sleep(0.02)
+        try:
+            if predicate():
+                return True
+        except Exception:  # noqa: BLE001 - стан може ще не існувати
+            continue
+    app.update()
+    return False
 
 
 def main() -> int:
@@ -67,7 +103,20 @@ def main() -> int:
     # Без моделі агент піде офлайн-роутером — але події ті самі.
     app.agent.llm_settings.model = ""
     app.chat._send("покажи файли")
-    pump(app, 4.0)
+
+    def finished() -> bool:
+        """Агент завершив роботу й жоден крок справи не лишився активним."""
+        if getattr(app.agent, "busy", False):
+            return False
+        if not app.case_book.cases:
+            return False
+        current = app.case_book.cases[0]
+        return (current.status != "виконується"
+                and all(step.status != "виконується" for step in current.steps))
+
+    done = pump_until(app, finished, timeout=AGENT_BUDGET_S)
+    check("агент завершив роботу за відведений час", done,
+          f"чекали {int(AGENT_BUDGET_S)} с")
 
     case = app.case_book.cases[0] if app.case_book.cases else None
     check("справа створилась із реального запиту", case is not None)

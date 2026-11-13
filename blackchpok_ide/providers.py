@@ -428,6 +428,25 @@ def current_entry(settings: Any) -> ModelEntry:
     )
 
 
+def mark_resident(entries: list[ModelEntry], loaded_path: str) -> None:
+    """Позначити моделі, які зараз у пам'яті рушія, як доступні.
+
+    Файл на диску сам по собі не «онлайн». Але якщо саме він завантажений
+    і щойно відповів, червона крапка в списку бреше.
+    """
+    loaded = str(loaded_path or "").strip()
+    if not loaded:
+        return
+    try:
+        from .native import bridge
+    except Exception:  # noqa: BLE001
+        return
+    for entry in entries:
+        token = entry.path or entry.name
+        if token and bridge.same_model(loaded, token):
+            entry.online = True
+
+
 def catalogue(settings: Any, *, probed: Optional[dict[str, ProbeOutcome]] = None) -> list[ModelEntry]:
     """Повний список моделей: поточний сервер, локальні файли, хмара.
 

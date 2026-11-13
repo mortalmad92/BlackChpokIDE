@@ -1,8 +1,10 @@
-"""Спливне вікно з розбивкою контексту по складових.
+"""Спливне вікно використання контексту.
 
-Показує те саме, що сучасні агентні редактори: скільки контексту займає
-системна підказка, описи інструментів і повідомлення, із відсотками та
-смугою розподілу.
+Числа беруться з відповіді локальної моделі (``prompt_tokens``) і з
+реального вікна (``n_ctx``). Частини — системний промпт, схеми
+інструментів і повідомлення — це те, що справді пішло в останній запит.
+Окремих «правил», «скілів» чи «субагентів» тут немає: модель їх не
+рахує окремо, тож вигадувати рядки не можна.
 """
 
 from __future__ import annotations
@@ -12,8 +14,8 @@ from typing import Optional
 
 from . import context_stats, theme, widgets
 
-BAR_WIDTH = 250
-BAR_HEIGHT = 5
+BAR_WIDTH = 360
+BAR_HEIGHT = 10
 
 
 class ContextPopover(tk.Toplevel):
@@ -45,61 +47,70 @@ class ContextPopover(tk.Toplevel):
         body.columnconfigure(1, weight=1)
 
         stats = self.stats
-        breakdown = stats.breakdown
-        fill = stats.fill_percent if self.limit else 0.0
+        used = int(stats.last_prompt_tokens or 0)
+        real = used > 0
+        fill = stats.fill_percent if (self.limit and real) else 0.0
+        breakdown = stats.breakdown if real else context_stats.ContextBreakdown()
 
-        # ── заголовок: відсоток і «~N / M»
+        tk.Label(body, text="ВИКОРИСТАННЯ КОНТЕКСТУ", bg=theme.BG_CARD,
+                 fg=theme.FG_FAINT, font=("Segoe UI", 8, "bold"),
+                 anchor="w").grid(row=0, column=0, columnspan=3, sticky="ew",
+                                  padx=16, pady=(14, 0))
+
         head = tk.Frame(body, bg=theme.BG_CARD)
-        head.grid(row=0, column=0, columnspan=3, sticky="ew", padx=14, pady=(12, 0))
+        head.grid(row=1, column=0, columnspan=3, sticky="ew", padx=16, pady=(6, 0))
         head.columnconfigure(1, weight=1)
 
         self.percent_label = tk.Label(
-            head, text=f"{fill:.0f}%", bg=theme.BG_CARD, fg=theme.FG_BRIGHT,
-            font=("Segoe UI", 17, "bold"),
+            head, text=(f"{fill:.0f}% заповнено" if real else "немає даних"),
+            bg=theme.BG_CARD, fg=theme.FG_BRIGHT,
+            font=("Segoe UI", 16, "bold"),
         )
-        self.percent_label.grid(row=0, column=0, rowspan=2, sticky="w")
-
-        tk.Label(head, text="використано", bg=theme.BG_CARD, fg=theme.FG_DIM,
-                 font=("Segoe UI", 8), anchor="w").grid(
-            row=0, column=1, sticky="w", padx=(10, 0))
+        self.percent_label.grid(row=0, column=0, sticky="w")
 
         self.total_label = tk.Label(
-            head, text=self._total_text(), bg=theme.BG_CARD, fg=theme.FG,
-            font=("Segoe UI", 9, "bold"), anchor="e",
+            head, text=self._total_text() if real else "—",
+            bg=theme.BG_CARD, fg=theme.FG, font=("Segoe UI", 10), anchor="e",
         )
-        self.total_label.grid(row=0, column=2, sticky="e")
-        tk.Label(head, text="контексту", bg=theme.BG_CARD, fg=theme.FG_DIM,
-                 font=("Segoe UI", 8), anchor="e").grid(
-            row=1, column=2, sticky="e")
+        self.total_label.grid(row=0, column=1, sticky="e")
 
-        # ── смуга розподілу
         canvas = tk.Canvas(body, width=BAR_WIDTH, height=BAR_HEIGHT,
                            bg=theme.BG_CARD, bd=0, highlightthickness=0)
-        canvas.grid(row=1, column=0, columnspan=3, sticky="ew", padx=14, pady=(10, 4))
+        canvas.grid(row=2, column=0, columnspan=3, sticky="ew",
+                    padx=16, pady=(12, 8))
         self.canvas = canvas
-        self._draw_bar(canvas, breakdown)
+        self._draw_bar(canvas, breakdown, used=used)
 
-        tk.Frame(body, bg=theme.BORDER, height=1).grid(
-            row=2, column=0, columnspan=3, sticky="ew", pady=(8, 6))
-
-        # ── складові
         colours = {
             "Системна підказка": theme.FG_DIM,
             "Опис інструментів": theme.PURPLE,
             "Повідомлення": theme.ACCENT,
         }
         row_index = 3
-        for label, tokens in breakdown.parts:
-            self._part_row(body, row_index, label, tokens, colours.get(label, theme.FG))
-            row_index += 1
-
-        if not breakdown.estimated_total and not stats.last_prompt_tokens:
-            tk.Label(body, text="Даних ще немає — надішли запит агенту.",
-                     bg=theme.BG_CARD, fg=theme.FG_FAINT, font=("Segoe UI", 8),
-                     anchor="w", justify="left").grid(
-                row=row_index, column=0, columnspan=3, sticky="ew", padx=14, pady=(2, 10))
+        if real:
+            for label, tokens in breakdown.parts:
+                if tokens <= 0:
+                    continue
+                self._part_row(body, row_index, label, tokens,
+                               colours.get(label, theme.FG))
+                row_index += 1
+            note = "Число зліва — prompt_tokens останньої відповіді моделі."
+            if self.limit:
+                note += " Смуга — частка її вікна."
+            tk.Label(body, text=note, bg=theme.BG_CARD, fg=theme.FG_FAINT,
+                     font=("Segoe UI", 8), anchor="w", wraplength=BAR_WIDTH,
+                     justify="left").grid(
+                row=row_index, column=0, columnspan=3, sticky="ew",
+                padx=16, pady=(8, 14))
         else:
-            self._extra_rows(body, row_index)
+            tk.Label(
+                body,
+                text="Модель ще не відповіла. Тут з’являться токени з її "
+                     "відповіді, а не оцінка навмання.",
+                bg=theme.BG_CARD, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                anchor="w", justify="left", wraplength=BAR_WIDTH,
+            ).grid(row=row_index, column=0, columnspan=3, sticky="ew",
+                   padx=16, pady=(4, 14))
 
     def _part_row(self, body: tk.Frame, row: int, label: str, tokens: int,
                   colour: str) -> None:
@@ -136,10 +147,10 @@ class ContextPopover(tk.Toplevel):
 
     # ── розрахунки й малювання ─────────────────────────────────────────────
     def _total_text(self) -> str:
-        used = self.stats.last_prompt_tokens or self.stats.breakdown.estimated_total
+        used = int(self.stats.last_prompt_tokens or 0)
         if self.limit:
-            return f"{self._short_tokens(used)} / {self._short_tokens(self.limit)}"
-        return self._short_tokens(used)
+            return f"{self._short_tokens(used)} / {self._short_tokens(self.limit)} токенів"
+        return f"{self._short_tokens(used)} токенів"
 
     @staticmethod
     def _short_tokens(tokens: int) -> str:
@@ -155,20 +166,18 @@ class ContextPopover(tk.Toplevel):
         text = f"{value:.1f}".rstrip("0").rstrip(".").replace(".", ",")
         return f"~{text}K"
 
-    def _draw_bar(self, canvas: tk.Canvas, breakdown: context_stats.ContextBreakdown) -> None:
-        """Смуга: тонкі поділки + заповнена частина трьома кольорами."""
-        limit = self.limit or 1
-        total = breakdown.total_tokens or breakdown.estimated_total
-        if not total:
-            canvas.create_rectangle(0, 0, BAR_WIDTH, BAR_HEIGHT,
-                                    fill=theme.BG_INPUT, outline="")
+    def _draw_bar(self, canvas: tk.Canvas, breakdown: context_stats.ContextBreakdown,
+                  *, used: int) -> None:
+        """Смуга вікна: кольори частин і сірий хвіст, якого модель не зайняла."""
+        canvas.create_rectangle(0, 0, BAR_WIDTH, BAR_HEIGHT,
+                                fill=theme.BG_INPUT, outline="")
+        if used <= 0:
             return
-
-        canvas.create_rectangle(0, 0, BAR_WIDTH, BAR_HEIGHT, fill=theme.BG_INPUT, outline="")
+        span = self.limit if self.limit > 0 else used
         x = 0.0
         colours = (theme.FG_DIM, theme.PURPLE, theme.ACCENT)
         for index, (_label, tokens) in enumerate(breakdown.parts):
-            width = BAR_WIDTH * (tokens / limit)
+            width = BAR_WIDTH * (max(0, tokens) / span)
             if width <= 0:
                 continue
             x2 = min(BAR_WIDTH, x + width)

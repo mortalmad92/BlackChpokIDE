@@ -321,7 +321,10 @@ class ProjectSearch(ttk.Frame):
 
     def search_for(self, needle: str) -> None:
         root = self.root_provider()
-        if not root or not needle:
+        if not needle:
+            return
+        if not root:
+            self.summary.configure(text="Спершу вибери теку проєкту — шукати ніде.")
             return
         try:
             hits = ws.search_text(root, needle, glob=self.glob_entry.get().strip(),

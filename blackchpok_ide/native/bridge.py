@@ -72,17 +72,45 @@ def pending_model() -> str:
     return _pending_model
 
 
+def same_model(loaded: str, wanted: str) -> bool:
+    """Чи це та сама модель: повний шлях, ім'я файлу або ключ без розширення."""
+    left = str(loaded or "").strip()
+    right = str(wanted or "").strip()
+    if not right:
+        return True
+    if not left:
+        return False
+    a = Path(left)
+    b = Path(right)
+    names = {a.name.lower(), a.stem.lower()}
+    if b.name.lower() in names or b.stem.lower() in names:
+        return True
+    try:
+        if a.exists() and b.exists() and a.resolve() == b.resolve():
+            return True
+    except OSError:
+        pass
+    return (left.replace("/", "\\").rstrip("\\").lower()
+            == right.replace("/", "\\").rstrip("\\").lower())
+
+
 def _ensure_loaded(model: str = "") -> NativeRuntime:
-    """Гарантувати, що рушій має завантажену модель."""
+    """Гарантувати, що завантажена САМЕ запитана модель.
+
+    Якщо в пам'яті вже інша — ``load_model`` спершу її вивантажує
+    (``Engine.load`` кличе ``unload``). Дві локальні моделі одночасно
+    не тримаються: нова замінює попередню.
+    """
     rt = runtime()
-    if rt.engine.loaded:
-        return rt
     target = (model or _pending_model or "").strip()
+    if rt.engine.loaded and (not target or same_model(rt.engine.model_path, target)):
+        return rt
     if not target:
         raise EngineError(
             "Вбудований рушій не має завантаженої моделі. "
             "Відкрий «Налаштування → AI Runtime» і натисни «Завантажити».")
     rt.load_model(target)
+    remember_model("")
     return rt
 
 
@@ -170,6 +198,7 @@ def chat_stream(
     on_reasoning: Callable[[str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     known_tools: Iterable[str] | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """Потокова генерація: ``on_text`` викликається на кожен фрагмент.
 
@@ -195,7 +224,8 @@ def chat_stream(
     started = time.perf_counter()
     for chunk in rt.generate_stream(
             messages, params=_params(temperature, max_tokens), tools=tools,
-            should_stop=should_stop, known_tools=known_tools):
+            should_stop=should_stop, known_tools=known_tools,
+            timeout=float(timeout) if timeout and timeout > 0 else 0.0):
         if chunk.get("done"):
             stats = chunk.get("stats")
             tool_calls = chunk.get("tool_calls") or []

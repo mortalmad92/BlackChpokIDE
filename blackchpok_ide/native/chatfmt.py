@@ -385,9 +385,14 @@ class ToolCallParser:
     що це не початок JSON-об'єкта.
     """
 
-    def __init__(self, *, known: set[str] | None = None) -> None:
+    def __init__(self, *, known: set[str] | None = None,
+                 dialect: Any = None) -> None:
         self.known = known
         self.text = ""
+        #: Діалект інструментів моделі. Для Mistral потрібен окремий режим:
+        #: виклик починається маркером ``[TOOL_CALLS]``, а не дужкою, тож
+        #: звичайний пошук ``{`` показав би користувачу сирі аргументи.
+        self.dialect = dialect
         self._buffer = ""
         self._inside = False
 
@@ -421,6 +426,19 @@ class ToolCallParser:
                     # Звичайний JSON у відповіді — це ВМІСТ, показуємо.
                     visible.append(closed)
                 continue
+            # ── Маркер виклику в діалекті моделі ──────────────────────────
+            # Три стани, і плутати їх не можна: «немає маркера» → звичайна
+            # логіка з дужками; «оброблено» → буфер зсунуто, йдемо далі;
+            # «тримати» → виклик ще не дописаний, чекаємо нових токенів.
+            # Раніше «тримати» поверталось як «оброблено», і коли нічого не
+            # з'їдалось (напр. прийшло лише ``[``), цикл крутився вічно.
+            state, before = self._open_marker()
+            if before:
+                visible.append(before)
+            if state == "hold":
+                break
+            if state == "handled":
+                continue
             position = self._buffer.find("{")
             if position < 0:
                 # Хвіст може бути початком JSON — тримаємо один символ.
@@ -433,6 +451,53 @@ class ToolCallParser:
             self._buffer = self._buffer[position:]
             self._inside = True
         return "".join(visible)
+
+    def _open_marker(self) -> tuple[str, str]:
+        """Обробити маркер виклику в діалекті моделі.
+
+        Повертає ``(стан, текст_до_маркера)``:
+
+        * ``("none", "")`` — маркера немає, далі працює логіка з дужками;
+        * ``("hold", …)`` — виклик почався, але не дописаний: чекаємо токенів;
+        * ``("handled", …)`` — виклик приховано, буфер зсунуто.
+
+        Виклик Mistral має вигляд ``[TOOL_CALLS]write_file[ARGS]{…}``: дужка
+        стоїть у СЕРЕДИНІ виклику, тому звичайна логіка показала б
+        користувачу ім'я інструмента й сирі аргументи замість відповіді.
+        """
+        marker = getattr(self.dialect, "call_marker", "") if self.dialect else ""
+        if marker != "[TOOL_CALLS]":
+            return "none", ""
+        index = self._buffer.find(marker)
+        if index < 0:
+            # Хвіст може бути ПОЧАТКОМ маркера (модель віддає його по
+            # токенах: «[», «TOOL», «_CALLS]»). Притримуємо рівно стільки
+            # символів, щоб не показати шматок службового тегу в чаті.
+            keep = _partial_marker(self._buffer, marker)
+            if not keep:
+                return "none", ""
+            visible = self._buffer[:-keep]
+            self._buffer = self._buffer[-keep:]
+            # Більше нічого не прийшло — далі чекаємо токенів.
+            return "hold", visible
+        visible = self._buffer[:index]
+        rest = self._buffer[index + len(marker):]
+        args_at = rest.find("[ARGS]")
+        if args_at < 0:
+            # Ім'я чи маркер аргументів ще не прийшли — тримаємо виклик.
+            self._buffer = self._buffer[index:]
+            return "hold", visible
+        body_start = args_at + len("[ARGS]")
+        try:
+            _data, end = json.JSONDecoder().raw_decode(rest, body_start)
+        except json.JSONDecodeError:
+            # JSON ще не завершено (або він зламаний). Тримаємо далі — на
+            # ``finish()`` все одно забере :func:`strip_native_calls`.
+            self._buffer = self._buffer[index:]
+            return "hold", visible
+        self.text += self._buffer[index:index + len(marker) + end]
+        self._buffer = rest[end:]
+        return "handled", visible
 
     def _is_call(self, payload: str) -> bool:
         """Чи цей JSON-об'єкт є викликом інструмента."""
@@ -477,6 +542,16 @@ class ToolCallParser:
         self._buffer = ""
         if not tail:
             return ""
+        # ── Обірваний виклик у діалекті моделі — НЕ показуємо ────────────
+        # Замірено на скріншоті користувача: модель спинилась посеред
+        # аргументів, і в чаті лишалося ``let[ARGS]`` з уривком JSON.
+        # Маркер виклику в залишку означає, що це службовий текст, а не
+        # відповідь: віддаємо те, що стоїть ДО маркера.
+        marker = getattr(self.dialect, "call_marker", "") if self.dialect else ""
+        if marker and marker in tail:
+            head = tail[:tail.find(marker)]
+            self.text += tail[len(head):]
+            return head.strip()
         if extract_tool_calls(tail, known=self.known):
             return ""
         return tail
@@ -488,6 +563,29 @@ class ToolCallParser:
     def calls(self) -> list[ParsedToolCall]:
         """Розпізнані виклики (після завершення стріму)."""
         return extract_tool_calls(self.text, known=self.known)
+
+    def native_calls(self) -> list[dict[str, Any]]:
+        """Виклики у ВЛАСНОМУ форматі моделі (``[TOOL_CALLS]``, ``<tool_call>``).
+
+        Окремо від :meth:`calls`, бо той розуміє лише JSON-об'єкт. Виклик
+        Mistral — не JSON, тож без цього методу рушій вважав його
+        звичайним текстом, приховував із стріму й повертав ``tool_calls=[]``.
+        """
+        from .. import tool_dialect
+
+        payload = self.text
+        if not payload:
+            return []
+        return tool_dialect.extract_native_calls(payload, self.known)
+
+
+def _partial_marker(text: str, marker: str) -> int:
+    """Довжина хвоста ``text``, який є початком ``marker`` (0 — немає)."""
+    limit = min(len(text), len(marker) - 1)
+    for size in range(limit, 0, -1):
+        if marker.startswith(text[-size:]):
+            return size
+    return 0
 
 
 def has_native_tool_support(template: str) -> bool:

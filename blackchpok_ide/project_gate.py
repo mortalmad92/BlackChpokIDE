@@ -77,7 +77,8 @@ class ProjectGate(tk.Frame):
         self.create_btn = widgets.Chip(buttons, "＋  Створити нову",
                                        self._create, font=("Segoe UI", 10))
         self.create_btn.pack(side="left")
-        widgets.Tip(self.create_btn, "Створити порожню теку й відкрити її")
+        widgets.Tip(self.create_btn,
+                    "Обери місце у провіднику й створи теку кнопкою «Нова папка»")
 
         self.hint = tk.Label(body, text="", bg=theme.BG_CARD, fg=theme.FG_FAINT,
                              font=("Segoe UI", 8), justify="center", wraplength=460)

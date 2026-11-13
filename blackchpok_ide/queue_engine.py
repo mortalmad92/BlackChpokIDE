@@ -531,10 +531,19 @@ class TaskQueue:
                 return True
         return False
 
-    def clear_finished(self) -> int:
+    def clear_finished(self, chat_id: str = "") -> int:
+        """Прибрати завершені кроки. З ``chat_id`` — лише цього чату."""
         keep = {PENDING, ANALYZING, RUNNING, VERIFYING}
+        mine = str(chat_id or "").strip()
         before = len(self.tasks)
-        self.tasks = [t for t in self.tasks if t.status in keep]
+        kept: list[QueueTask] = []
+        for task in self.tasks:
+            if task.status in keep:
+                kept.append(task)
+                continue
+            if mine and str(getattr(task, "chat_id", "") or "") != mine:
+                kept.append(task)
+        self.tasks = kept
         removed = before - len(self.tasks)
         if removed:
             self._changed()
@@ -692,10 +701,9 @@ class TaskQueue:
             # обмежень» (порожній ``chat_id``). Раніше ``not task.chat_id``
             # означало «належить УСІМ», і чат Б виконував задачу чату А.
             #
-            # Сироти не «виконує перший-ліпший чат»: їх прибирає
-            # :meth:`adopt_orphans`, коли чат стає активним (див.
-            # ``QueueExecutor.start_next``). Без цього кроки плану, створені
-            # ДО появи чату, не діставалися нікому, і черга стояла.
+            # Сироти не «виконує перший-ліпший чат». Підхоплення чужих
+            # кроків у щойно відкритий чат переносило б роботу в його теку.
+            # Новий план отримує ``chat_id`` до створення кроків.
             if not mine:
                 return True
             return str(getattr(task, "chat_id", "") or "") == mine
@@ -915,15 +923,25 @@ class TaskQueue:
                 result[task.status] += 1
         return result
 
-    def progress(self) -> dict[str, int]:
-        """Зведення для шапки центру завдань: усього / готово / у черзі / збої."""
-        counts = self.counts()
+    def progress(self, chat_id: str = "") -> dict[str, int]:
+        """Зведення для шапки: усього / готово / у черзі / збої.
+
+        З ``chat_id`` лічильники лише цього чату. Чужі кроки не
+        потрапляють у шапку відкритої розмови.
+        """
+        mine = str(chat_id or "").strip()
+        tasks = [task for task in self.tasks
+                 if not mine or str(getattr(task, "chat_id", "") or "") == mine]
+        counts = {status: 0 for status in STATUS_ORDER}
+        for task in tasks:
+            if task.status in counts:
+                counts[task.status] += 1
         return {
-            "total": len(self.tasks),
+            "total": len(tasks),
             "done": counts[DONE],
             "pending": counts[PENDING],
             "errors": counts[FAILED],
-            "active": sum(counts[s] for s in ACTIVE_STATUSES),
+            "active": sum(counts[status] for status in ACTIVE_STATUSES),
             "paused": counts[PAUSED],
         }
 

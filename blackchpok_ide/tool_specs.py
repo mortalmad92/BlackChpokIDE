@@ -225,6 +225,34 @@ _NOTES: dict[str, dict[str, Any]] = {
         "failure_modes": ("змін немає → порожній diff, це нормально",),
         "example": {},
     },
+    "git_remote_info": {
+        "purpose": "стан репозиторію й адреса GitHub (для питання користувачу)",
+        "category": "exec", "risk": RISK_READ_ONLY,
+        "side_effects": "немає",
+        "parallel_safe": True,
+        "failure_modes": (
+            "не git-репозиторій → скажи це прямо й запропонуй git init",
+            "origin не налаштовано → назви це, а не вгадуй адресу",
+        ),
+        "example": {},
+    },
+    "git_publish": {
+        "purpose": "закомітити зміни й відправити на GitHub",
+        "category": "exec", "risk": RISK_EXTERNAL, "parallel_safe": False,
+        "side_effects": (
+            "НЕЗВОРОТНО змінює віддалений репозиторій на GitHub і створює "
+            "коміт у локальній історії",
+        ),
+        "failure_modes": (
+            "немає згоди (confirm=false) → нічого не робить, це нормально",
+            "немає токена або прав → покажи причину й що зробити",
+            "віддалена гілка пішла вперед → запропонуй git pull, не force",
+            "серед змін є .env чи ключі → відмова, це захист користувача",
+        ),
+        "timeout": 180.0, "retries": 0,
+        "example": {"message": "оновлено app.py (BlackChpok IDE)",
+                    "confirm": True},
+    },
     "project_tree": {
         "purpose": "дерево проєкту",
         "category": "files", "risk": RISK_READ_ONLY,

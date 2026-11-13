@@ -17,6 +17,13 @@ for stream in (sys.stdout, sys.stderr):
 
 failures = 0
 
+#: Скільки чекати на завершення роботи агента в живому прогоні (секунди).
+#:
+#: Стеля велика навмисно: справжня локальна модель 14B відповідає десятки
+#: секунд. Раніше стояло фіксоване вікно 4 с, і тест падав просто тому, що
+#: модель ще працювала — не через дефект коду.
+AGENT_BUDGET_S = 180.0
+
 
 def check(name: str, condition: bool, detail: str = "") -> None:
     global failures
@@ -30,6 +37,28 @@ def pump(app, seconds: float) -> None:
     while time.time() < deadline:
         app.update()
         time.sleep(0.02)
+
+
+def pump_until(app, predicate, timeout: float) -> bool:
+    """Крутити цикл подій, доки ``predicate()`` не стане істинним.
+
+    Фіксоване вікно очікування тут неправильне: офлайн-роутер відповідає
+    за частки секунди, а справжня локальна модель 14B — за десятки секунд.
+    Тест падав на «журнал завершено», хоч агент просто ще працював. Тепер
+    чекаємо на СПРАВЖНЮ ознаку завершення, зі стелею — щоб справжнє
+    зависання все одно було видно.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.update()
+        time.sleep(0.02)
+        try:
+            if predicate():
+                return True
+        except Exception:  # noqa: BLE001 - стан може ще не існувати
+            continue
+    app.update()
+    return False
 
 
 def main() -> int:
@@ -59,7 +88,26 @@ def main() -> int:
 
     app.agent.llm_settings.model = ""
     app.chat._send("покажи файли")
-    pump(app, 4.0)
+
+    def work_done() -> bool:
+        """Агент закінчив: не працює й журнал справді припинив біг."""
+        if getattr(app.agent, "busy", False):
+            return False
+        card = app.chat._log
+        if card is None:
+            for item in app.chat._cards:
+                candidate = getattr(item, "log", None)
+                if candidate is not None:
+                    card = candidate
+                    break
+        if card is None:
+            return False
+        # Журнал мусить мати хоч один рядок кроку і не крутити таймер.
+        return bool(card._rows) and card.running is False
+
+    waited = pump_until(app, work_done, timeout=AGENT_BUDGET_S)
+    check("агент завершив роботу за відведений час", waited,
+          f"чекали {int(AGENT_BUDGET_S)} с")
 
     log = app.chat._log
     # Журнал міг завершитись і відчепитись — тоді шукаємо картку журналу.

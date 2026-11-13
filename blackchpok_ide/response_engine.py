@@ -47,6 +47,9 @@ _PROTOCOL_MARKERS: tuple[str, ...] = (
     "tool_call>", "<function=", "<|im_start|>", "<|im_end|>",
     "[результат інструмента",
     "ПОМИЛКА: ",
+    # Маркери ВЛАСНОГО формату моделі (Mistral). Заміряно на скріншоті
+    # користувача: обірваний виклик лишав у чаті ``let[ARGS]``.
+    "[TOOL_CALLS]", "[ARGS]", "[AVAILABLE_TOOLS]", "[TOOL_RESULTS]",
 )
 
 #: Рядки-рамки, які додає сам агент для моделі.
@@ -133,6 +136,19 @@ def strip_protocol(text: str) -> str:
     body = re.sub(r"<tool_call>.*?</tool_call>", "", body, flags=re.DOTALL)
     body = re.sub(r"<tools>.*?</tools>", "", body, flags=re.DOTALL)
     body = re.sub(r"<\|?im_(start|end)\|?>", "", body)
+    # 1б. Службові маркери ВЛАСНОГО формату моделі (Mistral).
+    # ``[TOOL_CALLS]write_file[ARGS]{…}`` і обірвані хвости на кшталт
+    # ``let[ARGS]{"path": "a`` — це виклик, а не відповідь. Заміряно на
+    # скріншоті користувача: саме такий уривок висів у чаті замість
+    # підсумку роботи.
+    body = re.sub(r"\[AVAILABLE_TOOLS\].*?\[/AVAILABLE_TOOLS\]", "", body,
+                  flags=re.DOTALL)
+    body = re.sub(r"\[TOOL_RESULTS\].*?\[/TOOL_RESULTS\]", "", body,
+                  flags=re.DOTALL)
+    body = re.sub(r"\[TOOL_CALLS\][^\n]*", "", body)
+    body = re.sub(r"\[/?AVAILABLE_TOOLS\]", "", body)
+    body = re.sub(r"\[/?TOOL_RESULTS\]", "", body)
+    body = re.sub(r"\[ARGS\][^\n]*", "", body)
     # 2. Рамки, які додає сам агент (вони для моделі, не для людини).
     lines = [line for line in body.splitlines()
              if not _AGENT_FRAME_RE.match(line)]
