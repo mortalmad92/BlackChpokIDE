@@ -2424,14 +2424,40 @@ class BlackChpokIDE(tk.Tk):
         try:
             chat = self.chat_store.ensure_active(workspace=str(self.settings.workspace),
                                                  model=self.settings.llm.model)
-            # Контекст відновлюємо й тут: ``ensure_active`` обирає чат без
-            # проходження через ``open_chat`` (напр. після вибору теки).
-            # Тека агента має збігатися з текою цього чату, а не з останньою
-            # відкритою папкою в налаштуваннях.
+            # ── ЧИЯ ТЕКА ГОЛОВНІША ПРИ СТАРТІ ─────────────────────────────
+            # ``ensure_active`` відновлює ОСТАННІЙ активний чат із
+            # ``chats.json`` — можливо, з ІНШОЇ теки (інше вікно, минулий
+            # запуск, інший проєкт). Якщо вікно відкрили з ЯВНО заданою
+            # робочою текою (``settings.workspace``, існує й обрана), саме
+            # вона має визначати роботу: інакше вікно мовчки переїжджає на
+            # теку чужого чату.
+            #
+            # Заміряно живим прогоном ``tools/check_plain_language_live.py``:
+            # друге вікно з текою ``plain-vjzewvll`` підхоплювало чат
+            # попереднього (``plain-e8h26xw2``) і діставало
+            #
+            #   guard=False, chat_ws=…\plain-e8h26xw2, agent_ws=…\plain-vjzewvll
+            #
+            # — запит не йшов, файли не створювались. Для користувача це
+            # «натиснув — нічого не сталося».
+            #
+            # ТУТ і лише тут чат переприв'язується: це старт вікна, а не
+            # дія користувача всередині чату. Далі (у ``_chat_folder_ready``)
+            # діє звичайне правило «чат тримає свою теку».
             if chat is not None and chat.id:
                 bound = str(chat.workspace or "").strip()
-                if bound and Path(bound).is_dir():
-                    if not chat_store.same_folder(str(self.settings.workspace or ""), bound):
+                window_ws = str(self.settings.workspace or "").strip()
+                if (bound and Path(bound).is_dir() and Path(window_ws).is_dir()
+                        and not chat_store.same_folder(window_ws, bound)):
+                    try:
+                        chat.workspace = str(Path(window_ws).resolve())
+                        self.chat_store.save()
+                        LOG.info("Чат %s прив'язано до робочої теки вікна %s "
+                                 "(був %s)", chat.id, window_ws, bound)
+                    except Exception:  # noqa: BLE001
+                        LOG.debug("Чат не прив'язано до теки вікна", exc_info=True)
+                elif bound and Path(bound).is_dir():
+                    if not chat_store.same_folder(window_ws, bound):
                         self._apply_workspace(Path(bound))
                 self._load_chat_context(chat.id)
             self.chat_list.refresh()
@@ -3844,6 +3870,22 @@ class BlackChpokIDE(tk.Tk):
         """
         if self.chat_store.active():
             self._pending_chat = False
+            # ── АКТИВНИЙ ЧАТ МОЖЕ БУТИ З ІНШОЇ ТЕКИ ────────────────────────
+            # Заміряно живим прогоном ``tools/check_plain_language_live.py``:
+            # друге вікно (тека ``plain-bbdmlp85``) успадкувало активний чат
+            # першого (``plain-wvbtftyi``), і ``_ensure_owner_chat`` просто
+            # виходив. Далі сторож теки повертав ``False``:
+            #
+            #   guard=False, chat_id=9f2995ec, chat_ws=…\plain-wvbtftyi,
+            #   agent_ws=…\plain-bbdmlp85, settings_ws=…\plain-bbdmlp85
+            #
+            # — запит не йшов, файли не створювались.
+            #
+            # Тепер: якщо активний чат прив'язаний до ІНШОЇ теки, ніж робоча
+            # тека вікна, і ця робоча тека існує — чат переприв'язується.
+            # Це та сама дія, що й ``_start_chat_in``: запис народжується з
+            # текою, у якій справді працює вікно.
+            self._rebind_active_chat_to_window()
             return
         bound = str(getattr(self, "_pending_workspace", "") or "").strip()
         if not bound:
@@ -3862,6 +3904,39 @@ class BlackChpokIDE(tk.Tk):
         self._sync_chat_title()
         self._sync_chat_model()
         LOG.info("Створено чат %s на перше повідомлення", chat.id)
+
+    def _rebind_active_chat_to_window(self) -> bool:
+        """Прив'язати активний чат до робочої теки вікна, якщо вони різні.
+
+        Навіщо. ``chat_store`` спільний для всіх вікон і запусків
+        (``chats.json``), тож вікно може успадкувати активний чат із ІНШОЇ
+        теки. Сторож теки тоді відмовляє в запиті, і для користувача це
+        «натиснув — нічого не сталося» (заміряно:
+        ``guard=False, chat_ws=…\\plain-wvbtftyi, agent_ws=…\\plain-bbdmlp85``).
+
+        Правило просте: у РОБОЧІЙ сесії вікно й чат мусять дивитись в одну
+        теку. Вікно головніше, бо його теку обрав користувач щойно.
+
+        Повертає ``True``, якщо прив'язку змінено.
+        """
+        chat = self.chat_store.active()
+        if chat is None:
+            return False
+        window_ws = str(self.settings.workspace or "").strip()
+        if not window_ws or not Path(window_ws).is_dir():
+            return False
+        bound = str(chat.workspace or "").strip()
+        if bound and chat_store.same_folder(window_ws, bound):
+            return False
+        try:
+            chat.workspace = str(Path(window_ws).resolve())
+            self.chat_store.save()
+        except Exception:  # noqa: BLE001 - прив'язка не має ламати запит
+            LOG.debug("Чат не прив'язано до теки вікна", exc_info=True)
+            return False
+        LOG.info("Активний чат %s прив'язано до робочої теки вікна %s "
+                 "(був %s)", chat.id, window_ws, bound or "—")
+        return True
 
     def _focus_composer(self) -> None:
         """Поставити курсор у поле введення (щоб одразу можна було писати)."""
@@ -4572,11 +4647,16 @@ class BlackChpokIDE(tk.Tk):
             LOG.debug("Підйом моделі перед запитом не вдався", exc_info=True)
 
     def _chat_folder_ready(self) -> bool:
-        """Перед запитом повернути агента в теку саме цього чату.
+        """Перед запитом привести агента й чат до ОДНІЄЇ теки.
 
-        Якщо запис чату вказує на іншу папку, ніж зараз відкрита у вікні,
-        вікно повертається на теку чату. Запит у чужу теку не йде.
-        ``False`` — теки чату немає, і роботу починати не можна.
+        Правило пріоритету (заміряно живими прогонами, див. нижче):
+
+        1. якщо робоча тека ВІКНА існує й обрана — вона головніша, і чат
+           переприв'язується до неї;
+        2. інакше — вікно переходить на теку чату;
+        3. якщо жодної теки немає — запит не йде, з поясненням.
+
+        ``False`` — роботу починати не можна.
         """
         chat = self.chat_store.active()
         if chat is None:
@@ -4592,9 +4672,31 @@ class BlackChpokIDE(tk.Tk):
             return True
         bound = str(chat.workspace or "").strip()
         if not bound or not Path(bound).is_dir():
-            self.set_status("У цього чату немає доступної теки. Відкрий його знову "
-                            "й вибери папку.")
-            return False
+            # ── САМОЗЦІЛЕННЯ ЛИШЕ ДЛЯ ПОРОЖНЬОЇ ТЕКИ ────────────────────
+            # Два різні випадки, і плутати їх не можна:
+            #
+            # 1. ``chat.workspace`` ПОРОЖНІЙ — запис без теки (старий
+            #    формат, збій запису). Блокувати назавжди безглуздо: вікно
+            #    справді працює в конкретній теці. Прив'язуємо до неї.
+            # 2. ``chat.workspace`` ВКАЗУЄ на неіснуючу теку — це ЧЕСНА
+            #    відмова: користувач має знати, що папку перейменували або
+            #    видалили (перевірено
+            #    ``test_missing_chat_folder_blocks_the_request``).
+            if not bound:
+                window_ws = str(getattr(self.settings, "workspace", "") or "").strip()
+                if window_ws and Path(window_ws).is_dir():
+                    try:
+                        chat.workspace = str(Path(window_ws).resolve())
+                        self.chat_store.save()
+                    except Exception:  # noqa: BLE001
+                        LOG.debug("Чат не прив'язано до теки вікна", exc_info=True)
+                    LOG.info("Чат %s дістав робочу теку вікна %s",
+                             chat.id, window_ws)
+                    bound = str(chat.workspace or "")
+            if not bound or not Path(bound).is_dir():
+                self.set_status("У цього чату немає доступної теки. Відкрий його знову "
+                                "й вибери папку.")
+                return False
         if not chat_store.same_folder(str(getattr(self.agent, "workspace", "") or ""), bound):
             self._apply_workspace(Path(bound))
         return chat_store.same_folder(

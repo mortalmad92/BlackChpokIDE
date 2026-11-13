@@ -112,16 +112,45 @@ def main() -> int:
             pump(app, 1.8)
             app.hide_welcome()
             pump(app, 0.4)
-            idle = 0.0
-            while app.agent.busy and idle < 90:
-                pump(app, 0.5)
-                idle += 0.5
 
             check(f"{title}: намір не «балачка»", info.is_action,
                   info.primary)
 
             # Надсилаємо фразу як звичайний користувач.
-            app.chat._send(phrase)
+            #
+            # ── ЧЕКАЄМО ЗАВАНТАЖЕННЯ МОДЕЛІ ──────────────────────────────
+            # ``auto_start=True`` піднімає модель у фоні одразу після
+            # створення вікна, і ``agent.busy`` певний час істинний. Якщо
+            # відправити запит у цю мить, ``chat._send`` відмовляє («агент
+            # ще виконує попередній запит»), і сценарій виглядає проваленим
+            # («файлів на диску: []»), хоч агент не починав.
+            #
+            # Заміряно: окремий прогін тієї самої фрази створює файл за
+            # 8–20 с, а тут — 0 файлів. Різниця саме в цьому очікуванні.
+            idle = 0.0
+            while app.agent.busy and idle < 180:
+                pump(app, 0.5)
+                idle += 0.5
+            if app.agent.busy:
+                print(f"   УВАГА: агент зайнятий {idle:.0f} с після старту")
+
+            accepted = app.chat._send(phrase)
+            if accepted is False:
+                # Показуємо ВСІ умови відмови, а не лише дві: без цього
+                # причина «запит не прийнято» лишалась загадкою (перевірено:
+                # busy=False, has_project=True, а запит усе одно не йшов).
+                guard = getattr(app.chat, "folder_guard", None)
+                active = app.chat_store.active()
+                print(f"   УВАГА: запит НЕ прийнято — "
+                      f"busy={app.agent.busy}, "
+                      f"runner={bool(app.chat.runner)}, "
+                      f"has_project={app.has_project()}, "
+                      f"project_ok={app.chat._project_ok(phrase)}, "
+                      f"guard={guard() if guard else None}, "
+                      f"chat_id={active.id if active else None}, "
+                      f"chat_ws={active.workspace if active else None!r}, "
+                      f"agent_ws={app.agent.workspace}, "
+                      f"settings_ws={app.settings.workspace}")
             waited = 0.0
             while app.agent.busy and waited < 300:
                 pump(app, 0.5)
@@ -176,6 +205,25 @@ def main() -> int:
                 app.task_queue.clear()
                 app.destroy()
             except Exception:  # noqa: BLE001
+                pass
+            # ── ПРИБИРАЄМО ЧАТ РАЗОМ ІЗ ТЕКОЮ ─────────────────────────────
+            # ``chats.json`` спільний для всіх вікон цього прогону. Якщо
+            # видалити теку, але лишити запис чату, наступне вікно
+            # успадковує чат, прив'язаний до НЕІСНУЮЧОЇ теки. Заміряно:
+            # другий і третій сценарій діставали
+            #
+            #   guard=False, chat_ws=…\plain-xdjugj4e   (уже видалена!)
+            #   agent_ws=…\plain-rspyv_f6
+            #
+            # — запит не йшов, файли не створювались. Дефект був у ПРОБІ:
+            # вона лишала по собі «мертвий» чат.
+            try:
+                for chat in list(app.chat_store.chats or []):
+                    if str(getattr(chat, "workspace", "") or "").startswith(
+                            str(workspace)):
+                        app.chat_store.delete(chat.id)
+                app.chat_store.save()
+            except Exception:  # noqa: BLE001 - прибирання не має ламати прогін
                 pass
             shutil.rmtree(workspace, ignore_errors=True)
 
