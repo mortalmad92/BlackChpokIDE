@@ -84,6 +84,26 @@ class TaskValidator:
             return ValidationResult(True, "файли змінено", existing)
         # 2. Шляхи, які модель згадала у відповіді.
         mentioned = self._mentioned_paths(text)
+        # ── 2а. Крок, який ЗОБОВ'ЯЗАНИЙ створити файл ─────────────────────
+        # Найнебезпечніша пастка, і раніше вона спрацьовувала: крок плану
+        # звучить як «Створення файлу greeting.py», агент відповідає
+        # «Готово.» — і перевірка зараховувала це як «крок не створював
+        # файлів», бо у відповіді немає шляху. Заміряно живим прогоном
+        # ``tools/check_full_cycle.py``: усі 4 кроки «завершено», 0 збоїв,
+        # а на диску — ПОРОЖНЬО. Користувач бачив зелений звіт без роботи.
+        #
+        # Тепер намір кроку беремо з ЙОГО ТЕКСТУ: якщо крок про створення
+        # файлу, то файл мусить існувати — інакше крок провалено чесно.
+        wanted = self._paths_in_task(task)
+        if wanted:
+            done = self._existing(wanted, root)
+            if done:
+                return ValidationResult(True, "файли кроку на диску", done)
+            return ValidationResult(
+                False,
+                "крок просив створити файли, яких немає на диску: "
+                + ", ".join(sorted(wanted)[:4]),
+            )
         if not mentioned:
             # Крок не про файли (аналіз, читання, перевірка) — самих слів
             # достатньо, якщо це не порожня обіцянка.
@@ -98,6 +118,38 @@ class TaskValidator:
             "агент згадав файли, яких немає на диску: "
             + ", ".join(sorted(mentioned)[:4]),
         )
+
+    @staticmethod
+    def _paths_in_task(task: queue_engine.QueueTask) -> set[str]:
+        """Файли, які крок ЗОБОВ'ЯЗАНИЙ створити (з тексту самого кроку)."""
+        return TaskValidator.paths_in_task_text(
+            str(getattr(task, "text", "") or ""))
+
+    @staticmethod
+    def paths_in_task_text(text: str) -> set[str]:
+        """Файли, які крок ЗОБОВ'ЯЗАНИЙ створити, — з тексту кроку.
+
+        Публічна (без підкреслення), бо її кличе ще й ``main_window``:
+        перевірка результату кроку стоїть у ДВОХ місцях (виконавець і
+        вікно), і обидві мусять брати намір з одного джерела. Дублювання
+        цієї логіки вже призводило до розбіжності: виконавець вимагав
+        файл, а вікно зараховувало крок за словами.
+
+        Беремо лише ті кроки, де є і дієслово створення, і назва файлу:
+        «Створення файлу greeting.py». Крок «Проаналізувати greeting.py»
+        нічого не обіцяє створити — для нього це не застосовується.
+        """
+        body = " ".join(str(text or "").split())
+        if not body:
+            return set()
+        low = body.lower()
+        creating = any(marker in low for marker in (
+            "створити", "створи", "створе", "написати", "напиши", "згенеру",
+            "додати файл", "додай файл", "новий файл", "write_file", "create",
+        ))
+        if not creating:
+            return set()
+        return TaskValidator._mentioned_paths(body)
 
     @staticmethod
     def _existing(paths: Iterable[str], root: Optional[Path]) -> list[str]:
@@ -119,6 +171,18 @@ class TaskValidator:
                 except OSError:
                     continue
         return result
+
+    @staticmethod
+    def mentioned_paths(text: str) -> set[str]:
+        """Шляхи до файлів, згадані в тексті (спільна точка для вікна).
+
+        Публічна, бо її кличе ``main_window``: там була ВЛАСНА копія regex,
+        і вона брала будь-яке «слово.літери». Наслідок заміряно живим
+        прогоном: команда ``python -m unittest -l`` перетворювалась на
+        «файл» ``unittest.l``, і крок провалювався з «файлів немає на
+        диску: unittest.l». Одна реалізація — одна поведінка.
+        """
+        return TaskValidator._mentioned_paths(text)
 
     @staticmethod
     def _mentioned_paths(text: str) -> set[str]:

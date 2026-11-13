@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -17,6 +18,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# ── ІЗОЛЯЦІЯ ДАНИХ: НЕ ЧІПАТИ СПРАВЖНІ ФАЙЛИ КОРИСТУВАЧА ─────────────────
+# ``TaskQueue()`` без аргументу читає ``<app_data>/queue.json``, а
+# ``ChatStore()`` — ``chats.json``. Без цього рядка прогін:
+#
+#   * ЗАБРУДНЮВАВ справжню чергу користувача кроками прогону (перевірено:
+#     у ``queue.json`` з'явились «Створити файл greeting.py» з chat-ом
+#     користувача, і наступний прогін виконував ЧУЖІ кроки);
+#   * підхоплював чат користувача (``b122bfbfb31b``, тека ``C:\AI\site``),
+#     і агент писав файли в ЙОГО проєкт замість тимчасової теки прогону.
+#
+# Ставимо ДО імпорту пакета: ``config`` обчислює шляхи під час імпорту.
+os.environ.setdefault("BLACKCHPOK_HOME",
+                      tempfile.mkdtemp(prefix="fullcycle-home-"))
+os.environ["BLACKCHPOK_NO_SAVE"] = "1"
 
 GOAL = (
     "Створи в теці файл greeting.py з функцією hello(name), яка повертає "
@@ -101,6 +117,33 @@ def main() -> int:
             pump(app, 0.5)
             idle += 0.5
 
+        # ── ПОЧИНАЄМО З ЧИСТОЇ ЧЕРГИ ──────────────────────────────────────
+        # Без цього кроки попереднього прогону лишаються в ``queue.json`` і
+        # домішуються до нового плану. Заміряно: у прогоні з'явився крок
+        # «01. Створення файлу x.py» — залишок ПОПЕРЕДНЬОГО запуску, і саме
+        # він тримав статус «очікує», через що перевірка «усі кроки
+        # завершено» падала, хоч новий план відпрацював.
+        #
+        # Раніше інструмент лише ПОПЕРЕДЖУВАВ про це («можливі дублі між
+        # прогонами»), але не прибирав — тобто повторний прогін не міг бути
+        # чистим за побудовою.
+        app.task_queue.clear()
+        app.executor.stopped = False
+        app._update_queue_badge()
+        pump(app, 0.3)
+
+        # ── ТЕКА МУСИТЬ БУТИ ТЕКОЮ ПРОГОНУ ───────────────────────────────
+        # Вікно відновлює робочу теку з активної сесії (``chats.json``), і на
+        # машині розробника там стоїть інша тека. Заміряно живим прогоном:
+        # агент СПРАВДІ створив ``greeting.py`` і ``test_greeting.py`` — але
+        # в ``C:\AI\site``, тоді як прогін перевіряв тимчасову теку й бачив
+        # порожнечу. Це не дефект агента, а неізольований стан прогону.
+        if app._project_root() != workspace:
+            app._apply_workspace(workspace)
+            pump(app, 0.8)
+        check("робоча тека — тека прогону", app._project_root() == workspace,
+              str(app._project_root()))
+
         # 1. Модель доступна й обрана
         check("модель вибрана", bool(app.settings.llm.model), app.settings.llm.model)
         alive = app._server_alive(fresh=True)
@@ -120,9 +163,8 @@ def main() -> int:
         before = len(app.task_queue.tasks)
         print(f"\n   задач у черзі до планування: {before}")
         if before:
-            print("   УВАГА: черга не порожня — можливі дублі між прогонами")
-            for task in app.task_queue.tasks:
-                print(f"     {task.number or '--'} {task.status}: {task.title[:50]}")
+            print("   УВАГА: черга не порожня навіть після очищення — "
+                  "перевірка «усі кроки завершено» може стосуватись чужих кроків")
         started = time.time()
         app._split_task_to_queue(GOAL)
         while app._planning and time.time() - started < 400:
@@ -155,7 +197,14 @@ def main() -> int:
             if not app.task_queue.running_id and not app.agent.busy:
                 if app.executor.next_task() is None:
                     break
-                app.executor.start_next()
+                before_task = app.executor.current_id
+                started_task = app.executor.start_next()
+                if started_task is None and before_task == app.executor.current_id:
+                    # Нічого не запустилось — інакше цикл крутиться вічно на
+                    # місці, а кроки тим часом лишаються «очікують».
+                    print(f"   УВАГА: крок не запустився "
+                          f"(running_id={app.task_queue.running_id!r}, "
+                          f"busy={app.agent.busy}, paused={app.task_queue.paused})")
             # ── Зависання ≠ повільна модель ────────────────────────────
             # Локальна 14B відповідає 30–60 с на крок, і план із 9 кроків
             # цілком може йти 150 с без нового «готово» — це РОБОТА, а не

@@ -5444,48 +5444,90 @@ class BlackChpokIDE(tk.Tk):
         return (f"Застосуй скіл «{skill.name}».\n\n"
                 f"Опис: {skill.description}\n\nІнструкція:\n{skill.body.strip()}")
 
-    def _verify_task_result(self, text: str) -> tuple[bool, str]:
+    def _verify_task_result(self, text: str, task_id: str = "") -> tuple[bool, str]:
         """Перевірити, що задача черги справді дала результат на диску.
 
         Головна пастка локальних моделей: у відповіді написано «Файл
         створено», а на диску його немає. Тому задачу, яка згадує шлях до
         файлу, не зараховуємо, поки цього файлу не існує.
 
+        ── ДРУГА ПАСТКА (знайдено живим прогоном) ────────────────────────
+        Раніше перевірялась ЛИШЕ відповідь моделі. Якщо крок плану звучить
+        «Створення файлу greeting.py», а модель відповідає просто «Готово.»
+        — у відповіді немає жодного шляху, і функція повертала «файлів не
+        згадано → все гаразд».
+
+        Заміряно ``tools/check_full_cycle.py``: план із 6 кроків, усі
+        «завершено», 0 збоїв, на диску ПОРОЖНЬО. Зелений звіт без роботи —
+        найгірший вид дефекту.
+
+        Тепер, якщо крок сам просить створити файл, відповідь моделі не має
+        значення: файл мусить існувати.
+
         Повертає (успіх, пояснення).
         """
         answer = text or ""
         if not answer.strip():
             return False, "порожня відповідь"
-        # Шукаємо згадані шляхи з розширенням файлу.
+        root = Path(self.settings.workspace)
+        # ── Спершу: чи крок ЗОБОВ'ЯЗАНИЙ створити файл ────────────────────
+        # Беремо текст самого кроку, а не відповідь: саме там написано, що
+        # мали зробити.
+        step_text = ""
+        if task_id:
+            try:
+                task = self.task_queue.get(task_id)
+                step_text = str(getattr(task, "text", "") or "")
+            except Exception:  # noqa: BLE001 - перевірка не має ламати хід
+                LOG.debug("Текст кроку не прочитано", exc_info=True)
+        wanted = task_executor.TaskValidator.paths_in_task_text(step_text)
+        if wanted:
+            missing_steps = [name for name in sorted(wanted)
+                             if not self._file_exists_anywhere(root, name)]
+            if missing_steps:
+                return (False, "крок просив створити файли, яких немає на "
+                               "диску: " + ", ".join(missing_steps[:3]))
+            return True, ""
+        # Шукаємо згадані шляхи — ТІЄЮ САМОЮ функцією, що й виконавець.
         #
-        # Раніше тут був ЖОРСТКИЙ список розширень (``js|json|html|css|ejs|
-        # env|db|md``) — і в ньому не було ``py``. Тобто відповідь «створив
-        # greeting.py» вважалась такою, що не згадує файлів, і крок
-        # зараховувався навіть тоді, коли файлу на диску не було. Тепер
-        # беремо будь-яке розширення, а службові слова відсіюємо нижче.
-        mentioned = set()
-        for match in re.finditer(r"[\w./\\-]+\.[A-Za-z][A-Za-z0-9]{0,7}\b", answer):
-            name = match.group(0).replace("/", "\\").lstrip(".\\")
-            # ``1.5``, ``v1.2``, ``3.14`` — це числа, а не файли.
-            if re.fullmatch(r"[\d.\\-]+", name):
-                continue
-            mentioned.add(name)
-        mentioned = {name for name in mentioned if len(name) > 3}
+        # Раніше тут був власний regex ``[\w./\\-]+\.[A-Za-z][A-Za-z0-9]{0,7}``,
+        # який брав будь-яке «слово.літери». Наслідок заміряно живим
+        # прогоном: команда ``python -m unittest -l`` дала «файл»
+        # ``unittest.l``, і крок провалився з «файлів немає на диску:
+        # unittest.l» — хоча йшлося про прапорець командного рядка.
+        #
+        # Спільна функція перевіряє РОЗШИРЕННЯ за списком кодових файлів,
+        # тож прапорці, версії й числа більше не стають «файлами».
+        mentioned = task_executor.TaskValidator.mentioned_paths(answer)
         if not mentioned:
             # Файлів не згадано — задача була не про створення файлу.
             return True, ""
-        root = Path(self.settings.workspace)
         missing = []
         for name in sorted(mentioned):
-            candidate = root / name
-            if not candidate.exists():
-                # Модель могла вказати лише ім'я без папки.
-                if not any(p.name == Path(name).name
-                           for p in root.rglob(Path(name).name)):
-                    missing.append(name)
+            if not self._file_exists_anywhere(root, name):
+                missing.append(name)
         if len(missing) == len(mentioned):
             return False, "файлів немає на диску: " + ", ".join(missing[:3])
         return True, ""
+
+    @staticmethod
+    def _file_exists_anywhere(root: Path, name: str) -> bool:
+        """Чи існує файл у проєкті (модель могла вказати лише ім'я).
+
+        ``rglob`` тут прийнятний: перевірка йде раз на крок, а не на кадр,
+        і саме вона відрізняє «зробив» від «сказав, що зробив».
+        """
+        candidate = root / name
+        try:
+            if candidate.exists():
+                return True
+        except OSError:
+            pass
+        try:
+            target_name = Path(name).name
+            return any(path.name == target_name for path in root.rglob(target_name))
+        except OSError:
+            return False
 
     def _on_git_offer(self, details: dict) -> None:
         """Питання «оновити файли на GitHub?» — діалог із «Так / Ні».
@@ -5620,10 +5662,13 @@ class BlackChpokIDE(tk.Tk):
         self._running_task_id = ""
         # Задачу про файли не зараховуємо без файлу на диску — інакше черга
         # показує «готово» там, де роботи не сталося.
-        verified, reason = self._verify_task_result(text)
+        verified, reason = self._verify_task_result(text, task_id)
         if ok and not verified:
             ok = False
-            LOG.info("Задача %s не підтверджена: %s", task_id, reason)
+            LOG.warning("Задача %s не підтверджена: %s (крок: %s)",
+                        task_id, reason,
+                        "план" if getattr(self, "_plan_step_active", False)
+                        else "не крок плану")
         saved = self.task_queue.on_change
         self.task_queue.on_change = None
         try:
