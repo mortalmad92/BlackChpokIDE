@@ -439,8 +439,42 @@ class ToolCallParser:
                 break
             if state == "handled":
                 continue
+            # ── XML-обгортки виклику: <tool_call>…</tool_call>, <|DSML| …> ──
+            # Заміряно: користувач бачив у чаті порожні ``<tool_call>`` і
+            # ``</tool_call>`` навколо прихованого виклику. Дужки всередині
+            # ховали, а самі теги — ні, бо їх не вважали частиною виклику.
+            #
+            # Те саме стосується ``<|DSML|``: модель віддає його по токенах,
+            # і поки тег неповний, він виглядає як звичайний текст ``<``.
+            cut = _wrapper_start(self._buffer)
+            if cut is not None:
+                index, opener, closer = cut
+                if index > 0:
+                    # Перед тегом є звичайний текст — віддаємо саме його.
+                    visible.append(self._buffer[:index])
+                    self._buffer = self._buffer[index:]
+                    continue
+                end = self._buffer.find(closer)
+                if end < 0:
+                    # Обгортка ще не закрита — далі чекаємо токенів.
+                    break
+                self.text += self._buffer[:end + len(closer)]
+                self._buffer = self._buffer[end + len(closer):]
+                continue
             position = self._buffer.find("{")
             if position < 0:
+                # ── Обірваний початок тега в хвості ───────────────────────
+                # Модель віддає ``<``, ``<t``, ``<tool_``… по одному токену.
+                # Раніше кожен такий шматок одразу йшов у чат, і користувач
+                # бачив «<tool_call>» окремими символами (перевірено
+                # наскрізним прогоном).
+                hold = _partial_opener(self._buffer)
+                if hold:
+                    rest = self._buffer[:len(self._buffer) - hold]
+                    if rest:
+                        visible.append(rest)
+                    self._buffer = self._buffer[len(self._buffer) - hold:]
+                    break
                 # Хвіст може бути початком JSON — тримаємо один символ.
                 if self._buffer.endswith("`"):
                     break
@@ -464,7 +498,47 @@ class ToolCallParser:
         Виклик Mistral має вигляд ``[TOOL_CALLS]write_file[ARGS]{…}``: дужка
         стоїть у СЕРЕДИНІ виклику, тому звичайна логіка показала б
         користувачу ім'я інструмента й сирі аргументи замість відповіді.
+
+        Окремо — XML-протокол DeepSeek (``<|DSML| invoke …>``). У ньому
+        немає ні дужок, ні маркера ``[TOOL_CALLS]``, тож без цієї гілки
+        службовий XML ішов у чат як звичайний текст (заміряно на
+        ``deepseek-v4.1-flash``).
         """
+        # ── DeepSeek DSML: вирізаємо ЗАКРИТИЙ блок цілком ────────────────
+        # Тег шукаємо БУДЬ-ДЕ в буфері, а не лише на початку: модель
+        # пише звичайне речення, а вже потім виклик. Перевірка «на
+        # початку» пропускала такий випадок, і весь XML ішов у чат
+        # (заміряно на ``deepseek-v4.1-flash`` живим прогоном).
+        from .. import tool_dialect
+
+        dsml_at = tool_dialect.dsml_start(self._buffer)
+        if dsml_at is not None:
+            if dsml_at > 0:
+                # Перед протоколом є текст — віддаємо саме його й
+                # СУВАЄМО буфер, інакше наступний прохід побачить той
+                # самий стан і цикл не завершиться (перевірено: скрипт
+                # висів до таймауту).
+                prefix = self._buffer[:dsml_at]
+                self._buffer = self._buffer[dsml_at:]
+                return "handled", prefix
+            closed = _closed_dsml(self._buffer)
+            if closed is None:
+                # Виклик ще не дописаний — не показуємо ані маркера,
+                # ані аргументів.
+                return "hold", ""
+            self.text += self._buffer[:closed]
+            self._buffer = self._buffer[closed:]
+            return "handled", ""
+        # ── Самотнє закриття DSML ────────────────────────────────────────
+        # Коли виклик уже вирізано, у буфері може лишитись ТІЛЬКИ
+        # ``</|DSML| calls>`` — і без цієї гілки воно йшло в чат окремими
+        # символами (заміряно покроковим прогоном при чанку 1).
+        stray = tool_dialect.dsml_stray_close(self._buffer)
+        if stray == -1:
+            return "hold", ""
+        if stray is not None:
+            self._buffer = self._buffer[stray:]
+            return "handled", ""
         marker = getattr(self.dialect, "call_marker", "") if self.dialect else ""
         if marker != "[TOOL_CALLS]":
             return "none", ""
@@ -586,6 +660,86 @@ def _partial_marker(text: str, marker: str) -> int:
         if marker.startswith(text[-size:]):
             return size
     return 0
+
+
+def _closed_dsml(text: str) -> int | None:
+    """Довжина ЗАКРИТОГО блоку DSML на початку ``text`` (``None`` — ще ні).
+
+    Потрібно стріму: поки модель друкує виклик, показувати його не можна.
+    Закритим вважаємо блок із ``</|DSML| calls>``, а якщо зовнішньої
+    обгортки немає — із ``</|DSML| invoke>``.
+    """
+    from .. import tool_dialect
+
+    return tool_dialect.dsml_block_end(text)
+
+
+#: XML-обгортки власних форматів моделей: ``(відкриття, закриття)``.
+#:
+#: Потрібні стріму: JSON-виклик усередині ховався, а самі теги
+#: просочувались у чат порожніми — користувач бачив ``<tool_call>`` і
+#: ``</tool_call>`` без жодного змісту.
+#:
+#: ``</|DSML| calls>`` теж тут: коли виклик розібрано, буфер лишається з
+#: самим закриттям, і без цього запису воно йшло в чат окремим рядком
+#: (заміряно покроковим прогоном при чанку 1 символ).
+_WRAPPERS: tuple[tuple[str, str], ...] = (
+    ("<tool_call>", "</tool_call>"),
+    ("<tools>", "</tools>"),
+)
+
+
+def _wrapper_start(buffer: str) -> tuple[int, str, str] | None:
+    """Найраніший початок XML-обгортки: ``(індекс, відкриття, закриття)``."""
+    best: tuple[int, str, str] | None = None
+    lowered = buffer.lower()
+    for opener, closer in _WRAPPERS:
+        index = lowered.find(opener)
+        if index < 0:
+            continue
+        if best is None or index < best[0]:
+            best = (index, opener, closer)
+    return best
+
+
+def _partial_opener(buffer: str) -> int:
+    """Довжина хвоста буфера, що є НЕЗАКІНЧЕНИМ початком обгортки.
+
+    Модель віддає тег по символах: ``<``, ``<t``, ``<to``… Поки він
+    неповний, це ще не виклик — але й не відповідь. Без цієї перевірки
+    кожен такий шматок ішов у чат окремим символом.
+
+    Те саме для ``<|DSML|``: живий прогін давав у чаті шматки
+    ``<\uff5c`` та ``<\uff5cDS``, бо тег приходить по токенах.
+    """
+    limit = min(len(buffer), max(len(opener) for opener, _ in _WRAPPERS) - 1)
+    lowered = buffer.lower()
+    for size in range(limit, 0, -1):
+        tail = lowered[-size:]
+        if any(opener.startswith(tail) for opener, _ in _WRAPPERS):
+            return size
+    # ── Частковий DSML ──────────────────────────────────────────────────
+    # ``<``, ``<|``, ``<|D``, ``<|DS``, ``<|DSM``, ``<|DSML``, ``<|DSML|``…
+    #
+    # Крім самого маркера буває його ПРОДОВЖЕННЯ без закривної дужки:
+    # ``<|DSML| `` або ``<|DSML| inv``. Попередня перевірка порівнювала
+    # лише з самими маркерами, тож пробіл після ``|DSML|`` не впізнавався
+    # і йшов у чат — з нього починалась відповідь «<|DSML| », за якою
+    # слідував увесь протокол (заміряно покроковим прогоном).
+    head = lowered.replace("\uff5c", "|")
+    if head.startswith("<|dsml") and ">" not in head:
+        return len(buffer)
+    for size in range(min(len(buffer), len(_DSML_OPENERS[0]) - 1), 0, -1):
+        tail = lowered[-size:].replace("\uff5c", "|")
+        if any(opener.startswith(tail) for opener in _DSML_OPENERS):
+            return size
+    return 0
+
+
+#: Початки тегів DSML (обидві вертикальні риски зведені до ``|``).
+_DSML_OPENERS: tuple[str, ...] = (
+    "<|dsml", "<|dsml|", "</|dsml", "</|dsml|",
+)
 
 
 def has_native_tool_support(template: str) -> bool:

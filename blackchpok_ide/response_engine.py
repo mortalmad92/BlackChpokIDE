@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 from . import markdown_view
+from . import tool_dialect
 from .tool_orchestrator import Observation
 
 __all__ = [
@@ -50,6 +51,12 @@ _PROTOCOL_MARKERS: tuple[str, ...] = (
     # Маркери ВЛАСНОГО формату моделі (Mistral). Заміряно на скріншоті
     # користувача: обірваний виклик лишав у чаті ``let[ARGS]``.
     "[TOOL_CALLS]", "[ARGS]", "[AVAILABLE_TOOLS]", "[TOOL_RESULTS]",
+    # Власний протокол DeepSeek. Заміряно живим прогоном на хмарній
+    # ``deepseek-v4.1-flash``: модель віддала три виклики цим XML, і в
+    # чаті висів службовий протокол замість відповіді — файли при цьому
+    # не створювались. Ознака нижче — без вертикальної риски, щоб ловити
+    # і ``U+007C``, і ``U+FF5C`` з живого прогону.
+    "DSML", "dsml|", "|dsml", "invoke name=", "parameter name=",
 )
 
 #: Рядки-рамки, які додає сам агент для моделі.
@@ -149,6 +156,15 @@ def strip_protocol(text: str) -> str:
     body = re.sub(r"\[/?AVAILABLE_TOOLS\]", "", body)
     body = re.sub(r"\[/?TOOL_RESULTS\]", "", body)
     body = re.sub(r"\[ARGS\][^\n]*", "", body)
+    # 1в. Власний XML-протокол DeepSeek (``<|DSML| invoke …>``).
+    # Той самий шлях, що й для Mistral: протокол — службовий текст, у чаті
+    # його показувати не можна (див. коментар у ``_PROTOCOL_MARKERS``).
+    body = tool_dialect.strip_dsml(body)
+    # 1г. «Псевдо-виклик» тегом: ``<run_command>echo ok</run_command>``.
+    # Заміряно живим прогоном: модель відповідала цим рядком замість
+    # виклику. Якщо виклик виконано — тег зайвий; якщо ні — він тим більше
+    # не відповідь людині.
+    body = tool_dialect.strip_pseudo_calls(body)
     # 2. Рамки, які додає сам агент (вони для моделі, не для людини).
     lines = [line for line in body.splitlines()
              if not _AGENT_FRAME_RE.match(line)]

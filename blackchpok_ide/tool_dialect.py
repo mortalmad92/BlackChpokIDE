@@ -38,12 +38,18 @@ from typing import Any, Iterable, Sequence
 
 __all__ = [
     "Dialect",
+    "DSML",
     "MISTRAL",
     "QWEN",
     "TEXT",
     "dialect_for_template",
+    "dsml_block_end",
+    "dsml_start",
     "extract_native_calls",
+    "is_call_prefix",
+    "strip_dsml",
     "strip_native_calls",
+    "strip_pseudo_calls",
 ]
 
 #: Родини, які просять схеми в ``[AVAILABLE_TOOLS]`` і звуть інструмент
@@ -52,9 +58,25 @@ MISTRAL = "mistral"
 #: Родини з XML-обгортками ``<tools>`` і ``<tool_call>``. Це Qwen, Hermes,
 #: DeepSeek і похідні.
 QWEN = "qwen"
+#: Власний XML-протокол DeepSeek: ``<|DSML| invoke name="…">``.
+#:
+#: Заміряно живим прогоном на хмарній ``deepseek-v4.1-flash`` (скріншот
+#: користувача + ``chats.json``): модель повернула виклики не як
+#: ``tool_calls`` і не як JSON у тексті, а СВОЇМ протоколом::
+#:
+#:     <|DSML| calls>
+#:     <|DSML| invoke name="read_file">
+#:     <|DSML| parameter name="path" string="true">calculator.py</|DSML| parameter>
+#:     </|DSML| invoke>
+#:     </|DSML| calls>
+#:
+#: Ніщо в IDE цього формату не розпізнавало: ``extract_tool_calls`` шукав
+#: JSON, ``tool_dialect`` знав лише Mistral і Qwen. Тому виклик не
+#: виконувався, а сам протокол ішов у чат як «відповідь» — користувач
+#: бачив службовий XML замість роботи й відповіді людською мовою.
+DSML = "dsml"
 #: Немає власного формату — лишається текстовий протокол JSON.
 TEXT = "text"
-
 
 #: Маркер виклику Mistral: ``[TOOL_CALLS]ім'я[ARGS]{…}``.
 #:
@@ -65,6 +87,82 @@ _MISTRAL_CALL = re.compile(r"\[TOOL_CALLS\]\s*([A-Za-z_][\w.:\-]{0,63})\s*\[ARGS
 #: Скільки викликів в одній відповіді готові розібрати. Модель іноді видає
 #: кілька ``[TOOL_CALLS]`` поспіль; більше двадцяти — це вже сміття.
 _MAX_CALLS = 20
+
+#: Роздільник у тегах DeepSeek. Живий прогін дав САМЕ ``U+FF5C``
+#: (``｜DSML｜``), а документація показує ``U+007C``. Приймаємо обидва й
+#: дозволяємо пробіли навколо: інакше один варіант розпізнавався б, а
+#: другий знову протікав у чат.
+_DSML_SEP = r"[|｜]\s*DSML\s*[|｜]"
+
+#: Відкриття ``invoke`` з іменем інструмента.
+_DSML_INVOKE_OPEN = re.compile(
+    r"<\s*" + _DSML_SEP + r"\s*invoke\s+name\s*=\s*[\"']([^\"']*)[\"']\s*>",
+    re.IGNORECASE)
+
+#: Закриття ``invoke`` (або ``calls``) — межа аргументів одного виклику.
+_DSML_INVOKE_CLOSE = re.compile(
+    r"<\s*/\s*" + _DSML_SEP + r"\s*(?:invoke|calls)\s*>",
+    re.IGNORECASE)
+
+#: Один параметр: ``name="path" string="true">значення``.
+#:
+#: Значення шукаємо НЕ до наступного ``>``, а до закриття тега ``parameter``
+#: (або до початку наступного параметра): у аргументах ``write_file``
+#: лежить цілий файл із тегами HTML і фігурними дужками, і жадібний збіг
+#: обірвав би його на першому ж ``>``.
+_DSML_PARAM = re.compile(
+    r"<\s*" + _DSML_SEP + r"\s*parameter\s+name\s*=\s*[\"']([^\"']*)[\"']([^>]*)>"
+    r"(.*?)"
+    r"(?=<\s*/\s*" + _DSML_SEP + r"\s*parameter\s*>"
+    r"|<\s*" + _DSML_SEP + r"\s*parameter\b"
+    r"|<\s*/\s*" + _DSML_SEP + r"\s*(?:invoke|calls)\s*>"
+    r"|<\s*" + _DSML_SEP + r"\s*invoke\b"
+    r"|$)",
+    re.IGNORECASE | re.DOTALL)
+
+#: Будь-який тег DSML — для очищення тексту й визначення протоколу.
+_DSML_ANY_TAG = re.compile(r"<\s*/?\s*" + _DSML_SEP + r"[^>]*>", re.IGNORECASE)
+
+#: Початок DSML у тексті (для стріму: такий хвіст НЕ показуємо).
+_DSML_START = re.compile(r"<\s*/?\s*" + _DSML_SEP, re.IGNORECASE)
+
+#: «Псевдо-виклик» — ім'я інструмента в тезі з одним аргументом усередині::
+#:
+#:     <run_command>echo ok</run_command>
+#:     <read_file path="calc.py"/>
+#:
+#: Заміряно живим прогоном (зауваження власника проєкту): модель двічі
+#: відповіла ``<run_command>echo ok</run_command>`` замість того, щоб
+#: викликати інструмент. Це НЕ звичайний XML відповіді (напр. ``<div>``):
+#: ім'я тега збігається з назвою реального інструмента, тому виклик
+#: розпізнаємо й виконуємо, а тег із чату прибираємо.
+#:
+#: Значення тега стає аргументом ``command``/``path``/``query`` — тим
+#: єдиним, який цей інструмент очікує (див. :data:`_SOLO_ARGUMENT`).
+_PSEUDO_TAG_OPEN = re.compile(
+    r"<\s*([A-Za-z_][\w.\-]{1,63})\s*([^<>]*?)(/?)>", re.IGNORECASE)
+
+#: Який аргумент отримує інструмент, викликаний «голим» тегом.
+#:
+#: Беремо рівно те поле, яке інструмент реально приймає: інакше виклик
+#: пройшов би перевірку імені й упав на перевірці аргументів.
+_SOLO_ARGUMENT: dict[str, str] = {
+    "run_command": "command",
+    "run_shell": "command",
+    "read_file": "path",
+    "write_file": "path",
+    "edit_file": "path",
+    "append_file": "path",
+    "list_dir": "path",
+    "create_dir": "path",
+    "delete_file": "path",
+    "python_check": "path",
+    "find_files": "pattern",
+    "search_text": "query",
+    "search_web": "query",
+    "web_api": "url",
+    "fetch_url": "url",
+}
 
 
 @dataclass(frozen=True)
@@ -385,7 +483,223 @@ def extract_native_calls(
                 accept(str(name or ""), arguments)
             break
 
+    # ── 3. Власний протокол DeepSeek: <|DSML| invoke …> ──────────────────
+    # Заміряно на хмарній deepseek-v4.1-flash: модель віддала три виклики
+    # цим XML, і IDE не розпізнала ЖОДНОГО — виклики не виконались, а
+    # протокол пішов у чат замість відповіді.
+    for call_match in _DSML_INVOKE_OPEN.finditer(body):
+        if len(found) >= _MAX_CALLS:
+            break
+        close = _DSML_INVOKE_CLOSE.search(body, call_match.end())
+        inner = body[call_match.end():close.start() if close else len(body)]
+        accept(call_match.group(1), _dsml_arguments(inner))
+
+    # ── 4. «Псевдо-виклик» тегом: <run_command>echo ok</run_command> ─────
+    # Заміряно живим прогоном (зауваження власника проєкту): модель двічі
+    # відповіла текстом протоколу замість виклику. Виконуємо його як
+    # справжній виклик — це те, що людина й просила.
+    for match in _PSEUDO_TAG_OPEN.finditer(body):
+        if len(found) >= _MAX_CALLS:
+            break
+        name = match.group(1)
+        if not name.lower() in {key.lower() for key in _SOLO_ARGUMENT}:
+            continue
+        if allowed and name not in allowed:
+            continue
+        canonical = _canonical_tool(name, allowed)
+        if not canonical:
+            continue
+        # Відкритий тег без пари <name …>значення</name> не чіпаємо:
+        # нічого не виконуємо, доки не видно самого аргументу.
+        if match.group(3):
+            arguments: Any = _pseudo_arguments(canonical, "", match.group(2))
+        else:
+            closing = re.compile(r"</\s*" + re.escape(name) + r"\s*>",
+                                 re.IGNORECASE)
+            rest = body[match.end():]
+            end = closing.search(rest)
+            if end is None:
+                continue
+            arguments = _pseudo_arguments(canonical, rest[:end.start()],
+                                          match.group(2))
+        accept(canonical, arguments)
+
     return found
+
+
+def _canonical_tool(name: str, allowed: set[str]) -> str:
+    """Справжня назва інструмента за тегом (регістр може відрізнятись)."""
+    for known in allowed or ():
+        if known.lower() == name.lower():
+            return known
+    for known in _SOLO_ARGUMENT:
+        if known.lower() == name.lower():
+            return known
+    return ""
+
+
+def _pseudo_arguments(name: str, inner: str, attrs: str) -> dict[str, Any]:
+    """Аргументи «голого» тега: атрибути + текст усередині.
+
+    ``<read_file path="a.py"/>`` — беремо атрибут.
+    ``<run_command>echo ok</run_command>`` — беремо текст як єдине поле,
+    яке цей інструмент очікує (``command`` для ``run_command``).
+    """
+    arguments: dict[str, Any] = {}
+    for key, value in re.findall(
+            r"([A-Za-z_][\w.\-]*)\s*=\s*[\"']([^\"']*)[\"']", attrs or ""):
+        arguments[str(key)] = str(value)
+    body = str(inner or "").strip()
+    if body:
+        solo = _SOLO_ARGUMENT.get(name, "")
+        # Текст у тегу — головний аргумент. Не перетираємо явний атрибут.
+        if solo and solo not in arguments:
+            arguments[solo] = body
+        elif not arguments:
+            arguments[solo or "text"] = body
+    return arguments
+
+
+def _dsml_arguments(inner: str) -> dict[str, Any]:
+    """Аргументи з тіла ``invoke``: ``parameter name="…">значення``.
+
+    Значення лишається РЯДКОМ або приводиться до типу, який модель
+    позначила сама. ``string="true"`` — це підказка, що рядок не треба
+    вгадувати: інакше ``"10"`` стало б числом, а ``path`` — ні.
+
+    ``json="true"`` (трапляється в аргументах-об'єктах) розбираємо як
+    JSON: модель так передає вкладені структури, і без розбору вони
+    прийшли б рядком.
+    """
+    arguments: dict[str, Any] = {}
+    for match in _DSML_PARAM.finditer(inner or ""):
+        name = str(match.group(1) or "").strip()
+        if not name:
+            continue
+        attrs = str(match.group(2) or "").lower()
+        raw = str(match.group(3) or "")
+        # Значення загортають у CDATA-подібні обгортки або екранують:
+        # XML не дозволяє «<» у тексті, тож моделі іноді пишуть «&lt;».
+        if "]]>" in raw:
+            raw = raw.replace("<![CDATA[", "").replace("]]>", "")
+        value: Any = raw
+        if "string=\"true\"" not in attrs and "json=\"true\"" not in attrs:
+            # Без підказки лишаємо рядок: тип вгадувати небезпечно —
+            # ``"001"`` перетворилось би на ``1`` й зіпсувало шлях.
+            value = raw
+        elif "json=\"true\"" in attrs:
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                value = raw
+        arguments[name] = value
+    return arguments
+
+
+def is_call_prefix(text: str) -> bool:
+    """Чи текст — незавершений початок власного протоколу моделі.
+
+    Потрібно стріму: поки модель друкує ``<|DSML|``, показувати це
+    користувачу не можна (інакше в чаті миготів би шматок службового тегу
+    перед кожним викликом). Перевірка навмисно терпима до ЧАСТКОВИХ
+    маркерів: ``<``, ``<|``, ``<|D``, ``<|DSML| inv``.
+    """
+    body = (text or "").strip()
+    if not body.startswith("<"):
+        return False
+    if _DSML_START.search(body):
+        return True
+    # Частковий маркер: порівнюємо початок із префіксами повного тега.
+    head = body.upper().replace("｜", "|")
+    return any(marker.startswith(head) for marker in _DSML_PREFIXES)
+
+
+#: Повні початки тегів DSML — від найкоротшого до найдовшого. Потрібні,
+#: щоб упізнати обірваний маркер (``<|DS``) ще до його завершення.
+_DSML_PREFIXES: tuple[str, ...] = (
+    "<", "<|", "<|D", "<|DS", "<|DSM", "<|DSML", "<|DSML|",
+    "<|DSML| ", "<|DSML| C", "<|DSML| CALLS", "<|DSML| I",
+    "<|DSML| INVOKE", "<|DSML| P", "<|DSML| PARAMETER", "<|DSML| /",
+    "</", "</|", "</|D", "</|DS", "</|DSM", "</|DSML", "</|DSML|",
+    "</|DSML| ", "</|DSML| I", "</|DSML| INVOKE", "</|DSML| P",
+    "</|DSML| PARAMETER", "</|DSML| C", "</|DSML| CALLS",
+)
+
+
+def dsml_start(text: str) -> int | None:
+    """Індекс ПЕРШОГО тега DSML у тексті (``None`` — протоколу немає)."""
+    match = _DSML_START.search(text or "")
+    return match.start() if match is not None else None
+
+
+def dsml_stray_close(text: str) -> int | None:
+    """Довжина самотнього закриття DSML на початку (``<``/``</|DSML| calls>``).
+
+    Потрібно стріму: після того як виклик вирізано, у буфері лишається
+    тільки закривний тег. Без цієї перевірки він ішов у чат окремими
+    символами (``<``, ``</``, ``</|`` …).
+
+    Повертає ``-1``, якщо блок виглядає як ПОЧАТОК тега, але ще не
+    завершений (тоді стрім притримує весь буфер).
+    """
+    body = text or ""
+    if not body:
+        return None
+    if not body.startswith("<"):
+        return None
+    match = re.match(r"<\s*/\s*" + _DSML_SEP + r"\s*(?:calls|invoke)\s*>",
+                     body, re.IGNORECASE)
+    if match is not None:
+        return match.end()
+    # Незавершене закриття на початку — тримаємо, доки не стане ясно.
+    head = body.replace("\uff5c", "|").upper()
+    if ">" not in head and re.match(r"<\s*/?\s*\|?D?S?M?L?", head):
+        if any(marker.startswith(head.replace(" ", ""))
+               for marker in ("</|DSML| CALLS>", "</|DSML| INVOKE>",
+                              "</|DSML| PARAMETER>")):
+            return -1
+    return None
+
+
+def dsml_block_end(text: str) -> int | None:
+    """Довжина ЗАКРИТОГО блоку DSML на початку ``text`` (``None`` — ще ні).
+
+    Потрібно стріму: поки модель друкує виклик, показувати його не можна,
+    а віддавати текст треба якомога раніше. Закритим вважаємо блок із
+    ``</|DSML| calls>``, а якщо зовнішньої обгортки немає — із
+    ``</|DSML| invoke>``.
+    """
+    body = text or ""
+    if not body:
+        return None
+    tail = re.compile(
+        r"<\s*/\s*" + _DSML_SEP + r"\s*(?:calls|invoke)\s*>", re.IGNORECASE)
+    match = tail.search(body)
+    return match.end() if match is not None else None
+
+
+def strip_pseudo_calls(text: str) -> str:
+    """Прибрати з тексту «псевдо-виклики» тегом (``<run_command>…``).
+
+    Прибираємо ЛИШЕ теги, чиє ім'я збігається з реальним інструментом.
+    Звичайний XML відповіді (``<div>``, ``<svg>``) мусить лишитись: його
+    користувач і просив показати.
+
+    Причина, з якої це потрібно: модель відповідала
+    ``<run_command>echo ok</run_command>`` замість виклику. Якщо виклик
+    вдалося розпізнати й виконати, цей тег у чаті вже нічого не додає, а
+    якщо НЕ вдалося — він тим більше не відповідь людині.
+    """
+    body = text if isinstance(text, str) else ""
+    if not body or "<" not in body:
+        return body
+    for name in _SOLO_ARGUMENT:
+        body = re.sub(
+            r"<\s*" + re.escape(name) + r"\b[^<>]*?/>", "", body, flags=re.IGNORECASE)
+        body = re.sub(
+            r"<\s*" + re.escape(name) + r"\b[^<>]*?>[^<]*<\s*/\s*"
+            + re.escape(name) + r"\s*>", "", body, flags=re.IGNORECASE)
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
 def strip_native_calls(text: str) -> str:
@@ -436,4 +750,38 @@ def strip_native_calls(text: str) -> str:
     body = re.sub(r"\[/?TOOL_CALLS\].*$", "", body, flags=re.DOTALL)
     body = re.sub(r"\[/?AVAILABLE_TOOLS\].*$", "", body, flags=re.DOTALL)
     body = re.sub(r"\[ARGS\].*$", "", body, flags=re.DOTALL)
+    body = strip_dsml(body)
+    body = strip_pseudo_calls(body)
+    return body.strip()
+
+
+def strip_dsml(text: str) -> str:
+    """Прибрати з тексту ВЕСЬ протокол DeepSeek (``<|DSML| …>``).
+
+    Потрібно з двох причин:
+
+    * користувач не має читати службовий XML замість відповіді — саме це
+      сталося на скріншоті (три виклики в чаті, жодного файлу на диску);
+    * обірваний виклик (модель спинилась посеред ``invoke``) теж треба
+      прибрати: хвіст ``parameter name=…`` нічого не означає для людини.
+
+    Прибираємо ВСЕ від першого тегу DSML, якщо в тексті немає закритої
+    обгортки ``calls``: незакритий протокол — це завжди обірваний виклик,
+    і звичайна відповідь після нього не збережеться моделлю.
+    """
+    body = text if isinstance(text, str) else ""
+    if not body:
+        return ""
+    # Закритий блок: ріжемо рівно його, решту тексту лишаємо.
+    body = re.sub(
+        r"<\s*" + _DSML_SEP + r"\s*calls\s*>.*?<\s*/\s*" + _DSML_SEP + r"\s*calls\s*>",
+        "", body, flags=re.IGNORECASE | re.DOTALL)
+    # Окремі закриті invoke (модель іноді не ставить зовнішню обгортку).
+    body = re.sub(
+        r"<\s*" + _DSML_SEP + r"\s*invoke\b.*?<\s*/\s*" + _DSML_SEP + r"\s*invoke\s*>",
+        "", body, flags=re.IGNORECASE | re.DOTALL)
+    # Незакритий хвіст: від першого ж тегу DSML до кінця.
+    match = _DSML_START.search(body)
+    if match is not None:
+        body = body[:match.start()]
     return body.strip()

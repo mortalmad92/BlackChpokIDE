@@ -127,6 +127,12 @@ def _looks_like_tool_json(text: str, names: set[str]) -> bool:
     body = (text or "").lstrip()
     if not body:
         return False
+    # ── Власний XML-протокол моделі (DeepSeek ``<|DSML| …>``) ─────────────
+    # Стрім віддає текст по токенах, тож спершу приходить ``<``, потім
+    # ``<|``, потім ``<|DSML|``. Без цієї перевірки шматок службового тегу
+    # встигав піти в чат ЩЕ ДО того, як його впізнав загальний розбір.
+    if tool_dialect.is_call_prefix(body):
+        return True
     if body.startswith("<"):
         # Будь-який службовий тег на початку: <tool_call>, <tools>, <function>.
         head_tag = body[:20].lower()
@@ -145,6 +151,129 @@ def _looks_like_tool_json(text: str, names: set[str]) -> bool:
     if '"name"' not in head and '"tool"' not in head:
         return True
     return any(f'"{name}"' in head for name in names)
+
+
+def _visible_end(text: str, names: set[str] | None = None) -> int:
+    """Скільки символів накопиченого стріму вже точно можна показати.
+
+    Навіщо саме ДОВЖИНА, а не «так/ні». Раніше стрім перевіряв лише
+    ПОЧАТОК накопиченого (:func:`_looks_like_tool_json`). Цього мало:
+    коли модель спершу пише звичайне речення, а вже потім власний
+    XML-виклик, накопичене вже не починається з ``<`` — і ВЕСЬ протокол
+    ішов у чат.
+
+    Заміряно живим прогоном на хмарній ``deepseek-v4.1-flash``: у чаті
+    висіли три ``<|DSML| invoke>`` замість відповіді, файли не
+    створювались. Тепер показуємо рівно той префікс, що стоїть ДО
+    першого службового маркера, і притримуємо обірваний маркер у хвості
+    (модель віддає його по токенах: ``<``, ``<|``, ``<|DS``…).
+    """
+    body = text or ""
+    if not body:
+        return 0
+    # 0. Початок уже схожий на виклик — не показуємо нічого (як і раніше:
+    #    звичайна відповідь усе одно піде наприкінці стріму).
+    if _looks_like_tool_json(body, names or set()):
+        return 0
+    cut = len(body)
+    for pattern in _PROTOCOL_STARTS:
+        match = pattern.search(body)
+        if match is not None and match.start() < cut:
+            cut = match.start()
+    # 1. Обірваний маркер у хвості — притримуємо, щоб він не миготів.
+    cut -= _partial_tail(body[:cut])
+    return max(0, cut)
+
+
+#: Початки службових маркерів, які НЕ показуємо в чаті.
+#:
+#: Порядок не важливий: беремо найраніший збіг. Регулярки навмисно
+#: враховують обидві вертикальні риски (``|`` і ``U+FF5C``), бо живий
+#: прогін дав саме широку.
+_PROTOCOL_STARTS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"<[^>]{0,12}?DSML", re.IGNORECASE),
+    re.compile(r"<tool_call>", re.IGNORECASE),
+    re.compile(r"<tools>", re.IGNORECASE),
+    re.compile(r"\[TOOL_CALLS\]"),
+    re.compile(r"\[AVAILABLE_TOOLS\]"),
+    re.compile(r"\[TOOL_RESULTS\]"),
+    re.compile(r"\[ARGS\]"),
+    re.compile(r"<\|im_start\|>"),
+    re.compile(r"<\|im_end\|>"),
+)
+
+#: Повні маркери — щоб упізнати їхній ОБІРВАНИЙ початок у хвості стріму.
+_FULL_MARKERS: tuple[str, ...] = (
+    "<|DSML|", "</|DSML|", "<｜DSML｜", "</｜DSML｜",
+    "<tool_call>", "</tool_call>", "<tools>", "</tools>",
+    "[TOOL_CALLS]", "[AVAILABLE_TOOLS]", "[TOOL_RESULTS]", "[ARGS]",
+    "<|im_start|>", "<|im_end|>",
+)
+
+
+def _partial_tail(text: str) -> int:
+    """Довжина хвоста ``text``, що є початком службового маркера (0 — немає).
+
+    Обидві вертикальні риски (``U+007C`` і ``U+FF5C``) зводимо до однієї:
+    живий прогін дав САМЕ широку, а документація показує звичайну — без
+    нормалізації один варіант маркера не впізнавався б у хвості стріму.
+    """
+    limit = min(len(text), max(len(marker) for marker in _FULL_MARKERS) - 1)
+    upper = text.upper().replace("\uff5c", "|")
+    for size in range(limit, 0, -1):
+        tail = upper[-size:]
+        if any(marker.upper().replace("\uff5c", "|").startswith(tail)
+               for marker in _FULL_MARKERS):
+            return size
+    return 0
+
+
+class _StreamGuard:
+    """Не показувати службовий протокол у СТРІМІ — для будь-якого провайдера.
+
+    Навіщо окремий клас. OpenAI-сумісний шлях фільтрував текст уголос
+    (``_visible_end``), а Anthropic і Gemini віддавали кожен шматок у чат
+    одразу. Тобто «виправлено» стосувалося половини провайдерів.
+
+    Заміряно: ``<|DSML|`` приходить по токенах, і без буфера в чат
+    потрапляли його шматки (``<``, ``<|``, ``<|DS``…). Тут тримаємо
+    накопичене й віддаємо рівно той префікс, що стоїть ДО першого маркера.
+    """
+
+    def __init__(self, emit: Callable[[str], None] | None, names: set[str]) -> None:
+        self._emit = emit
+        self._names = names
+        self._accumulated = ""
+        self._shown = 0
+
+    def feed(self, piece: str) -> None:
+        """Додати шматок і віддати назовні все безпечне."""
+        if not piece:
+            return
+        self._accumulated += piece
+        if self._emit is None:
+            return
+        safe_end = _visible_end(self._accumulated, self._names)
+        if safe_end > self._shown:
+            _safe_call(self._emit, self._accumulated[self._shown:safe_end])
+            self._shown = safe_end
+
+    def flush(self, final: bool = True) -> None:
+        """Віддати притримане, якщо виклику так і не сталося.
+
+        ``final=False`` — виклик розпізнано, тому притриманий хвіст був
+        його частиною і показувати його не можна.
+        """
+        if self._emit is None or not final:
+            return
+        tail = _visible_end(self._accumulated, self._names)
+        if tail > self._shown:
+            _safe_call(self._emit, self._accumulated[self._shown:tail])
+            self._shown = tail
+
+    @property
+    def text(self) -> str:
+        return self._accumulated
 
 
 def extract_tool_calls(content: str, tools: list[dict[str, Any]],
@@ -626,6 +755,17 @@ def _parse_plain(body: str) -> "ChatResult":
                 "arguments": function.get("arguments", "{}"),
             },
         })
+    # ── Службовий протокол у ``content`` ─────────────────────────────────
+    # Ця гілка спрацьовує, коли сервер ПРОІГНОРУВАВ ``stream: true`` і
+    # віддав звичайний JSON одним тілом. Тут ``content`` іде прямо в чат,
+    # тож протокол треба прибрати обов'язково.
+    #
+    # Заміряно наскрізним прогоном: без цього рядка модель, що відповіла
+    # викликом у власному XML (``<|DSML| invoke …>``), показувала
+    # користувачу службовий протокол замість відповіді, а інструмент не
+    # викликався взагалі — «модель не працює».
+    cleaned = tool_dialect.strip_dsml(content)
+    content = tool_dialect.strip_pseudo_calls(cleaned)
     return ChatResult(
         content=content,
         tool_calls=normalised,
@@ -898,6 +1038,11 @@ class LLMClient:
                 content = cleaned
             elif not cleaned and bare != content:
                 content = bare
+        # ── Службовий протокол не показуємо НАВІТЬ без виклику ────────────
+        # ``content`` іде прямо в чат. Якщо модель віддала власний XML
+        # виклику, а інструмент не впізнався (напр. ім'я поза переліком),
+        # користувач не мусить читати ``<|DSML| invoke>`` замість відповіді.
+        content = tool_dialect.strip_dsml(content)
         if stream_callback and content:
             stream_callback(content)
         return ChatResult(
@@ -947,6 +1092,11 @@ class LLMClient:
         content = str(message.get("content") or "")
         tool_calls = message.get("tool_calls") or []
         usage = data.get("usage") or {}
+        # Службовий протокол у чат не показуємо й тут: рушій віддає
+        # ``content`` цілком, і без очищення користувач бачив би XML виклику
+        # замість відповіді (той самий дефект, що й на хмарі).
+        content = tool_dialect.strip_dsml(content)
+        content = tool_dialect.strip_pseudo_calls(content)
         if stream_callback and content:
             stream_callback(content)
         return ChatResult(
@@ -995,8 +1145,11 @@ class LLMClient:
             raise LLMError(f"Вбудований рушій: {exc}") from exc
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}
+        # Той самий захист, що й у нестрімових гілках: ``content`` іде в чат.
+        content = tool_dialect.strip_dsml(str(message.get("content") or ""))
+        content = tool_dialect.strip_pseudo_calls(content)
         return ChatResult(
-            content=str(message.get("content") or ""),
+            content=content,
             tool_calls=list(message.get("tool_calls") or []),
             finish_reason=str(choice.get("finish_reason") or ""),
             usage=data.get("usage") or {},
@@ -1046,6 +1199,9 @@ class LLMClient:
         finish_reason = ""
         usage: dict[str, Any] = {}
         saw_event = False
+        # Службовий протокол у чат не показуємо — тим самим шаром, що й
+        # для OpenAI-сумісних: у Anthropic текст теж іде шматками.
+        guard = _StreamGuard(on_text, _tool_names(tools or []))
 
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -1084,8 +1240,7 @@ class LLMClient:
                         piece = str(event["text"])
                         if piece:
                             pieces.append(piece)
-                            if on_text is not None:
-                                _safe_call(on_text, piece)
+                            guard.feed(piece)
                     elif "reasoning" in event:
                         thought = str(event["reasoning"])
                         if thought:
@@ -1135,8 +1290,13 @@ class LLMClient:
             }
             for index, slot in sorted(blocks.items()) if slot.get("name")
         ]
+        # Виклик розпізнано — притриманий хвіст був його частиною.
+        guard.flush(final=not calls)
+        streamed = "".join(pieces)
+        streamed = tool_dialect.strip_dsml(streamed)
+        streamed = tool_dialect.strip_pseudo_calls(streamed)
         return ChatResult(
-            content="".join(pieces),
+            content=streamed,
             tool_calls=calls,
             finish_reason=finish_reason,
             usage=usage or None,
@@ -1181,6 +1341,8 @@ class LLMClient:
         finish_reason = ""
         usage: dict[str, Any] = {}
         saw_event = False
+        # Той самий захист, що й для OpenAI/Anthropic (див. _StreamGuard).
+        guard = _StreamGuard(on_text, _tool_names(tools or []))
 
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -1214,8 +1376,7 @@ class LLMClient:
                             _safe_call(on_reasoning, thought)
                     if text:
                         pieces.append(text)
-                        if on_text is not None:
-                            _safe_call(on_text, text)
+                        guard.feed(text)
                     for call in found:
                         calls.append(call)
         except urllib.error.HTTPError as exc:
@@ -1231,8 +1392,12 @@ class LLMClient:
             return self._chat_gemini(messages, tools=tools,
                                      temperature=temperature,
                                      max_tokens=max_tokens)
+        guard.flush(final=not calls)
+        streamed = "".join(pieces)
+        streamed = tool_dialect.strip_dsml(streamed)
+        streamed = tool_dialect.strip_pseudo_calls(streamed)
         return ChatResult(
-            content="".join(pieces),
+            content=streamed,
             tool_calls=calls,
             finish_reason=finish_reason,
             usage=usage or None,
@@ -1272,6 +1437,10 @@ class LLMClient:
             if recovered:
                 calls = recovered
                 content = strip_tool_json(content, tools)
+        # Службовий протокол не мусить лишатися в ``content``: саме він іде
+        # далі в чат і в історію розмови.
+        content = tool_dialect.strip_dsml(content)
+        content = tool_dialect.strip_pseudo_calls(content)
         return ChatResult(
             content=content,
             tool_calls=calls,
@@ -1311,6 +1480,8 @@ class LLMClient:
             if recovered:
                 calls = recovered
                 content = strip_tool_json(content, tools)
+        content = tool_dialect.strip_dsml(content)
+        content = tool_dialect.strip_pseudo_calls(content)
         return ChatResult(
             content=content,
             tool_calls=calls,
@@ -1453,15 +1624,22 @@ class LLMClient:
                         # Малі моделі шлють виклик інструмента як ТЕКСТ
                         # (`{"name": "list_dir", ...}`). Якщо віддавати це в
                         # чат одразу, користувач бачить сирий JSON замість
-                        # відповіді. Тому текст назовні показуємо лише тоді,
-                        # коли накопичене вже не може бути викликом.
+                        # відповіді. Тому текст назовні показуємо лише до
+                        # ПОЧАТКУ службового протоколу.
+                        #
+                        # Раніше перевірявся лише ПОЧАТОК накопиченого
+                        # (``_looks_like_tool_json``). Цього мало: коли модель
+                        # спершу пише «Гляну файли.», а вже потім власний
+                        # XML-виклик, накопичене вже не починається з ``<``,
+                        # і ВЕСЬ протокол ішов у чат — заміряно на живому
+                        # прогоні хмарної DeepSeek: користувач бачив три
+                        # ``<|DSML| invoke>`` замість відповіді.
                         accumulated = "".join(pieces)
-                        if on_text is not None and not _looks_like_tool_json(
-                                accumulated, names):
-                            fresh = accumulated[shown:]
-                            if fresh:
-                                shown = len(accumulated)
-                                _safe_call(on_text, fresh)
+                        if on_text is not None:
+                            safe_end = _visible_end(accumulated)
+                            if safe_end > shown:
+                                _safe_call(on_text, accumulated[shown:safe_end])
+                                shown = safe_end
                     thought = delta.get("reasoning_content") or delta.get("reasoning")
                     if thought:
                         thoughts.append(str(thought))
@@ -1548,6 +1726,15 @@ class LLMClient:
                 content = cleaned
             elif not cleaned and bare != content:
                 content = bare
+
+        # ── Фінальне очищення показуваного тексту ─────────────────────────
+        # Тут ``content`` — це те, що реально піде в чат. Прибираємо з нього
+        # службовий протокол НЕЗАЛЕЖНО від того, чи впізнали виклик:
+        # користувач не мусить бачити ``<|DSML| invoke>`` навіть коли
+        # інструмент не спрацював.
+        content = tool_dialect.strip_dsml(content)
+        if normalised:
+            content = strip_tool_json(content, tools)
 
         # Частину тексту могли притримати (він скидався на виклик), але
         # виклику не стало — це звичайна відповідь, тож віддаємо залишок.
