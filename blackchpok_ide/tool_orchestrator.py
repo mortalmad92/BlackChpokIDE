@@ -169,6 +169,8 @@ _HUMAN_ACTIONS: dict[str, str] = {
     "git_diff": "дивлюсь зміни",
     "project_tree": "будую дерево проєкту",
     "python_check": "перевіряю синтаксис",
+    "self_diagnose": "перевіряю себе",
+    "self_repair": "ремонтую себе",
     "search_web": "шукаю в інтернеті",
     "fetch_url": "читаю сторінку",
     "web_api": "роблю запит до API",

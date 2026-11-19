@@ -267,6 +267,23 @@ _NOTES: dict[str, dict[str, Any]] = {
         "failure_modes": ("файл не .py → перевірка не має сенсу",),
         "example": {"path": "calc.py"},
     },
+    "self_diagnose": {
+        "purpose": ("перевірити саму IDE: файли стану, синтаксис власних "
+                    "модулів, робочу теку, реєстр інструментів"),
+        "category": "exec", "risk": RISK_READ_ONLY,
+        "side_effects": "немає (компіляція йде в тимчасову теку)",
+        "failure_modes": ("нічого не зламано → так і скажи",),
+        "timeout": 120.0,
+        "example": {},
+    },
+    "self_repair": {
+        "purpose": "знайти й виправити поломки в самій IDE",
+        "category": "exec", "risk": RISK_LOCAL,
+        "side_effects": "править власні модулі IDE та файли стану",
+        "failure_modes": ("правка не компілюється → файл лишається як був",),
+        "timeout": 120.0,
+        "example": {},
+    },
     "search_web": {
         "purpose": "пошук в інтернеті: ціни, новини, версії, документація",
         "category": "web", "risk": RISK_EXTERNAL,

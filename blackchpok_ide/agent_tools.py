@@ -300,6 +300,9 @@ class ToolRegistry:
             "git_publish": self.git_publish,
             "project_tree": self.project_tree,
             "python_check": self.python_check,
+            # ── саморемонт IDE (перевірка й лікування самого застосунку)
+            "self_diagnose": self.self_diagnose,
+            "self_repair": self.self_repair,
             # Живе тестування застосунку проєкту (прив'язується вікном).
             "app_start": self.app_start,
             "app_stop": self.app_stop,
@@ -889,6 +892,49 @@ class ToolRegistry:
             return f"{path}: синтаксис ок"
         except Exception as exc:  # noqa: BLE001 - показуємо текст помилки моделі
             return f"{path}: помилка синтаксису\n{exc}"
+
+    # ── саморемонт IDE ─────────────────────────────────────────────────────
+    #: Шлях до власного пакета — щоб ``self_diagnose`` знав, ЩО перевіряти.
+    #: Порожній означає «взяти теку цього модуля» (звичайний випадок).
+    self_package_root: str = ""
+
+    def _self_registry_names(self) -> list[str]:
+        """Назви інструментів, які реєстр справді вміє виконувати."""
+        try:
+            return sorted(self._handlers.keys())
+        except Exception:                            # noqa: BLE001
+            return []
+
+    def _self_report(self, *, repair: bool):
+        """Спільна частина ``self_diagnose`` і ``self_repair``."""
+        from . import selfrepair
+
+        package_root = self.self_package_root or str(Path(__file__).resolve().parent)
+        report = selfrepair.diagnose(
+            workspace=str(self.root),
+            package_root=package_root,
+            # Повна компіляція пакета коштує близько секунди. Це прийнятна
+            # ціна за ЧЕСНУ відповідь на питання «що з тобою не так».
+            source_limit=400,
+            registry_names=self._self_registry_names(),
+        )
+        if repair:
+            selfrepair.repair_self(report)
+        return report
+
+    def self_diagnose(self) -> str:
+        """Перевірити саму IDE й НІЧОГО не змінювати."""
+        from . import selfrepair
+
+        report = self._self_report(repair=False)
+        return selfrepair.format_report(report)
+
+    def self_repair(self) -> str:
+        """Знайти й виправити поломки в самій IDE."""
+        from . import selfrepair
+
+        report = self._self_report(repair=True)
+        return selfrepair.format_report(report)
 
     # ── живе тестування застосунку ─────────────────────────────────────────
     def app_start(self) -> str:

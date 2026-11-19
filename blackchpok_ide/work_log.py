@@ -54,6 +54,8 @@ TOOL_VIEWS: dict[str, tuple[str, str, str]] = {
     "git_publish": ("⬆", "Оновлює GitHub", "message"),
     "project_tree": ("▦", "Будує дерево", "depth"),
     "python_check": ("✓", "Перевіряє синтаксис", "path"),
+    "self_diagnose": ("🩺", "Перевіряє себе", ""),
+    "self_repair": ("🛠", "Ремонтує себе", ""),
     # ── інтернет ───────────────────────────────────────────────────────────
     "search_web": ("⌕", "Шукає в інтернеті", "query"),
     "fetch_url": ("🌐", "Читає сторінку", "url"),

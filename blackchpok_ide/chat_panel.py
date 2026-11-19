@@ -412,6 +412,8 @@ class ChatPanel(tk.Frame):
         self._menu = None
         self._menu_mode = ""
         self._events_after: Optional[str] = None
+        #: Відкладена повторна прокрутка вниз (див. _settle_scroll).
+        self._settle_scroll_after: Optional[str] = None
         self._composer_parent = composer_parent
         self._title_text: str = ""
 
@@ -1071,6 +1073,59 @@ class ChatPanel(tk.Frame):
             self.scroll.canvas.yview_moveto(1.0)
         except tk.TclError:
             pass
+
+    def _settle_scroll(self) -> None:
+        """Прокрутити вниз ЩЕ РАЗ, коли layout справді дорахувався.
+
+        Навіщо окремий відкладений крок. Наприкінці ходу агента картка
+        відповіді тільки-но створена: її висота ще не врахована в області
+        прокрутки (текст підганяється під вміст, блоки коду додають рядки).
+        ``_scroll_to_end`` викликається одразу, рахує СТАРУ висоту й
+        прокручує до старого низу — тому після завершення роботи
+        користувач лишався всередині останньої відповіді й мусив
+        прокручувати вручну.
+
+        Тут прокрутка повторюється кілька разів із паузами: Tk встигає
+        перерахувати розкладку, і низ справді видно.
+        """
+        self._scroll_to_end()
+        self._settle_scroll_cancel()
+        self._settle_scroll_step(0)
+
+    def _settle_scroll_cancel(self) -> None:
+        job = getattr(self, "_settle_scroll_after", None)
+        if job is None:
+            return
+        try:
+            self.after_cancel(job)
+        except (tk.TclError, ValueError):
+            pass
+        self._settle_scroll_after = None
+
+    def _settle_scroll_step(self, attempt: int) -> None:
+        """Запланована повторна прокрутка (див. :meth:`_settle_scroll`)."""
+        try:
+            if not self._timer_alive():
+                self._settle_scroll_after = None
+                return
+            self._settle_scroll_after = self.after(
+                SETTLE_SCROLL_MS, lambda: self._settle_scroll_now(attempt))
+        except tk.TclError:
+            self._settle_scroll_after = None
+
+    def _settle_scroll_now(self, attempt: int = 0) -> None:
+        """Прокрутити до низу після перерахунку розкладки."""
+        self._settle_scroll_after = None
+        if self._replaying:
+            return
+        try:
+            self.scroll.sync_scrollregion()
+            self.scroll.canvas.update_idletasks()
+            self.scroll.canvas.yview_moveto(1.0)
+        except tk.TclError:
+            return
+        if attempt + 1 < SETTLE_SCROLL_TRIES:
+            self._settle_scroll_step(attempt + 1)
 
     # ── сервіс ─────────────────────────────────────────────────────────────
     def attach_runner(self, runner: AgentRunner) -> None:
@@ -2446,7 +2501,10 @@ class ChatPanel(tk.Frame):
             # забирала місце над полем вводу.
             self._arrow_thought("", show=False)
             self.set_busy(False)
-            self._scroll_to_end()
+            # Прокрутка вниз ПІСЛЯ дорахунку layout: картка відповіді щойно
+            # створена, і звичайний _scroll_to_end прокручував до ще старої
+            # висоти — користувач лишався всередині останньої відповіді.
+            self._settle_scroll()
 
     # ── стрімінг ───────────────────────────────────────────────────────────
     def _on_token(self, piece: str) -> None:
