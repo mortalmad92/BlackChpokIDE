@@ -207,6 +207,94 @@ def for_url(base_url: str) -> Adapter:
 # Anthropic: перетворення запиту й відповіді
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _plain_text(content: Any) -> str:
+    """Текст із частин повідомлення (без картинок).
+
+    Потрібно там, де API приймає лише рядок: системний промпт Anthropic,
+    ``tool_result``. Без цього список частин перетворювався на
+    ``str(list)`` — у промпт потрапляв «{'type': 'text', …}».
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content or "")
+    pieces: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            pieces.append(part)
+        elif isinstance(part, dict) and str(part.get("type")) == "text":
+            pieces.append(str(part.get("text") or ""))
+    return "\n".join(piece for piece in pieces if piece)
+
+
+def _anthropic_blocks(content: Any) -> list[dict[str, Any]]:
+    """Частини повідомлення → блоки Anthropic.
+
+    Наш внутрішній формат — OpenAI vision: список ``{"type": "text"}`` і
+    ``{"type": "image_url", "image_url": {"url": "data:image/png;base64,…"}}``.
+    Anthropic хоче інше: ``{"type": "image", "source": {"type": "base64",
+    "media_type": …, "data": …}}``.
+
+    Раніше список частин просто перетворювався на ``str(content)`` — тобто
+    зображення для Claude ставало рядком «{'type': 'image_url', …}» і
+    модель його не бачила, хоч запит проходив успішно.
+    """
+    blocks: list[dict[str, Any]] = []
+    if isinstance(content, str):
+        if content.strip():
+            blocks.append({"type": "text", "text": content})
+        return blocks
+    if not isinstance(content, list):
+        text = str(content or "")
+        if text.strip():
+            blocks.append({"type": "text", "text": text})
+        return blocks
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        kind = str(part.get("type") or "")
+        if kind == "text":
+            text = str(part.get("text") or "")
+            if text.strip():
+                blocks.append({"type": "text", "text": text})
+            continue
+        if kind in ("image_url", "image"):
+            url = ""
+            holder = part.get("image_url")
+            if isinstance(holder, dict):
+                url = str(holder.get("url") or "")
+            elif isinstance(holder, str):
+                url = holder
+            if not url:
+                url = str(part.get("url") or "")
+            block = _anthropic_image(url)
+            if block is not None:
+                blocks.append(block)
+    return blocks
+
+
+def _anthropic_image(url: str) -> Optional[dict[str, Any]]:
+    """``data:`` -URL → блок ``image`` Anthropic. None — якщо не data-URL.
+
+    Anthropic не приймає посилань на файли: лише base64 у тілі запиту.
+    Тому віддалений ``http(s)``-URL пропускаємо (краще без картинки, ніж
+    запит, який сервер відхилить).
+    """
+    clean = (url or "").strip()
+    if not clean.startswith("data:"):
+        return None
+    header, _, payload = clean.partition(",")
+    if not payload:
+        return None
+    media = header[len("data:"):].split(";")[0].strip() or "image/png"
+    if not media.startswith("image/"):
+        return None
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media, "data": payload},
+    }
+
+
 def anthropic_payload(messages: list[dict[str, Any]], *, model: str,
                       max_tokens: int, temperature: float = 0.2,
                       tools: Optional[list[dict[str, Any]]] = None,
@@ -229,7 +317,8 @@ def anthropic_payload(messages: list[dict[str, Any]], *, model: str,
         role = str(message.get("role") or "")
         content = message.get("content")
         if role == "system":
-            text = content if isinstance(content, str) else str(content or "")
+            # ``system`` — окреме поле Anthropic; картинок там не буває.
+            text = content if isinstance(content, str) else _plain_text(content)
             if text.strip():
                 system_parts.append(text)
             continue
@@ -243,10 +332,7 @@ def anthropic_payload(messages: list[dict[str, Any]], *, model: str,
                 }],
             })
             continue
-        blocks: list[dict[str, Any]] = []
-        text = content if isinstance(content, str) else str(content or "")
-        if text.strip():
-            blocks.append({"type": "text", "text": text})
+        blocks: list[dict[str, Any]] = _anthropic_blocks(content)
         calls = message.get("tool_calls")
         if isinstance(calls, list):
             for call in calls:
@@ -387,6 +473,62 @@ def anthropic_usage(data: dict[str, Any]) -> dict[str, int]:
 # Gemini: нативний API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _gemini_parts(content: Any) -> list[dict[str, Any]]:
+    """Частини повідомлення → ``parts`` Gemini.
+
+    Зображення Gemini приймає як ``inline_data`` (base64 у тілі запиту).
+    Наш внутрішній формат — OpenAI vision із ``image_url`` та ``data:``-URL,
+    тож конвертуємо його. Раніше список частин ставав рядком, і Gemini
+    отримував текст із «{'type': 'image_url', …}» замість картинки.
+    """
+    parts: list[dict[str, Any]] = []
+    if isinstance(content, str):
+        if content.strip():
+            parts.append({"text": content})
+        return parts
+    if not isinstance(content, list):
+        text = str(content or "")
+        if text.strip():
+            parts.append({"text": text})
+        return parts
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        kind = str(part.get("type") or "")
+        if kind == "text":
+            text = str(part.get("text") or "")
+            if text.strip():
+                parts.append({"text": text})
+            continue
+        if kind in ("image_url", "image"):
+            url = ""
+            holder = part.get("image_url")
+            if isinstance(holder, dict):
+                url = str(holder.get("url") or "")
+            elif isinstance(holder, str):
+                url = holder
+            if not url:
+                url = str(part.get("url") or "")
+            inline = _gemini_inline(url)
+            if inline is not None:
+                parts.append(inline)
+    return parts
+
+
+def _gemini_inline(url: str) -> Optional[dict[str, Any]]:
+    """``data:``-URL → ``inline_data`` Gemini (None — якщо не data-URL)."""
+    clean = (url or "").strip()
+    if not clean.startswith("data:"):
+        return None
+    header, _, payload = clean.partition(",")
+    if not payload:
+        return None
+    mime = header[len("data:"):].split(";")[0].strip() or "image/png"
+    if not mime.startswith("image/"):
+        return None
+    return {"inline_data": {"mime_type": mime, "data": payload}}
+
+
 def gemini_payload(messages: list[dict[str, Any]], *,
                    temperature: float = 0.2,
                    max_tokens: int = 4096,
@@ -399,7 +541,7 @@ def gemini_payload(messages: list[dict[str, Any]], *,
             continue
         role = str(message.get("role") or "")
         content = message.get("content")
-        text = content if isinstance(content, str) else str(content or "")
+        text = content if isinstance(content, str) else _plain_text(content)
         if role == "system":
             if text.strip():
                 system_parts.append(text)
@@ -413,9 +555,7 @@ def gemini_payload(messages: list[dict[str, Any]], *,
                 }}],
             })
             continue
-        parts: list[dict[str, Any]] = []
-        if text.strip():
-            parts.append({"text": text})
+        parts: list[dict[str, Any]] = _gemini_parts(content)
         calls = message.get("tool_calls")
         if isinstance(calls, list):
             for call in calls:

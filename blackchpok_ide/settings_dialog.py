@@ -16,6 +16,29 @@ from .llm_client import KNOWN_ENDPOINTS
 
 LOG = __import__("logging").getLogger("blackchpok.settings")
 
+#: Вибір «чи надсилати зображення моделі» в налаштуваннях.
+VISION_AUTO = "Авто (визначити)"
+VISION_ON = "Увімкнено"
+VISION_OFF = "Вимкнено"
+
+
+def _vision_choice(override: Any) -> str:
+    """Значення ``vision_override`` → підпис у списку."""
+    if override is True:
+        return VISION_ON
+    if override is False:
+        return VISION_OFF
+    return VISION_AUTO
+
+
+def _vision_value(choice: str) -> Optional[bool]:
+    """Підпис зі списку → ``vision_override`` (None — авто)."""
+    if choice == VISION_ON:
+        return True
+    if choice == VISION_OFF:
+        return False
+    return None
+
 
 class SettingsDialog(tk.Toplevel):
     def __init__(self, master: tk.Misc, fonts: theme.Theme, settings: Settings,
@@ -348,6 +371,28 @@ class SettingsDialog(tk.Toplevel):
                   "кожен токен повільнішим. Замалий змушує агента перечитувати\n"
                   "файли. IDE сама обере стиснутий кеш (q8_0) або винесе його\n"
                   "в системну пам'ять, якщо контекст не влазить у VRAM."),
+            style="Panel.TLabel", justify="left").grid(
+            row=row, column=1, sticky="w", padx=(10, 0), pady=(0, 4))
+        row += 1
+
+        # ── Зір: чи надсилати зображення моделі ───────────────────────────
+        # Потрібно саме вручну, бо назва моделі не завжди каже правду:
+        # нові та власні моделі провайдера часто без жодної ознаки в імені,
+        # і вгадування за назвою відмовляло б у картинках робочій моделі.
+        ttk.Label(frame, text="Зображення (зір)").grid(
+            row=row, column=0, sticky="w", pady=4)
+        self.vision_var = tk.StringVar(value=_vision_choice(
+            getattr(self.settings.llm, "vision_override", None)))
+        ttk.Combobox(
+            frame, textvariable=self.vision_var, state="readonly", width=24,
+            values=(VISION_AUTO, VISION_ON, VISION_OFF),
+        ).grid(row=row, column=1, sticky="w", pady=4, padx=(10, 0))
+        row += 1
+        ttk.Label(
+            frame,
+            text=("«Авто» — локальна модель бачить знімки за наявності mmproj,\n"
+                  "хмарна — якщо вона мультимодальна. Якщо ваша модель читає\n"
+                  "картинки, але в назві цього немає — виберіть «Увімкнено»."),
             style="Panel.TLabel", justify="left").grid(
             row=row, column=1, sticky="w", padx=(10, 0), pady=(0, 4))
         return frame
@@ -1517,6 +1562,9 @@ class SettingsDialog(tk.Toplevel):
         s.llm.temperature = self._number("temp_var", "float", 0.3)
         s.llm.max_tokens = int(self._number("tokens_var", "int", 4096))
         s.llm.timeout = int(self._number("timeout_var", "int", 120))
+        # Зір: потрійне значення (None = авто), тому не bool().
+        if hasattr(self, "vision_var"):
+            s.llm.vision_override = _vision_value(self.vision_var.get())
         s.llm.normalise()
 
         s.ui.font_size = int(self._number("size_var", "int", 11))

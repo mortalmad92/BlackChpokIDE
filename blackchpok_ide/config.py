@@ -15,7 +15,7 @@ import tempfile
 from dataclasses import dataclass, field, fields, asdict
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from . import secrets
 
@@ -462,6 +462,14 @@ class LLMSettings:
     timeout: int = 300
     auto_detect: bool = True
     reasoning_effort: str = "default"   # default | low | medium | high
+    #: Чи передавати зображення цій моделі (``true`` / ``false`` / ``null``).
+    #:
+    #: ``None`` — «визнач сам»: для локальної моделі це наявність ``mmproj``,
+    #: для хмарної — чи заявлена вона мультимодальною. ``True`` змушує
+    #: надсилати картинки навіть тоді, коли назва нічого не каже (буває з
+    #: власними або новими моделями провайдера), ``False`` — вимикає
+    #: примусово. Саме тому потрійне значення, а не прапорець.
+    vision_override: Optional[bool] = None
 
     def normalise(self) -> "LLMSettings":
         url = (self.base_url or "").strip().rstrip("/")

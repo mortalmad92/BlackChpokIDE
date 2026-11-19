@@ -1240,6 +1240,7 @@ class LLMClient:
         max_tokens: int | None = None,
         on_text: Callable[[str], None] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
+        on_tool_args: Callable[[str, str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
     ) -> "ChatResult":
         """Стрімінг Anthropic: події ``content_block_delta``.
@@ -1332,7 +1333,12 @@ class LLMClient:
                         slot = blocks.setdefault(
                             int(args.get("index", 0)),
                             {"id": "", "name": "", "arguments": ""})
-                        slot["arguments"] += str(args.get("delta") or "")
+                        delta = str(args.get("delta") or "")
+                        slot["arguments"] += delta
+                        # Живий показ правки: та сама причина, що й для
+                        # OpenAI-сумісних (див. on_tool_args у chat_stream).
+                        if on_tool_args is not None and delta and slot["name"]:
+                            _safe_call(on_tool_args, slot["name"], delta)
                     elif "tool_stop" in event:
                         continue
                     if kind == "error":
@@ -1573,6 +1579,7 @@ class LLMClient:
         max_tokens: int | None = None,
         on_text: Callable[[str], None] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
+        on_tool_args: Callable[[str, str], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
         known_tools: Iterable[str] | None = None,
     ) -> "ChatResult":
@@ -1582,6 +1589,11 @@ class LLMClient:
         додатково викликає ``on_text`` на кожен шматок тексту й
         ``on_reasoning`` на кожен шматок роздумів. Так користувач бачить,
         як відповідь друкується, а не чекає мовчки.
+
+        ``on_tool_args(name, piece)`` кличеться на КОЖЕН шматок аргументів
+        виклику інструмента. Саме завдяки йому правка коду з'являється в
+        редакторі під час стріму, а не після нього: ``write_file`` несе
+        ``content`` шматками, і кожен шматок можна показати одразу.
 
         Якщо сервер не підтримує стрімінг (не віддає ``data:``), метод
         прозоро відкочується до звичайного запиту, тож поведінка не
@@ -1605,7 +1617,8 @@ class LLMClient:
             return self._stream_anthropic(
                 messages, tools=tools, temperature=temperature,
                 max_tokens=max_tokens, on_text=on_text,
-                on_reasoning=on_reasoning, should_stop=should_stop)
+                on_reasoning=on_reasoning, on_tool_args=on_tool_args,
+                should_stop=should_stop)
         if self.style == provider_adapters.GEMINI:
             return self._stream_gemini(
                 messages, tools=tools, temperature=temperature,
@@ -1730,7 +1743,15 @@ class LLMClient:
                         if function.get("name"):
                             slot["name"] = str(function["name"])
                         if function.get("arguments"):
-                            slot["arguments"] += str(function["arguments"])
+                            piece = str(function["arguments"])
+                            slot["arguments"] += piece
+                            # ── Живий показ правки ────────────────────────
+                            # Аргументи приходять шматками, і ``content``
+                            # у них — це код. Віддаємо назву інструмента й
+                            # шматок назовні: вікно показує правку в
+                            # редакторі ще до виклику інструмента.
+                            if on_tool_args is not None and slot["name"]:
+                                _safe_call(on_tool_args, slot["name"], piece)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:800]
             raise LLMError(f"HTTP {exc.code} від {url}: {_human_error_body(detail)}") from exc

@@ -103,6 +103,8 @@ from .file_tree import FileTree
 from .first_run import FirstRunWizard
 from .model_hub_panel import ModelHubPanel
 from . import neuromesh_panel, runtime_panel
+from . import live_edit, stream_apply
+from . import vision as vision_module
 from .native import api as native_api
 from .native import bridge as native_bridge
 from .outline_panel import OutlinePanel
@@ -2839,10 +2841,7 @@ class BlackChpokIDE(tk.Tk):
             self._invalidate_model_state(reason="модель запущено")
             # Прапорець зору для агента: передавати знімки як зображення
             # можна ЛИШЕ тоді, коли сервер справді запущено з проєктором.
-            try:
-                self.agent.vision_enabled = bool(projector)
-            except AttributeError:
-                pass
+            self.refresh_agent_vision()
             note = (f" · зір: {projector.name}" if projector else "")
             return f"модель запущено: {path.stem}{note}"
         except Exception as exc:  # noqa: BLE001 - показуємо причину
@@ -6390,6 +6389,13 @@ class BlackChpokIDE(tk.Tk):
         # без повного стану вікна.
         if getattr(self, "_plan_step_active", False):
             self._note_plan_activity(kind, text, data)
+        # ── Жива правка: код з'являється в редакторі ПІД ЧАС стріму ───────
+        # Подія приходить із потоку агента на кожен шматок аргументів
+        # ``write_file`` / ``edit_file``. Показ робимо в головному потоці:
+        # tkinter не потокобезпечний.
+        if kind == "edit_delta":
+            self._ui_call(self._apply_live_edit, data)
+            return
         try:
             if kind == "status":
                 if text:
@@ -7191,6 +7197,109 @@ class BlackChpokIDE(tk.Tk):
             self.set_status(f"{name} у редакторі · відкрито файлів: {opened}")
 
         self._ui_call(work)
+
+    # ── жива правка коду (стрімінг) ────────────────────────────────────────
+    def _apply_live_edit(self, data: dict) -> None:
+        """Показати правку, яку модель ще пише (main thread).
+
+        Кожен шматок аргументів ``write_file`` / ``edit_file`` приходить
+        подією ``edit_delta``. Тут ми або починаємо нову живу правку, або
+        дописуємо вже почату — залежно від того, чи змінився файл.
+
+        Чому окремий метод, а не одразу робота з віджетом у ``_case_on_event``.
+        ``_case_on_event`` кличеться з потоку агента; прямий доступ до
+        ``tk.Text`` звідти падає з «main thread is not in main loop».
+        """
+        path = str((data or {}).get("path") or "").strip()
+        content = (data or {}).get("content") or ""
+        if not path or not content:
+            return
+        target = Path(path)
+        if not target.is_absolute():
+            target = self._project_root() / target
+        final = bool((data or {}).get("final"))
+        search = (data or {}).get("search") or ""
+        replaces = bool((data or {}).get("replaces"))
+        whole_file = bool((data or {}).get("whole_file"))
+
+        live = getattr(self, "_live_edit", None)
+        current = getattr(self, "_live_edit_path", "")
+        try:
+            same = (live is not None and not live.settled and current == str(target))
+            if not same:
+                # Новий файл або новий виклик — попередню правку закриваємо:
+                # вона лишилась незавершеною, і тримати її відкритою означало
+                # б показати в одному файлі дві правки накладкою.
+                if live is not None:
+                    live.cancel_timer()
+                live = self._start_live_edit(target, content, search, replaces,
+                                             whole_file)
+                self._live_edit = live
+                self._live_edit_path = str(target)
+                return
+            live.append(content, final=final)
+        except Exception:  # noqa: BLE001 - показ правки не має зривати хід
+            LOG.debug("Живу правку не показано", exc_info=True)
+
+    def _start_live_edit(self, target: Path, content: str, search: str,
+                         replaces: bool, whole_file: bool = False):
+        """Відкрити файл і почати показ правки в редакторі."""
+        self._hide_welcome()
+        if getattr(self, "_focus_mode", False):
+            self.toggle_focus_mode(False)
+        if not getattr(self, "_chat_shown", True):
+            self.show_chat(True)
+        if getattr(self, "_view", "") != "workspace":
+            self.set_view("workspace")
+        try:
+            self.tabs.open_file(target, focus=False)
+        except (tk.TclError, OSError, AttributeError):
+            LOG.debug("Файл для живої правки не відкрився", exc_info=True)
+            return None
+        editor = self.tabs.by_path(target)
+        if editor is None:
+            return None
+        block = stream_apply.EditBlock(search=search if replaces else "",
+                                       replace=content, complete=False)
+        live = live_edit.feed_block(
+            editor, block,
+            on_done=lambda item, ok: self._live_edit_done(item, ok, target),
+            on_status=lambda text: self.set_status(f"{target.name}: {text}"),
+            whole_file=whole_file,
+        )
+        if live is None:
+            return None
+        self.set_status(f"{target.name}: агент пише правку…")
+        return live
+
+    def _live_edit_done(self, live, accepted: bool, target: Path) -> None:
+        """Людина натиснула «Прийняти» або «Відхилити»."""
+        self._live_edit = None
+        self._live_edit_path = ""
+        name = Path(target).name
+        if accepted:
+            # Файл на диску вже записано інструментом — лишається сказати
+            # про це й оновити похідні панелі.
+            self.set_status(f"{name}: правку прийнято.")
+        else:
+            # Повертаємо вміст файлу з диска: інструмент міг його вже
+            # записати, і без перечитування редактор показував би
+            # відхилений текст далі.
+            try:
+                from . import workspace as ws
+
+                content, _encoding = ws.read_text_file(Path(target))
+                editor = self.tabs.by_path(Path(target))
+                if editor is not None:
+                    editor.set_text(content)
+            except (OSError, AttributeError, tk.TclError):
+                LOG.debug("Файл не перечитано після відхилення", exc_info=True)
+            self.set_status(f"{name}: правку відхилено.")
+        try:
+            self._refresh_context()
+            self.outline.update_for(self.tabs.current())
+        except (tk.TclError, AttributeError):
+            pass
 
     def open_path(self, path: Path | str, line: int = 0) -> None:
         # Публічний вхід: сюди приходять і Path, і рядки з пошуку, палітри
@@ -8452,7 +8561,13 @@ class BlackChpokIDE(tk.Tk):
         provider = cloud_agents.get(cloud.provider)
         name = provider.label if provider else "хмара"
         reasoning = " · reasoning" if cloud_agents.is_reasoning_model(cloud.model) else ""
-        self.set_status(f"Хмарний агент: {name} · {cloud.model}{reasoning}")
+        # ── Зір хмарної моделі ─────────────────────────────────────────────
+        # Хмара не має жодного mmproj, тож без цього виклику ``vision_enabled``
+        # лишався False і картинки не прикріплювались узагалі. Тепер прапорець
+        # перераховується для кожної моделі — локальної й хмарної однаково.
+        sees = self.refresh_agent_vision()
+        vision_note = " · зір" if sees else ""
+        self.set_status(f"Хмарний агент: {name} · {cloud.model}{reasoning}{vision_note}")
         self._cloud_active = True
         return True
 
@@ -8482,6 +8597,66 @@ class BlackChpokIDE(tk.Tk):
             self.set_status("Модель вивантажено — файл можна видалити.")
         return True
 
+    def refresh_agent_vision(self) -> bool:
+        """Перерахувати, чи можна надсилати зображення поточній моделі.
+
+        Повертає актуальне значення й ставить його агенту.
+
+        ── ЧОМУ ОДИН МЕТОД НА ВСІ ШЛЯХИ ────────────────────────────────────
+        Раніше ``vision_enabled`` виставлявся у двох місцях по-різному, і
+        обидва знали лише про локальний ``mmproj``. Через це ХМАРНА модель
+        (DeepSeek, GPT-4o, Claude, Gemini) завжди вважалась «без зору»:
+        користувач бачив «Поточна модель не має зору (немає mmproj)» і не
+        міг прикріпити жодної картинки, хоч хмарі проєктор не потрібен.
+
+        Тепер рішення ухвалює :func:`vision.model_sees_images`, який знає
+        про обидва випадки. Сюди ж сходяться всі три шляхи: автозапуск
+        локальної моделі, запуск із хаба й вибір хмарної моделі.
+        """
+        llm = getattr(self.settings, "llm", None)
+        model = str(getattr(llm, "model", "") or "").strip()
+        base_url = str(getattr(llm, "base_url", "") or "").strip()
+        provider = str(getattr(getattr(self.settings, "cloud", None),
+                               "provider", "") or "").strip()
+        local_path = None
+        if vision_module.is_local_url(base_url):
+            local_path = self._local_model_path(model)
+        override = getattr(llm, "vision_override", None)
+        enabled = vision_module.model_sees_images(
+            model, base_url, local_path=local_path, provider=provider,
+            override=override)
+        try:
+            self.agent.vision_enabled = enabled
+        except AttributeError:
+            pass
+        detail = vision_module.describe(
+            model, base_url, local_path=local_path, provider=provider,
+            override=override)
+        self._vision_detail = detail
+        # Чат показує цю причину, якщо користувач спробує прикріпити картинку.
+        try:
+            self.chat.set_vision_detail(detail)
+        except (AttributeError, tk.TclError):
+            pass
+        LOG.info("Зір моделі: %s (%s)", enabled, detail)
+        return enabled
+
+    def _local_model_path(self, model: str) -> Path | None:
+        """Знайти GGUF-файл локальної моделі за назвою (None — не знайдено)."""
+        name = (model or "").strip()
+        if not name:
+            return None
+        try:
+            chosen = str(getattr(self.settings.engine, "model_path", "") or "")
+            if chosen and Path(chosen).exists() and Path(chosen).stem == name:
+                return Path(chosen)
+            for path in hub.local_models():
+                if path.stem == name or path.name == name:
+                    return path
+        except Exception:  # noqa: BLE001 - пошук не має ламати перемикання
+            LOG.debug("Файл моделі не знайдено для %s", name, exc_info=True)
+        return None
+
     def _on_hub_model_ready(self, base_url: str, model_name: str) -> None:
         from .runtime import MANAGED_API_KEY
 
@@ -8508,21 +8683,8 @@ class BlackChpokIDE(tk.Tk):
         self.settings.engine.managed = True
         self.settings.save()
         self.agent.llm_settings = self.settings.llm
-        # Чи має ця модель зір: перевіряємо, чи знайшовся проєктор для
-        # завантаженого файлу. Так агент знає, чи можна передавати знімки
-        # як зображення (з проєктором) чи лише як шлях.
-        vision = False
-        try:
-            for path in hub.local_models():
-                if path.stem == model_name or path.name == model_name:
-                    vision = hub.vision_projector_for(path) is not None
-                    break
-        except Exception:  # noqa: BLE001 - перевірка не має ламати старт
-            LOG.debug("Перевірка зору не вдалась", exc_info=True)
-        try:
-            self.agent.vision_enabled = vision
-        except AttributeError:
-            pass
+        # Чи має ця модель зір — вирішує ЄДИНИЙ метод (див. refresh_agent_vision).
+        vision = self.refresh_agent_vision()
         self.probe_providers(silent=True)
         note = " · зір увімкнено" if vision else ""
         self.set_status(f"Модель готова: {model_name} · {base_url}{note}")

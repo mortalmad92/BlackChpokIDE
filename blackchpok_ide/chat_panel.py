@@ -1165,6 +1165,15 @@ class ChatPanel(tk.Frame):
             except (tk.TclError, AttributeError):
                 pass
 
+    def set_vision_detail(self, detail: str) -> None:
+        """Запам'ятати, ЧОМУ модель бачить (або не бачить) зображення.
+
+        Потрібно для чесної підказки при спробі прикріпити картинку:
+        «немає mmproj» і «модель не мультимодальна» — різні причини й різні
+        дії користувача.
+        """
+        self._vision_detail = str(detail or "")
+
     def set_online(self, online: bool, detail: str = "") -> None:
         try:
             self.status_dot.configure(fg=theme.SUCCESS if online else theme.ERROR)
@@ -3394,21 +3403,31 @@ class ChatPanel(tk.Frame):
         )
         if not path:
             return
-        suffix = Path(path).suffix.lower()
+        self._insert_file(Path(path))
+
+    def _insert_file(self, path: Path) -> None:
+        """Додати файл за шляхом: зображення — у чергу, текст — у поле.
+
+        Виділено з :meth:`_attach_file`, щоб цю саму дію можна було
+        викликати без модального діалогу: перетягуванням файлу у вікно
+        або з коду (тести, майбутній drag&drop).
+        """
+        path = Path(path)
+        suffix = path.suffix.lower()
         if suffix in self.IMAGE_SUFFIXES:
-            self._attach_image(Path(path))
+            self._attach_image(path)
             return
         try:
-            content = Path(path).read_text(encoding="utf-8", errors="replace")
+            content = path.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             self._note(f"Не вдалось прочитати файл: {exc}", kind="error")
             return
         snippet = content[:6000]
         self._clear_placeholder()
-        self.input_box.insert("end", f"\n\n```{Path(path).name}\n{snippet}\n```\n")
+        self.input_box.insert("end", f"\n\n```{path.name}\n{snippet}\n```\n")
         self.input_box.focus_set()
         if self.on_status:
-            self.on_status(f"Додано файл: {Path(path).name}")
+            self.on_status(f"Додано файл: {path.name}")
 
     def _attach_image(self, path: Path) -> None:
         """Поставити зображення в чергу моделі як СПРАВЖНІЙ image input."""
@@ -3419,9 +3438,18 @@ class ChatPanel(tk.Frame):
         if not getattr(runner, "vision_enabled", True):
             # Модель без зору: запит із картинкою сервер відхилив би, тому
             # чесно кажемо про це замість тихого ігнорування.
-            self._note("Поточна модель не має зору (немає mmproj). "
-                       "Увімкни мультимодальну модель у «Хабі моделей».",
-                       kind="error")
+            #
+            # Підказка різна для локальної й хмарної моделі: «немає mmproj»
+            # для хмари звучало безглуздо — там проєктор не потрібен узагалі.
+            detail = str(getattr(self, "_vision_detail", "") or "")
+            if "mmproj" in detail or not detail:
+                hint = ("Поточна модель не має зору (немає mmproj). "
+                        "Увімкни мультимодальну модель у «Хабі моделей».")
+            else:
+                hint = (f"Поточна модель не читає зображення: {detail}. "
+                        "Вибери мультимодальну модель (напр. GPT-4o, Claude, "
+                        "Gemini) у списку моделей.")
+            self._note(hint, kind="error")
             return
         try:
             queue = runner.session.pending_images

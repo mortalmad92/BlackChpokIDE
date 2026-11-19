@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -125,11 +126,57 @@ class TestVisionDefaultOff(unittest.TestCase):
         self.assertTrue(runner.vision_enabled)
 
     def test_main_window_sets_vision_from_projector(self) -> None:
-        """Перевіряємо, що вікно справді виставляє прапорець за проєктором."""
+        """Локальна модель без проєктора НЕ має отримувати зображення.
+
+        ── ЩО ТУТ ЗМІНИЛОСЬ І ЧОМУ ────────────────────────────────────────
+        Раніше тест перевіряв буквальний рядок у ``main_window.py``:
+
+            ``vision_enabled = bool(projector)``
+
+        Це була перевірка РЕАЛІЗАЦІЇ, а не вимоги. Вимога та сама — «зір
+        локальної моделі вмикається лише за наявності mmproj» — але тепер
+        її ухвалює ``vision.model_sees_images`` (потрібно було ще й для
+        хмарних моделей, у яких mmproj немає взагалі).
+
+        Тому перевіряємо ДВІ речі: що вікно справді кличе єдиний вхід і що
+        цей вхід дає правильну відповідь. Дефект, від якого захищає тест,
+        лишається закритим: модель без mmproj зображень не отримує.
+        """
         source = (ROOT / "blackchpok_ide" / "main_window.py").read_text(
             encoding="utf-8", errors="replace")
-        self.assertIn("vision_enabled = bool(projector)", source,
-                      "вікно має вмикати зір лише коли проєктор справді є")
+        self.assertIn("refresh_agent_vision", source,
+                      "вікно мусить визначати зір через єдиний метод")
+
+        from blackchpok_ide import vision
+
+        # Локальна ТЕКСТОВА модель + mmproj поруч: зору все одно немає, бо
+        # сама модель не мультимодальна (``vision_projector_for`` це знає).
+        folder = Path(tempfile.mkdtemp(prefix="bchp-vision-gate-"))
+        text_model = folder / "qwen2.5-coder-14b-instruct-q4_k_m.gguf"
+        text_model.write_bytes(b"fake")
+        (folder / "mmproj-qwen2.5-coder-14b-f16.gguf").write_bytes(b"p")
+        self.assertFalse(
+            vision.model_sees_images(text_model.stem, "http://127.0.0.1:8080/v1",
+                                     local_path=text_model),
+            "текстова модель не має отримувати зображення навіть із mmproj — "
+            "рушій відповів би HTTP 500 'image input is not supported'")
+
+        # Мультимодальна модель БЕЗ проєктора — теж ні: без нього llama.cpp
+        # зображень не читає, хоч у назві є ознаки зору.
+        other = Path(tempfile.mkdtemp(prefix="bchp-vision-gate2-"))
+        bare = other / "Ministral-3-14B-Instruct-2512-Q4_K_M.gguf"
+        bare.write_bytes(b"fake")
+        self.assertFalse(
+            vision.model_sees_images(bare.stem, "http://127.0.0.1:8080/v1",
+                                     local_path=bare),
+            "без файлу mmproj локальна модель зображень не бачить")
+
+        # А з проєктором — має.
+        (other / "Ministral-3-14B-Instruct-2512-BF16-mmproj.gguf").write_bytes(b"p")
+        self.assertTrue(
+            vision.model_sees_images(bare.stem, "http://127.0.0.1:8080/v1",
+                                     local_path=bare),
+            "з mmproj поруч зір мусить бути увімкнений")
 
 
 if __name__ == "__main__":

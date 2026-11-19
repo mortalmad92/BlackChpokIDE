@@ -35,6 +35,7 @@ from . import selflearning
 from . import selfrepair
 from . import skills as skills_module
 from . import social
+from . import stream_apply
 from . import tool_orchestrator
 from . import tool_lazy
 from . import tool_router
@@ -4004,6 +4005,41 @@ class AgentRunner:
         def on_reasoning(piece: str) -> None:
             self._emit("reasoning_token", piece)
 
+        # ── Жива правка: код з'являється в редакторі під час стріму ───────
+        # Аргументи ``write_file`` / ``edit_file`` несуть код шматками.
+        # Раніше він ставав видимим лише після виклику інструмента, тобто
+        # людина десятки секунд дивилась на «агент працює» і діставала
+        # готовий файл стрибком. Тепер кожен шматок іде подією ``edit_delta``,
+        # і вікно дописує його в редактор зеленим.
+        #
+        # ``holder`` — словник, а не змінна: замикання в Python зв'язує ім'я
+        # зі значенням, тому ``watcher = … for_tool(name)`` всередині
+        # ``on_tool_args`` робив ``watcher`` локальним і кидав
+        # ``UnboundLocalError`` на першому ж шматку. Мутація словника такої
+        # проблеми не має.
+        holder: dict[str, Any] = {"watcher": None}
+
+        def on_tool_args(name: str, piece: str) -> None:
+            if not name:
+                return
+            watcher = holder["watcher"]
+            if watcher is None or watcher.name != name:
+                watcher = stream_apply.ToolArgsWatcher.for_tool(name)
+                holder["watcher"] = watcher
+                if watcher is None:
+                    # Інструмент не пише код — стежити нема за чим.
+                    return
+            watcher.feed(piece)
+            if not watcher.ready():
+                return
+            self._emit("edit_delta", watcher.path,
+                       path=watcher.path,
+                       content=watcher.shown,
+                       search=watcher.search,
+                       replaces=watcher.replaces,
+                       whole_file=watcher.whole_file,
+                       final=watcher.finished)
+
         try:
             return client.chat_stream(
                 messages,
@@ -4011,6 +4047,7 @@ class AgentRunner:
                 tool_choice="auto",
                 on_text=on_text,
                 on_reasoning=on_reasoning,
+                on_tool_args=on_tool_args,
                 should_stop=self._cancel.is_set,
                 known_tools=self._known_tool_names(),
             )
