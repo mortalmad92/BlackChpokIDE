@@ -1,27 +1,27 @@
 # Стан тестів (автоматично, не правити руками)
 
-Створено: `tools/test_ledger.py`. Оновлено: 2026-11-19 11:17:18
+Створено: `tools/test_ledger.py`. Оновлено: 2026-11-19 12:14:03
 
 **Якщо ти ШІ-агент:** перш ніж запускати тести, виконай `python tools/test_ledger.py status`. Запускай лише ті, що позначені «не запускався», «застарів» або «ПАДАЄ».
 
 | Тест | Стан | Тип | Оновлено | Нотатка |
 |---|---|---|---|---|
-| `tests/test_agent_e2e.py` | ПАДАЄ | script | 2026-11-19 10:53:27 | llama_graph_n_input_tensors: input tensor '                a |
-| `tests/e2e_real_agent.py` | пройдено | script | 2026-11-19 10:53:28 |  |
-| `tests/e2e_stabilization_demo.py` | пройдено | script | 2026-11-19 10:59:41 |  |
+| `tests/e2e_stabilization_demo.py` | ПАДАЄ | script | 2026-11-19 12:13:19 | 2026-11-19 12:11:37,223 [INFO] blackchpok.agent: Р’С–РєРЅРѕ  |
+| `tests/test_agent_e2e.py` | ПАДАЄ | script | 2026-11-19 12:08:39 | llama_graph_n_input_tensors: input tensor '                a |
+| `tests/e2e_real_agent.py` | пройдено | script | 2026-11-19 12:08:47 |  |
 | `tests/smoke_gui.py` | пройдено | script | 2026-11-19 11:00:44 |  |
 | `tests/test_adaptive_power.py` | пройдено | unittest | 2026-11-13 13:25:32 |  |
-| `tests/test_agent_executes_task.py` | пройдено | unittest | 2026-11-19 11:00:44 |  |
-| `tests/test_agent_live_ux.py` | пройдено | unittest | 2026-11-19 11:00:46 |  |
-| `tests/test_agent_no_json_demand.py` | пройдено | unittest | 2026-11-19 11:00:46 |  |
-| `tests/test_agent_reliability.py` | пройдено | unittest | 2026-11-19 11:00:46 |  |
-| `tests/test_agent_scenarios.py` | пройдено | unittest | 2026-11-19 04:40:11 |  |
-| `tests/test_agent_survives_dsml.py` | пройдено | unittest | 2026-11-19 11:00:54 |  |
-| `tests/test_all_tools.py` | пройдено | script | 2026-11-19 11:00:57 |  |
+| `tests/test_agent_executes_task.py` | пройдено | unittest | 2026-11-19 12:13:19 |  |
+| `tests/test_agent_live_ux.py` | пройдено | unittest | 2026-11-19 12:13:21 |  |
+| `tests/test_agent_no_json_demand.py` | пройдено | unittest | 2026-11-19 12:13:21 |  |
+| `tests/test_agent_reliability.py` | пройдено | unittest | 2026-11-19 12:13:21 |  |
+| `tests/test_agent_scenarios.py` | пройдено | unittest | 2026-11-19 12:13:23 |  |
+| `tests/test_agent_survives_dsml.py` | пройдено | unittest | 2026-11-19 12:13:32 |  |
+| `tests/test_all_tools.py` | пройдено | script | 2026-11-19 12:13:34 |  |
 | `tests/test_answer_branches_clean.py` | пройдено | unittest | 2026-11-19 04:40:22 |  |
-| `tests/test_ast_editor.py` | пройдено | script | 2026-11-19 11:01:01 |  |
+| `tests/test_ast_editor.py` | пройдено | script | 2026-11-19 12:13:37 |  |
 | `tests/test_atomic_save.py` | пройдено | unittest | 2026-11-19 11:01:01 |  |
-| `tests/test_audit_regressions.py` | пройдено | unittest | 2026-11-19 11:01:01 |  |
+| `tests/test_audit_regressions.py` | пройдено | unittest | 2026-11-19 12:13:38 |  |
 | `tests/test_audit_undefined_names.py` | пройдено | unittest | 2026-11-13 20:17:15 |  |
 | `tests/test_auto_setup.py` | пройдено | script | 2026-11-19 11:01:02 |  |
 | `tests/test_autonomous.py` | пройдено | unittest | 2026-11-13 12:42:07 |  |
@@ -37,7 +37,7 @@
 | `tests/test_cases_panel.py` | пройдено | script | 2026-11-19 11:03:22 |  |
 | `tests/test_chat_fixes.py` | пройдено | unittest | 2026-11-19 11:03:23 |  |
 | `tests/test_chat_folder.py` | пройдено | unittest | 2026-11-19 11:03:23 |  |
-| `tests/test_chat_formatting.py` | пройдено | unittest | 2026-11-19 11:03:23 |  |
+| `tests/test_chat_formatting.py` | пройдено | unittest | 2026-11-19 12:13:38 |  |
 | `tests/test_chat_history_view.py` | пройдено | unittest | 2026-11-19 11:03:24 |  |
 | `tests/test_chat_ownership.py` | пройдено | unittest | 2026-11-19 11:03:25 |  |
 | `tests/test_chat_renderer.py` | пройдено | unittest | 2026-11-14 00:37:01 |  |
@@ -45,14 +45,15 @@
 | `tests/test_chat_ux.py` | пройдено | unittest | 2026-11-19 11:03:25 |  |
 | `tests/test_clipboard_layout.py` | пройдено | unittest | 2026-11-19 00:44:32 |  |
 | `tests/test_cloud_dsml_protocol.py` | пройдено | unittest | 2026-11-19 11:03:27 |  |
-| `tests/test_cloud_model_status.py` | пройдено | unittest | 2026-11-19 11:03:30 |  |
+| `tests/test_cloud_model_status.py` | пройдено | unittest | 2026-11-19 12:13:41 |  |
 | `tests/test_cloud_social.py` | пройдено | script | 2026-11-19 11:03:31 |  |
-| `tests/test_cloud_vision_files.py` | пройдено | unittest | 2026-11-19 11:17:13 |  |
-| `tests/test_commands.py` | пройдено | script | 2026-11-19 11:03:34 |  |
-| `tests/test_composer_pills.py` | пройдено | unittest | 2026-11-19 11:03:35 |  |
-| `tests/test_composer_visible.py` | пройдено | unittest | 2026-11-19 11:03:36 |  |
-| `tests/test_context_budget.py` | пройдено | unittest | 2026-11-19 11:03:36 |  |
-| `tests/test_context_regulation.py` | пройдено | unittest | 2026-11-19 11:03:37 |  |
+| `tests/test_cloud_vision_files.py` | пройдено | unittest | 2026-11-19 12:13:42 |  |
+| `tests/test_command_guards.py` | пройдено | unittest | 2026-11-19 12:08:47 |  |
+| `tests/test_commands.py` | пройдено | script | 2026-11-19 12:13:45 |  |
+| `tests/test_composer_pills.py` | пройдено | unittest | 2026-11-19 12:13:46 |  |
+| `tests/test_composer_visible.py` | пройдено | unittest | 2026-11-19 12:13:47 |  |
+| `tests/test_context_budget.py` | пройдено | unittest | 2026-11-19 12:13:48 |  |
+| `tests/test_context_regulation.py` | пройдено | unittest | 2026-11-19 12:13:48 |  |
 | `tests/test_context_stats.py` | пройдено | script | 2026-11-19 04:43:34 |  |
 | `tests/test_deep_mode.py` | пройдено | unittest | 2026-11-19 11:03:41 |  |
 | `tests/test_deep_mode_live.py` | пройдено | script | 2026-11-19 11:03:49 |  |
@@ -61,16 +62,16 @@
 | `tests/test_deploy.py` | пройдено | script | 2026-11-19 11:05:07 |  |
 | `tests/test_diff_stats.py` | пройдено | script | 2026-11-19 11:05:07 |  |
 | `tests/test_dom_bridge.py` | пройдено | unittest | 2026-11-12 16:31:53 |  |
-| `tests/test_edge_cases.py` | пройдено | script | 2026-11-19 11:05:19 |  |
-| `tests/test_edit_hint_content.py` | пройдено | unittest | 2026-11-19 04:45:18 |  |
-| `tests/test_edit_streaming_e2e.py` | пройдено | unittest | 2026-11-19 11:17:14 |  |
-| `tests/test_editor_files.py` | пройдено | script | 2026-11-19 11:05:20 |  |
+| `tests/test_edge_cases.py` | пройдено | script | 2026-11-19 12:13:59 |  |
+| `tests/test_edit_hint_content.py` | пройдено | unittest | 2026-11-19 12:13:59 |  |
+| `tests/test_edit_streaming_e2e.py` | пройдено | unittest | 2026-11-19 12:14:01 |  |
+| `tests/test_editor_files.py` | пройдено | script | 2026-11-19 12:14:01 |  |
 | `tests/test_embedded_engine_status.py` | пройдено | unittest | 2026-11-19 11:05:38 |  |
-| `tests/test_engine_crash_and_filelist.py` | пройдено | unittest | 2026-11-19 11:05:38 |  |
+| `tests/test_engine_crash_and_filelist.py` | пройдено | unittest | 2026-11-19 12:14:01 |  |
 | `tests/test_env_setup.py` | пройдено | unittest | 2026-11-12 16:31:55 |  |
 | `tests/test_error_messages_readable.py` | пройдено | unittest | 2026-11-19 04:45:44 |  |
-| `tests/test_everything_works.py` | пройдено | unittest | 2026-11-19 11:05:39 |  |
-| `tests/test_features.py` | пройдено | script | 2026-11-19 11:05:40 |  |
+| `tests/test_everything_works.py` | пройдено | unittest | 2026-11-19 12:14:02 |  |
+| `tests/test_features.py` | пройдено | script | 2026-11-19 12:14:03 |  |
 | `tests/test_focus_mode.py` | пройдено | script | 2026-11-19 11:05:47 |  |
 | `tests/test_git_degradation.py` | пройдено | unittest | 2026-11-13 12:44:49 |  |
 | `tests/test_git_publish.py` | пройдено | unittest | 2026-11-19 11:05:57 |  |
@@ -175,5 +176,5 @@
 
 ## Підсумок
 
-- Усього записів: **166**
-- Падає: **1** — tests/test_agent_e2e.py
+- Усього записів: **167**
+- Падає: **2** — tests/e2e_stabilization_demo.py, tests/test_agent_e2e.py

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import app_control
+from . import command_guard
 from . import imaging
 from . import internet
 from . import multiscale
@@ -742,26 +743,79 @@ class ToolRegistry:
         if not (command or "").strip():
             raise ToolError("Порожня команда.")
         workdir = self.resolve(cwd or ".")
+        # ── ЗАПОБІЖНИК 1: команда чекатиме на ввід, якого не буде ──────────
+        # Живий випадок: модель написала ``python - > out.txt`` і поклала
+        # скрипт у ТЕКСТ команди. Інтерпретатор скрипта не отримав, вийшов
+        # у REPL і чекав на ввід, поки таймаут не спинив виклик. Процес
+        # пережив батька й писав помилки у файл, доки не набігло 3.5 ГБ.
+        # Тепер таку команду не запускаємо взагалі — кажемо моделі, що
+        # робити замість неї.
+        problem = command_guard.input_hint(unwrap_shell_prefix(command))
+        if problem:
+            raise ToolError(problem)
+        # ── ЗАПОБІЖНИК 2: перенаправлення у файл, що вже завеликий ─────────
+        risk = command_guard.redirect_risk(unwrap_shell_prefix(command), workdir)
+        if risk is not None and risk.oversized():
+            raise ToolError(command_guard.redirect_hint(risk))
         if self.confirm_commands and self.command_guard and not self.command_guard(command):
             raise ToolError("Користувач відхилив виконання команди.")
         timeout = max(5, min(int(timeout or 120), 900))
         try:
-            proc = subprocess.run(
+            # ``Popen`` замість ``run``: потрібен PID, щоб при таймауті
+            # вбити ДЕРЕВО процесів, а не лише оболонку.
+            proc = subprocess.Popen(
                 unwrap_shell_prefix(command),
                 shell=True,
                 cwd=str(workdir),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=timeout,
                 env=_shell_env(),
             )
+        except OSError as exc:
+            raise ToolError(f"Команда не запустилась: {exc}") from exc
+        try:
+            out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise ToolError(f"Команда не завершилась за {timeout} с і була зупинена: {command}")
-        body = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+            # ── ЗУПИНКА ДЕРЕВА, А НЕ ЛИШЕ ОБОЛОНКИ ────────────────────────
+            # ``subprocess.run`` при таймауті вбиває тільки прямий процес.
+            # Живий випадок: модель запустила ``python - > out.txt``, той
+            # вийшов у REPL і чекав на ввід. Таймаут спинив оболонку, а
+            # ``python`` ПЕРЕЖИВ її й писав помилки у файл ще 25 хвилин —
+            # доки не набігло 3.5 ГБ.
+            #
+            # Тепер вбиваємо нащадків ДО батька: інакше оболонка, вмираючи,
+            # встигає відчепити їх, і вони стають «сиротами».
+            _kill_process_tree(proc.pid)
+            try:
+                proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            raise ToolError(
+                f"Команда не завершилась за {timeout} с і була зупинена "
+                f"разом з усіма дочірніми процесами: {command}")
+        body = (out or "") + (("\n" + err) if err else "")
         if len(body) > 12_000:
             body = body[:12_000] + "\n… вивід обрізано"
+        # ── Попередження про зростаючий файл ───────────────────────────────
+        # Команда відпрацювала, але писала у файл. Кажемо розмір: якщо він
+        # злетів, модель має це побачити й не повторювати запис.
+        if risk is not None:
+            grown = command_guard.redirect_risk(
+                unwrap_shell_prefix(command), workdir)
+            if grown is not None and grown.megabytes >= 1:
+                body += (f"\n\nУВАГА: файл `{grown.target}` тепер займає "
+                         f"{grown.megabytes} МБ. Наступний такий запис може "
+                         "перевищити межу — прибери файл або не "
+                         "перенаправляй туди вивід.")
+        # ``returncode`` у ``Popen`` заповнюється після ``communicate``;
+        # None означає «ще не завершився» — тоді чесно кажемо про це.
+        returncode = proc.returncode if proc.returncode is not None else -1
         # ── Підказка, коли команди просто НЕ ІСНУЄ ─────────────────────────
         # Модель регулярно кличе ``pytest`` у проєкті, де встановлено лише
         # ``unittest``. Кожен такий виклик повертав голий
@@ -769,10 +823,10 @@ class ToolRegistry:
         # повторювала те саме — запобіжник повторів зупиняв крок із
         # «модель зациклилась» (перевірено ``tools/check_full_cycle.py``).
         # Явна підказка дає їй наступний крок замість циклу.
-        hint = _missing_command_hint(command, proc.returncode, body)
+        hint = _missing_command_hint(command, returncode, body)
         if hint:
             body = (body + "\n\n" + hint).strip()
-        return f"$ {command}\nexit={proc.returncode}\n{body}".rstrip()
+        return f"$ {command}\nexit={returncode}\n{body}".rstrip()
 
     def git_status(self) -> str:
         return self._git("status --short --branch")
@@ -1623,6 +1677,39 @@ def _shell_env() -> dict[str, str]:
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUNBUFFERED", "1")
     return env
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Зупинити процес РАЗОМ із усіма нащадками. Ніколи не кидає.
+
+    ── НАВІЩО НЕ ЛИШЕ ``kill()`` ─────────────────────────────────────────
+    ``subprocess.run`` при таймауті вбиває лише прямий процес (оболонку).
+    Живий випадок: ``python - > out.txt 2>&1`` — оболонка завершилась, а
+    ``python`` лишився жити, бо оболонка його відчепила. Інтерпретатор у
+    REPL писав помилки у файл **25 хвилин** і виростив його до 3.5 ГБ.
+
+    Порядок важливий: спершу НАЩАДКИ, потім батько. Якщо вбити батька
+    першим, діти встигають відчепитись і знайти їх стає неможливо.
+    """
+    if not pid or int(pid) <= 0:
+        return
+    try:
+        from . import shell_session
+
+        if shell_session.IS_WINDOWS:
+            for child in shell_session._windows_descendants(int(pid)):
+                shell_session._windows_terminate(child)
+            shell_session._windows_terminate(int(pid))
+            return
+        # POSIX: оболонка запускається з тієї ж групи процесів.
+        import signal
+
+        try:
+            os.killpg(os.getpgid(int(pid)), signal.SIGTERM)
+        except (OSError, ValueError, AttributeError):
+            os.kill(int(pid), signal.SIGKILL)
+    except Exception:  # noqa: BLE001 - прибирання не має валити виклик
+        LOG.debug("Дерево процесів %s не зупинено", pid, exc_info=True)
 
 
 #: Ознаки того, що команда не знайдена (різні оболонки кажуть по-різному).
