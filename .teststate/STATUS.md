@@ -1,12 +1,14 @@
 # Стан тестів (автоматично, не правити руками)
 
-Створено: `tools/test_ledger.py`. Оновлено: 2026-11-14 00:39:43
+Створено: `tools/test_ledger.py`. Оновлено: 2026-11-19 00:48:08
 
 **Якщо ти ШІ-агент:** перш ніж запускати тести, виконай `python tools/test_ledger.py status`. Запускай лише ті, що позначені «не запускався», «застарів» або «ПАДАЄ».
 
 | Тест | Стан | Тип | Оновлено | Нотатка |
 |---|---|---|---|---|
-| `tests/e2e_real_agent.py` | пройдено | script | 2026-11-14 00:36:06 |  |
+| `tests/test_long_chat_and_learning.py` | ПАДАЄ | unittest | 2026-11-19 00:48:08 |     ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Admin |
+| `tests/e2e_real_agent.py` | пройдено | script | 2026-11-19 00:48:08 |  |
 | `tests/e2e_stabilization_demo.py` | пройдено | script | 2026-11-14 00:36:32 |  |
 | `tests/smoke_gui.py` | пройдено | script | 2026-11-13 22:11:06 |  |
 | `tests/test_adaptive_power.py` | пройдено | unittest | 2026-11-13 13:25:32 |  |
@@ -16,6 +18,7 @@
 | `tests/test_agent_no_json_demand.py` | пройдено | unittest | 2026-11-14 00:36:54 |  |
 | `tests/test_agent_reliability.py` | пройдено | unittest | 2026-11-14 00:36:54 |  |
 | `tests/test_agent_scenarios.py` | пройдено | unittest | 2026-11-14 00:36:56 |  |
+| `tests/test_agent_survives_dsml.py` | пройдено | unittest | 2026-11-19 00:44:31 |  |
 | `tests/test_all_tools.py` | пройдено | script | 2026-11-14 00:35:44 |  |
 | `tests/test_answer_branches_clean.py` | пройдено | unittest | 2026-11-12 18:15:10 |  |
 | `tests/test_ast_editor.py` | пройдено | script | 2026-11-14 00:37:00 |  |
@@ -42,6 +45,9 @@
 | `tests/test_chat_renderer.py` | пройдено | unittest | 2026-11-14 00:37:01 |  |
 | `tests/test_chat_store.py` | пройдено | script | 2026-11-12 18:15:44 |  |
 | `tests/test_chat_ux.py` | пройдено | unittest | 2026-11-13 22:16:27 |  |
+| `tests/test_clipboard_layout.py` | пройдено | unittest | 2026-11-19 00:44:32 |  |
+| `tests/test_cloud_dsml_protocol.py` | пройдено | unittest | 2026-11-19 00:44:32 |  |
+| `tests/test_cloud_model_status.py` | пройдено | unittest | 2026-11-19 00:44:35 |  |
 | `tests/test_cloud_social.py` | пройдено | script | 2026-11-12 18:15:46 |  |
 | `tests/test_commands.py` | пройдено | script | 2026-11-14 00:37:05 |  |
 | `tests/test_composer_pills.py` | пройдено | unittest | 2026-11-14 00:37:06 |  |
@@ -105,6 +111,7 @@
 | `tests/test_new_layers_live.py` | пройдено | script | 2026-11-14 00:38:46 |  |
 | `tests/test_night_shift.py` | пройдено | unittest | 2026-11-12 16:34:26 |  |
 | `tests/test_no_duplication_and_greetings.py` | пройдено | unittest | 2026-11-13 22:17:58 |  |
+| `tests/test_no_stub_files.py` | пройдено | unittest | 2026-11-14 00:50:44 |  |
 | `tests/test_outline_and_control.py` | пройдено | unittest | 2026-11-12 18:20:19 |  |
 | `tests/test_panels.py` | пройдено | unittest | 2026-11-13 20:23:01 |  |
 | `tests/test_path_scan.py` | пройдено | unittest | 2026-11-13 20:23:01 |  |
@@ -164,5 +171,5 @@
 
 ## Підсумок
 
-- Усього записів: **155**
-- Падає: **0**
+- Усього записів: **161**
+- Падає: **1** — tests/test_long_chat_and_learning.py

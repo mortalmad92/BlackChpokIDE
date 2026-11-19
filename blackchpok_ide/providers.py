@@ -261,7 +261,11 @@ class ProviderProbe:
             ...
     """
 
-    def __init__(self, targets: Iterable[tuple[str, str, str]], *, timeout: int = 4) -> None:
+    def __init__(self, targets: Iterable[tuple[str, ...]], *, timeout: int = 4) -> None:
+        # Ціль — ``(ключ, адреса, вид)`` або ``(ключ, адреса, вид, ключ API)``.
+        # Ключ API потрібен хмарі: без нього ``GET /models`` віддає 401, і
+        # робочий провайдер показувався як «недоступний» (перевірено наживо:
+        # Deploy віддає список моделей без ключа, а OpenAI/DeepSeek — ні).
         self.targets = [tuple(item) for item in targets]
         self.timeout = timeout
         self.results: "queue.Queue[ProbeOutcome]" = queue.Queue()
@@ -269,14 +273,18 @@ class ProviderProbe:
         self._cancelled = False
 
     def start(self) -> None:
-        for key, url, kind in self.targets:
+        for target in self.targets:
+            key, url, kind = target[0], target[1], target[2]
             if not (url or "").strip():
                 continue
-            thread = threading.Thread(target=self._probe, args=(key, url, kind), daemon=True)
+            api_key = str(target[3]) if len(target) > 3 else ""
+            thread = threading.Thread(target=self._probe,
+                                      args=(key, url, kind, api_key),
+                                      daemon=True)
             thread.start()
             self._threads.append(thread)
 
-    def _probe(self, key: str, url: str, kind: str) -> None:
+    def _probe(self, key: str, url: str, kind: str, api_key: str = "") -> None:
         if self._cancelled:
             return
         # Вбудований рушій не має адреси в мережі: ``native://blackchpok``.
@@ -294,9 +302,21 @@ class ProviderProbe:
                 return
         except Exception:  # noqa: BLE001 - проба не має падати
             pass
-        api_key = "local" if kind == LOCAL else ""
+        # ── Ключ API: для хмари він ОБОВ'ЯЗКОВИЙ ──────────────────────────
+        # Раніше тут стояло ``api_key = ""`` для всього, крім локальних, і
+        # клієнт ішов без авторизації. Для хмари без ключа ``GET /models``
+        # відповідає 401, проба фіксувала «недоступно», і користувач бачив
+        # «MODEL OFFLINE» про цілком робочу хмару вже з живим ключем.
+        key_value = (api_key or "").strip()
+        if kind == LOCAL:
+            key_value = key_value or "local"
+        if kind == CLOUD and not key_value:
+            self.results.put(ProbeOutcome(
+                key, False, "немає API-ключа — не перевіряю", [], url))
+            return
         try:
-            client = LLMClient(url, api_key=api_key or "local", timeout=self.timeout)
+            client = LLMClient(url, api_key=key_value or "local",
+                               timeout=self.timeout)
             models = client.list_models()
         except LLMError as exc:
             self.results.put(ProbeOutcome(key, False, str(exc)[:160], [], url))
@@ -324,15 +344,45 @@ class ProviderProbe:
         self._cancelled = True
 
 
-def probe_targets(settings: Any) -> list[tuple[str, str, str]]:
-    """Що саме перевіряти: усі локальні пресети + поточний сервер."""
-    targets: list[tuple[str, str, str]] = [
-        (provider.key, provider.base_url, LOCAL)
+def probe_targets(settings: Any) -> list[tuple[str, str, str, str]]:
+    """Що саме перевіряти: локальні пресети + поточна адреса.
+
+    Повертає ``(ключ, адреса, вид, ключ API)``. Ключ API порожній для
+    локальних серверів і заповнений для хмари — без нього проба хмари
+    дістає 401 і показує робочого провайдера як недоступного.
+
+    ── ЧОМУ ПОТОЧНА АДРЕСА — ЗАВЖДИ, А НЕ ЛИШЕ ЛОКАЛЬНА ────────────────
+    Раніше в ``targets`` потрапляли лише локальні пресети й ПОТОЧНА
+    адреса. Поточною хмара ставала тільки після перезапуску IDE: поки
+    користувач працював, у списку ціль був ``native://blackchpok``, тож
+    стан моделі описував рушій, а не хмару. Після вибору хмарної моделі
+    селектор віддавав запис із ``online=False`` (хмару ж ніхто не
+    перевіряв), і шапка показувала «● МОДЕЛЬ ОФЛАЙН» про працюючий API.
+    """
+    targets: list[tuple[str, str, str, str]] = [
+        (provider.key, provider.base_url, LOCAL, "")
         for provider in LOCAL_PROVIDERS if provider.base_url
     ]
     current = (getattr(settings.llm, "base_url", "") or "").strip()
-    if current and all(current != url for _key, url, _kind in targets):
-        targets.append(("current", current, _kind_of(current)))
+    current_key = str(getattr(settings.llm, "api_key", "") or "")
+    if current and all(current != url for _key, url, _kind, _api in targets):
+        targets.append(("current", current, _kind_of(current), current_key))
+    # ── Налаштована хмара — окремою ціллю ─────────────────────────────────
+    # Потрібно, щоб селектор ЗНАВ, що хмара доступна, ще ДО того, як її
+    # обрали: інакше вибір моделі виглядав як «обрав недоступну» — саме це
+    # й давало червоне «ОФЛАЙН» одразу після перемикання.
+    cloud = getattr(settings, "cloud", None)
+    cloud_url = ""
+    cloud_key = ""
+    try:
+        cloud_url = cloud_agents.normalise_base_url(
+            str(getattr(cloud, "base_url", "") or ""))
+        cloud_key = str(getattr(cloud, "api_key", "") or "")
+    except Exception:  # noqa: BLE001 - проба не має падати через налаштування
+        cloud_url, cloud_key = "", ""
+    if cloud_url and cloud_key.strip() and all(
+            cloud_url != url for _key, url, _kind, _api in targets):
+        targets.append(("cloud", cloud_url, CLOUD, cloud_key))
     return targets
 
 
@@ -470,6 +520,15 @@ def catalogue(settings: Any, *, probed: Optional[dict[str, ProbeOutcome]] = None
         kind = _kind_of(outcome.base_url)
         provider_label = (_LOCAL_BY_KEY.get(key).label if key in _LOCAL_BY_KEY
                           else (cloud_agents.label_for(key) if kind == CLOUD else "Сервер"))
+        # ── Хмара: вікно й опис беремо з КАТАЛОГУ провайдера ──────────────
+        # Сервер повідомляє лише назви моделей, тож запис із проби не знав
+        # ні вікна контексту, ні можливостей. Через це в селекторі робоча
+        # хмарна модель виглядала бідніше за свій же каталожний рядок, а
+        # після вибору агент працював із локальним вікном (16384 замість
+        # 1 000 000) — модель відповідала, та контекст був урізаний.
+        cloud_provider = cloud_agents.get(key) if kind == CLOUD else None
+        fallback_context = int(getattr(cloud_provider, "context", 0) or 0)
+        fallback_note = str(getattr(cloud_provider, "note", "") or "")
         for name in outcome.models:
             entries.append(ModelEntry(
                 name=name,
@@ -477,9 +536,13 @@ def catalogue(settings: Any, *, probed: Optional[dict[str, ProbeOutcome]] = None
                 provider_label=provider_label,
                 kind=kind,
                 online=True,
-                context=current.context if name == current.name else 0,
+                context=(current.context if name == current.name
+                         else fallback_context),
                 params=params_from_name(name),
                 quant=quant_from_name(name),
+                caps=("🔨",) if (cloud_provider is not None
+                                 and cloud_provider.supports_tools) else (),
+                note=fallback_note,
             ))
 
     # 2. Локальні файли на диску (можна запустити через хаб).

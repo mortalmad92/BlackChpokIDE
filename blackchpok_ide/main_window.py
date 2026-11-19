@@ -33,6 +33,7 @@ from . import (
     app_control,
     auto_setup,
     autonomous,
+    autonomy,
     autonomous_panel,
     browser_panel,
     cases_panel,
@@ -47,6 +48,7 @@ from . import (
     diff_stats,
     header_bar,
     layout_profiles,
+    longchat,
     mcp_client,
     mcp_panel,
     mcp_watch,
@@ -1320,6 +1322,7 @@ class BlackChpokIDE(tk.Tk):
         # тож пряме ``self.tabs`` тут падало з AttributeError на старті.
         self.chat.current_path_provider = self._current_editor_path
         self.chat.on_permission_change = self._on_permission_change
+        self.chat.on_set_autonomy = self._on_autonomy_change
         self.chat.on_set_goal = self._set_goal
         self.chat.on_feedback = self._save_feedback
         self.chat.on_pick_model = self.show_model_selector
@@ -2091,6 +2094,12 @@ class BlackChpokIDE(tk.Tk):
         }
         for sequence, handler in bindings.items():
             self.bind_all(sequence, self._wrap(handler), add="+")
+
+        # Ctrl+C/X/V/A за будь-якої розкладки клавіатури. На українській
+        # розкладці клавіша «V» дає символ «і», тому вбудовані прив'язки Tk
+        # (``<Control-v>`` → ``<<Paste>>``) не спрацьовували ВЗАГАЛІ: вставка
+        # не працювала ні в чаті, ні в терміналі, ні в полях налаштувань.
+        widgets.install_clipboard_fallback(self)
 
         # Clicking anywhere outside a popup (or switching apps) must close it:
         # an -topmost card left on screen looks like a frozen second window.
@@ -3432,6 +3441,22 @@ class BlackChpokIDE(tk.Tk):
         Так старт ніколи не блокується мережею.
         """
         limit = int(getattr(self, "_context_limit", 0) or 0)
+        # ── Хмара: вікно задає провайдер, а не локальні налаштування ───────
+        # ``engine.ctx_size`` — це скільки контексту ми ПОПРОСИЛИ у власного
+        # рушія (типово 16384). До хмари воно не має жодного стосунку, але
+        # саме воно потрапляло в смугу статистики й у сесію агента. Через це
+        # при провайдері на 1 000 000 токенів чат показував «вікно 16 384» і
+        # різав історію всемеро раніше, ніж треба (видно на скріншоті
+        # користувача з Deploy).
+        cloud_context = 0
+        try:
+            entry = providers.current_entry(self.settings)
+            if not entry.is_local:
+                cloud_context = int(entry.context or 0)
+        except Exception:  # noqa: BLE001 - підпис не має ламати старт
+            cloud_context = 0
+        if cloud_context and (not limit or limit == int(self.settings.engine.ctx_size or 0)):
+            limit = cloud_context
         if not limit:
             limit = int(self.settings.engine.ctx_size or 0)
         if not limit:
@@ -3453,8 +3478,13 @@ class BlackChpokIDE(tk.Tk):
         # з 16384. Агент визначає СПРАВЖНЄ вікно сам (``/props``), тому
         # заявлене число передаємо йому лише як запасний варіант — інакше
         # він повірить 32768 і надішле завеликий промпт.
+        #
+        # Хмарі заявлене локальне число НЕ передаємо зовсім: воно описує
+        # чужий рушій, і агент узяв би половину від нього замість вікна
+        # провайдера (див. ``agent.probe_context_window``).
         try:
-            self.agent.set_requested_context(int(self.settings.engine.ctx_size or 0))
+            self.agent.set_requested_context(
+                0 if cloud_context else int(self.settings.engine.ctx_size or 0))
         except (tk.TclError, AttributeError):
             pass
 
@@ -4019,11 +4049,26 @@ class BlackChpokIDE(tk.Tk):
             state = getattr(self.agent, "state", None)
             if state is not None:
                 self.chat_store.store_state(chat_id, state.to_dict())
+            # Хроніка довгого чату: те, що вже вийшло з вікна моделі.
+            # Без неї після перезапуску довгий чат втрачає початок розмови.
+            self._save_chat_digest(chat_id)
         except Exception:  # noqa: BLE001 - перемикання не має ламати контекст
             LOG.warning("Не вдалось зберегти контекст чату %s", chat_id,
                         exc_info=True)
             return False
         return True
+
+    def _save_chat_digest(self, chat_id: str) -> bool:
+        """Зберегти хроніку розмови в запис чату."""
+        digest = getattr(self.agent, "digest", None)
+        if digest is None or chat_id is None:
+            return False
+        try:
+            data = digest.to_dict() if hasattr(digest, "to_dict") else {}
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Хроніку не серіалізовано", exc_info=True)
+            return False
+        return self.chat_store.store_digest(chat_id, data)
 
     def _load_chat_context(self, chat_id: str) -> int:
         """Відновити контекст агента з запису чату.
@@ -4061,7 +4106,28 @@ class BlackChpokIDE(tk.Tk):
         except Exception:  # noqa: BLE001
             LOG.debug("Стан чату не відновлено", exc_info=True)
             self.agent.state = conversation.ConversationState()
+        # ── Хроніка довгого чату ───────────────────────────────────────────
+        # Відновлюємо ЇЇ, а не лише повідомлення: ``context`` містить тільки
+        # те, що влізло у вікно, і без хроніки чат після перезапуску втрачав
+        # би початок розмови назавжди.
+        self._load_chat_digest(chat_id)
         return restored
+
+    def _load_chat_digest(self, chat_id: str) -> int:
+        """Підключити хроніку цього чату до агента (0 — хроніки немає)."""
+        if not hasattr(self, "agent") or self.agent is None:
+            return 0
+        try:
+            data = self.chat_store.load_digest(chat_id)
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Хроніку чату не прочитано", exc_info=True)
+            data = {}
+        try:
+            self.agent.attach_digest(longchat.ConversationDigest.from_dict(data))
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Хроніку не підключено до агента", exc_info=True)
+            return 0
+        return len(getattr(self.agent.digest, "entries", ()) or ())
 
     def _context_from_messages(self, chat_id: str) -> list[dict]:
         """Побудувати контекст агента з видимих повідомлень чату.
@@ -4323,6 +4389,10 @@ class BlackChpokIDE(tk.Tk):
         Сервіс створюється в ``__init__`` (``self.memory``), але тоді
         агента ще немає. Тому міст підключаємо окремо — і повторно, коли
         пам'ять перестворюється.
+
+        Тут же підключаються дві залежні речі, які без пам'яті не мають
+        сенсу: самонавчання (пише уроки в ту саму пам'ять) і хук у RAG
+        (ширший фрагмент розмови з індексом за змістом).
         """
         try:
             existing = getattr(runner, "memory_bridge", None)
@@ -4332,6 +4402,60 @@ class BlackChpokIDE(tk.Tk):
                 existing.attach(self.memory)
         except Exception:                            # noqa: BLE001
             LOG.debug("Пам'ять не підключена до агента", exc_info=True)
+        # ── Самонавчання ───────────────────────────────────────────────────
+        try:
+            learning = getattr(runner, "learning", None)
+            if learning is None:
+                from . import selflearning
+
+                runner.learning = selflearning.SelfLearning(
+                    getattr(runner, "memory_bridge", None),
+                    enabled=bool(getattr(self.settings.agent, "self_learning", True)))
+            else:
+                learning.bridge = getattr(runner, "memory_bridge", None)
+                learning.enabled = bool(
+                    getattr(self.settings.agent, "self_learning", True))
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Самонавчання не підключено", exc_info=True)
+        # ── RAG: витіснена розмова теж стає довгостроковою пам'яттю ──────
+        try:
+            runner.rag_archive = self._archive_to_rag
+        except Exception:                            # noqa: BLE001
+            LOG.debug("RAG-архів не підключено", exc_info=True)
+
+    def _archive_to_rag(self, text: str, *, kind: str = "chat",
+                        task: str = "") -> bool:
+        """Покласти фрагмент розмови в RAG-індекс (``rag_memory``).
+
+        Викликається агентом, коли блок історії вийшов із вікна моделі.
+        Навіщо окремий вид запису: ``rag_memory`` уже вміє шукати за
+        змістом (FTS5 + вектори), і розмова стає частиною тієї самої
+        довгострокової пам'яті, що й файли проєкту.
+
+        Помилка RAG не має ламати хід агента: повертаємо ``False``.
+        """
+        clean = " ".join((text or "").split())
+        if len(clean) < 40:
+            return False
+        engine = None
+        try:
+            engine = self.rag_service.engine or self.rag_service._ensure()
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Рушій RAG недоступний", exc_info=True)
+            return False
+        remember = getattr(engine, "remember", None)
+        if not callable(remember):
+            return False
+        try:
+            # ``remember`` приймає (text, kind) — його ж використовує
+            # MCP-сервер, тож нових шляхів запису не з'являється.
+            outcome = remember(clean, kind or "chat")
+        except Exception:                            # noqa: BLE001
+            LOG.debug("RAG не прийняв фрагмент розмови", exc_info=True)
+            return False
+        # Рушій повертає текстовий підсумок; «не записалось» — це False.
+        return not str(outcome or "").lower().startswith(
+            ("пам'ять не записалась", "закороткий"))
 
     def show_agent_quality(self) -> None:
         """Показати звіт про якість агента (реальні цифри, не обіцянки)."""
@@ -6074,6 +6198,143 @@ class BlackChpokIDE(tk.Tk):
             pass
 
     # ── сайт проєкту: агент підняв — показуємо одразу ──────────────────────
+    def _auto_open_site_after_write(self, text: str) -> None:
+        """Агент створив/змінив файл сайту — автоматично показати браузер.
+
+        Пряма вимога користувача: «Зроби так, щоб коли агент почав писати
+        сайт, то сам автоматично відкривав вкладки з браузером». Раніше
+        прев'ю з'являлось ЛИШЕ після ``app_start`` — тобто коли модель сама
+        здогадається запустити сервер. Поки вона пише ``index.html`` і
+        ``style.css``, людина бачить лише текст у чаті.
+
+        Що робимо:
+
+        1. перевіряємо, що серед записаних файлів є справжні файли сайту
+           (``.html``, ``.css``, ``.js`` тощо) — правка ``calc.py`` сюди не
+           потрапляє;
+        2. якщо прев'ю ще не показане — вмикаємо колонку;
+        3. якщо сервер ще не піднятий — піднімаємо його тим самим
+           контролером, яким користується агент, щоб стан був ОДИН;
+        4. підхоплюємо запущений сервер у панель (``adopt_running``) — тоді
+           зміни, які агент вносить далі, з'являються на сторінці самі.
+
+        Викликається з обробника подій агента (кілька разів за хід — по
+        одному на кожен записаний файл), тому:
+
+        * панель показуємо одразу, але не частіше, ніж раз на пів секунди;
+        * запуск сервера йде у ФОНОВОМУ потоці: ``AppController.start``
+          чекає на порт до 45 с, і виклик із потоку Tk заморозив би вікно.
+        """
+        if not bool(getattr(self.settings.agent, "auto_open_site", True)):
+            return
+        if not self._agent_wrote_site_files(text):
+            return
+        # Панель показуємо одразу: це дешево й дає людині сигнал, що робота
+        # йде. Повторні виклики в межах пів секунди нічого не додають.
+        now = time.monotonic()
+        if now - float(getattr(self, "_site_auto_at", 0.0)) < 0.5:
+            return
+        self._site_auto_at = now
+        self._ui_call(self._open_site_for_agent)
+
+    #: Розширення, які означають «це файл сайту».
+    _SITE_SUFFIXES: tuple[str, ...] = (
+        ".html", ".htm", ".css", ".js", ".mjs", ".jsx", ".ts", ".tsx",
+        ".vue", ".svelte", ".php",
+    )
+
+    #: Інструменти, після яких файл проєкту справді змінився.
+    _WRITE_TOOLS: frozenset[str] = frozenset({
+        "write_file", "edit_file", "append_file",
+    })
+
+    def _agent_wrote_site_files(self, text: str) -> bool:
+        """Чи серед записаних агентом файлів є файли сайту.
+
+        ``text`` — вивід інструмента (``write_file`` / ``edit_file`` /
+        ``append_file``). Беремо з нього лише те, що справді схоже на
+        шлях із розширенням сайту.
+
+        Навіщо перевірка, а не «будь-який запис»: правка ``agent.py`` теж
+        пише файл, і відкривати через це браузер було б нав'язливо.
+        """
+        body = str(text or "")
+        if not body:
+            return False
+        # Формати виводу інструментів: «Записано app.js (…)»,
+        # «Оновлено style.css: замін 1.», «Дописано index.html».
+        suffixes = "|".join(
+            re.escape(item.lstrip(".")) for item in self._SITE_SUFFIXES)
+        pattern = re.compile(
+            r"[\w./\\-]+\.(?:" + suffixes + r")\b", re.IGNORECASE)
+        return bool(pattern.search(body))
+
+    def _open_site_for_agent(self) -> None:
+        """Показати сайт у колонці Live Preview (виконується в UI-потоці)."""
+        try:
+            self.toggle_preview(True)
+        except (tk.TclError, AttributeError):
+            LOG.debug("Колонку прев'ю не показано", exc_info=True)
+            return
+        controller = getattr(self, "app", None)
+        if controller is None:
+            return
+        if controller.running:
+            self._adopt_and_show_site()
+            return
+        # Стеку ще може не бути (агент написав лише частину файлів). Тоді
+        # ``start`` швидко поверне причину — і ми її покажемо, не ламаючи
+        # подальшу роботу агента.
+        if getattr(self, "_site_start_busy", False):
+            return
+        self._site_start_busy = True
+
+        def work() -> None:
+            try:
+                ok, detail = controller.start()
+            except Exception as exc:                 # noqa: BLE001
+                ok, detail = False, f"{type(exc).__name__}: {exc}"
+            self._site_start_busy = False
+            if ok:
+                self._ui_call(self._adopt_and_show_site)
+            else:
+                self._ui_call(self._report_site_not_ready, str(detail))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _report_site_not_ready(self, detail: str) -> None:
+        """Сайт ще не запускається — сказати причину, не ламаючи роботу."""
+        head = " ".join((detail or "").split())[:160]
+        self.set_status("Сайт ще не готовий до запуску: " + (head or "невідомо"))
+
+    def _adopt_and_show_site(self) -> None:
+        """Підхопити запущений сервер у панель і показати сторінку."""
+        controller = getattr(self, "app", None)
+        if controller is None or not controller.running:
+            return
+        try:
+            self.toggle_preview(True)
+        except (tk.TclError, AttributeError):
+            return
+        adopted = False
+        try:
+            adopted = bool(self.live_preview.adopt_running())
+        except (tk.TclError, AttributeError):
+            adopted = False
+        if not adopted:
+            try:
+                self.live_preview.open_url(controller.url)
+            except (tk.TclError, AttributeError):
+                LOG.debug("Сторінку сайту не відкрито", exc_info=True)
+                return
+        url = ""
+        try:
+            url = str(controller.url or "")
+        except Exception:                            # noqa: BLE001
+            url = ""
+        self.set_status(f"Сайт відкрито автоматично: {url} · "
+                        "зміни з'являються на сторінці самі")
+
     def _show_site_if_started(self, name: str, ok: bool, text: str) -> None:
         """Показати сайт у панелі «Сайт», коли агент його запустив.
 
@@ -6137,6 +6398,13 @@ class BlackChpokIDE(tk.Tk):
             elif kind == "tool_call":
                 self.case_book.add_step(text or f"{data.get('name', 'інструмент')}",
                                         key=str(data.get("call_id") or ""))
+                # Готуємось до скріншота: прев'ю має бути видимим.
+                #
+                # Раніше ця гілка стояла ДРУГИМ ``elif kind == "tool_call"``
+                # після гілки ``tool_result`` — тобто була недосяжною, і
+                # підготовка до знімка не спрацьовувала ніколи.
+                if str(data.get("name")) == "app_screenshot":
+                    self._ui_call(self._auto_show_preview)
             elif kind == "tool_result":
                 self.case_book.finish_step(
                     key=str(data.get("call_id") or ""),
@@ -6147,10 +6415,12 @@ class BlackChpokIDE(tk.Tk):
                 if (str(data.get("name")) == "app_start"
                         and bool(data.get("ok", False))):
                     self._ui_call(self._auto_show_preview)
-            elif kind == "tool_call":
-                # Готуємось до скріншота: прев'ю має бути видимим.
-                if str(data.get("name")) == "app_screenshot":
-                    self._ui_call(self._auto_show_preview)
+                # ── Агент пише сайт — браузер відкривається САМ ────────────
+                # Пряма вимога: «коли агент почав писати сайт, то сам
+                # автоматично відкривав вкладку з браузером».
+                if (str(data.get("name")) in self._WRITE_TOOLS
+                        and bool(data.get("ok", True))):
+                    self._auto_open_site_after_write(text)
             elif kind == "error":
                 self.case_book.add_step(text or "Помилка", status=cases_panel.FAILED)
             elif kind == "done":
@@ -6271,6 +6541,27 @@ class BlackChpokIDE(tk.Tk):
         self.registry.confirm_commands = (self.settings.agent.confirm_commands
                                           and active != permissions.FULL)
         self.set_status(f"Дозволи: {permissions.label_for(active)}")
+
+    def _on_autonomy_change(self, level: str) -> None:
+        """Рівень свободи дій змінився в композері — застосовуємо й зберігаємо.
+
+        Навмисно НЕ чіпає ``permission_mode``: свобода дій додає кроків і
+        знімає дрібні уточнення, але не розширює прав на файли й команди.
+        Ці два рішення мають лишатись окремими.
+        """
+        policy = autonomy.get(level)
+        try:
+            self.agent.set_autonomy(policy.key)
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Рівень свободи не застосовано", exc_info=True)
+            return
+        self.settings.agent.autonomy = policy.key
+        try:
+            self.settings.save()
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Рівень свободи не збережено", exc_info=True)
+        self.set_status(f"Свобода дій: {policy.label} "
+                        f"(+{policy.extra_steps} кроків)")
 
     def _set_goal(self, text: str) -> None:
         """Запам'ятати ціль сесії й показати її в заголовку чату."""
@@ -7313,6 +7604,12 @@ class BlackChpokIDE(tk.Tk):
         Раніше тут лише вмикалась права колонка, і вона могла лишитись із
         порожнім браузером: людина бачила панель, але не сайт. Тепер
         відкриваємо реальну адресу сервера.
+
+        Друге, що тут виправлено: сервер піднімає ``AppController`` (його
+        бачить агент), а панель прев'ю мала ВЛАСНИЙ ``inner.server``. Без
+        ``adopt_running`` watcher не запускався, і наступні правки агента не
+        з'являлись на сторінці — саме та скарга «зміни не видно в
+        реальному часі».
         """
         if not self.app.running:
             return
@@ -7326,8 +7623,15 @@ class BlackChpokIDE(tk.Tk):
         if not url:
             return
         try:
-            self.live_preview.open_url(url)
-            self.set_status(f"Сайт проєкту відкрито: {url}")
+            adopted = False
+            try:
+                adopted = bool(self.live_preview.adopt_running())
+            except (tk.TclError, AttributeError):
+                adopted = False
+            if not adopted:
+                self.live_preview.open_url(url)
+            self.set_status(f"Сайт проєкту відкрито: {url} · "
+                            "живе оновлення увімкнено")
         except (tk.TclError, AttributeError):
             LOG.debug("Не вдалось відкрити сайт у прев'ю", exc_info=True)
 
@@ -7571,11 +7875,33 @@ class BlackChpokIDE(tk.Tk):
                 self._probe_after = None
 
     def _apply_probe_results(self, outcomes: list[providers.ProbeOutcome]) -> None:
-        found = [item for item in outcomes if item.ok]
-        online = sum(1 for item in found)
+        # ── Рахуємо НАКОПИЧЕНИЙ стан, а не останню порцію ─────────────────
+        # ``_drain_probe`` віддає результати частинами (кожні 180 мс), і кожен
+        # виклик приходив зі своїм маленьким списком. Підпис рахував саме
+        # його — тому «локальних онлайн: 0 з 4 · хмара: ні» стояло навіть
+        # тоді, коли хмара вже відповіла (її результат прийшов раніше).
         total = len(self._probe_state)
-        self._probe_summary = (f"локальних онлайн: {online} з {total}" if total
-                               else "сервери не перевірено")
+        known = list(self._probe_state.values())
+        found = [item for item in known if item.ok]
+        # ── Підпис рахує ЛОКАЛЬНІ й ХМАРНІ окремо ─────────────────────────
+        # До перевірки додалась хмара (див. ``providers.probe_targets``),
+        # тож «локальних онлайн: 5 з 6» показувало хмару як шостий
+        # локальний сервер. Числа мають називати те, що рахують.
+        local_all = [item for item in known
+                     if providers._kind_of(item.base_url) == providers.LOCAL]
+        local_found = [item for item in found
+                       if providers._kind_of(item.base_url) == providers.LOCAL]
+        cloud_all = [item for item in known
+                     if providers._kind_of(item.base_url) == providers.CLOUD]
+        cloud_found = [item for item in found
+                       if providers._kind_of(item.base_url) == providers.CLOUD]
+        if total:
+            parts = [f"локальних онлайн: {len(local_found)} з {len(local_all)}"]
+            if cloud_all:
+                parts.append(f"хмара: {'так' if cloud_found else 'ні'}")
+            self._probe_summary = " · ".join(parts)
+        else:
+            self._probe_summary = "сервери не перевірено"
         # Поточний сервер відповів — модель справді доступна.
         current_url = (self.settings.llm.base_url or "").rstrip("/")
         for item in outcomes:
@@ -7588,11 +7914,10 @@ class BlackChpokIDE(tk.Tk):
             reachable = bool(item.ok) or self._model_should_read_online()
             self._refresh_model_state(online=reachable, detail=item.detail)
         # Локальний стан у підвалі навігації.
-        local_online = [item for item in found
-                        if providers._kind_of(item.base_url) == providers.LOCAL]
         try:
-            if local_online:
-                self.local_label.configure(text=f"● {local_online[0].key}", fg=theme.SUCCESS)
+            if local_found:
+                self.local_label.configure(text=f"● {local_found[0].key}",
+                                           fg=theme.SUCCESS)
             elif total:
                 self.local_label.configure(text="● локально", fg=theme.FG_FAINT)
         except (tk.TclError, AttributeError):
@@ -7813,15 +8138,72 @@ class BlackChpokIDE(tk.Tk):
         self._on_model_changed()
         self._model_proved_online = False
         self._replace_loaded_model(entry)
-        # Реальний стан — з перевірки провайдера, а не «модель вибрано, отже
-        # онлайн». Раніше тут стояло ``entry.online or True``: умова завжди
-        # істинна, тож зелений індикатор світився навіть для недоступного
-        # сервера, і користувач бачив «працює» перед реальною помилкою.
-        # Вбудований рушій, у якому ця модель уже сидить, — теж доказ.
-        self._refresh_model_state(
-            online=bool(entry.online) or self._native_serves_current())
+        # ── Стан НОВОЇ адреси, а не старого запису зі списку ──────────────
+        # ``entry.online`` описує запис, знятий ДО вибору. Для хмари він
+        # майже завжди ``False``: хмару не перевіряли, доки вона не поточна
+        # (див. ``providers.probe_targets``). Передати його в шапку означало
+        # показати «● МОДЕЛЬ ОФЛАЙН» про щойно вибраний робочий API — саме
+        # це видно на скріншоті користувача: «вказав ключ, а хмарна модель
+        # не працює».
+        #
+        # Тепер: вбудований рушій із цією моделлю в пам'яті — доказ онлайн;
+        # інакше питаємо НОВУ адресу. Поки відповіді немає — «…», а не
+        # червоне «ОФЛАЙН»: невідоме не має виглядати як зламане.
+        native_ready = self._native_serves_current()
+        if native_ready:
+            self._refresh_model_state(online=True, detail="модель у пам'яті")
+        else:
+            self._verify_current_endpoint_async(entry)
         kind = "локальна" if entry.is_local else "хмарна"
         self.set_status(f"Модель: {entry.name} · {entry.provider_label} ({kind})")
+
+    def _verify_current_endpoint_async(self, entry: "providers.ModelEntry") -> None:
+        """Перевірити НОВУ адресу моделі у фоні й показати справжній стан.
+
+        Навіщо окремий метод. Після вибору моделі шапка має показати факт,
+        а не запис зі списку: список знімався до вибору, і для хмари його
+        ``online`` нічого не казав про доступність (перевірялись інші
+        адреси). Мережа тут заборонена — це головний потік інтерфейсу, тож
+        статус спершу стає «● МОДЕЛЬ …» (невідомо), а відповідь приходить
+        через ``_ui_call``.
+        """
+        url = str(self.settings.llm.base_url or "")
+        key = str(self.settings.llm.api_key or "")
+        expected = str(getattr(entry, "name", "") or "")
+        # Невідомо — це НЕ «офлайн»: сірий «…» чекає на справжню відповідь.
+        try:
+            self.header_bar.set_model_status(None, detail=f"перевіряю {url}")
+        except (tk.TclError, AttributeError):
+            LOG.debug("Статус «перевіряю» не поставлено", exc_info=True)
+
+        def work() -> None:
+            online = False
+            detail = ""
+            try:
+                online = runtime.model_answers(url, api_key=key, timeout=4.0,
+                                               level=2)
+                # Вбудований рушій бере модель у пам'ять на перший запит —
+                # після нього ``model_answers`` уже правдивий.
+                if online:
+                    detail = f"{expected} · {url}"
+                else:
+                    detail = f"немає відповіді: {url}"
+            except Exception as exc:  # noqa: BLE001 - фон не має падати
+                LOG.debug("Перевірка нової адреси впала: %s", exc, exc_info=True)
+                detail = f"помилка перевірки: {exc}"[:120]
+
+            def apply() -> None:
+                # Поки йшла перевірка, моделі могли змінити ще раз — тоді
+                # результат описує СТАРУ адресу, і показувати його не можна.
+                if str(self.settings.llm.base_url or "") != url:
+                    return
+                self._model_proved_online = bool(online)
+                self._refresh_model_state(online=bool(online), detail=detail)
+
+            self._ui_call(apply)
+
+        threading.Thread(target=work, daemon=True,
+                         name="verify-model-url").start()
 
     def show_mode_menu(self, anchor: object = None) -> None:
         """Меню режимів роботи агента (реальні дозволи й кроки).
@@ -7987,6 +8369,17 @@ class BlackChpokIDE(tk.Tk):
             pass
         self.header.set_mode(mode.key)
         self.header.set_status("idle", mode.hint)
+        # ── Рівень свободи дій ────────────────────────────────────────────
+        # ``modes.apply`` переписує ``max_steps_override``, але НЕ чіпає
+        # ``extra_steps``. Проте «Чат» ставить ліміт 1, і там свобода
+        # навмисно не діє (див. ``AgentRunner.step_budget``). Тому просто
+        # перезастосовуємо збережений рівень: це гарантує, що після
+        # перемикання режиму кроки рахуються від нового базового ліміту.
+        try:
+            self.agent.set_autonomy(
+                getattr(self.settings.agent, "autonomy", autonomy.DEFAULT_LEVEL))
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Свободу дій не перезастосовано", exc_info=True)
         # Пігулка над полем вводу показує той самий режим: це те, що агент
         # справді застосує (дозволи, кроки, інструменти), а не підпис.
         try:
@@ -8045,7 +8438,13 @@ class BlackChpokIDE(tk.Tk):
         self.settings.llm.api_key = cloud.api_key
         if cloud.model:
             self.settings.llm.model = cloud.model
-        self.settings.llm.max_tokens = max(256, int(cloud.max_tokens or 2048))
+        # ``cloud.max_tokens`` — скільки модель може ВИДАТИ за одну відповідь.
+        # Підлога 2048 тут була збитковою: провайдер із вікном 1M токенів
+        # отримував 8192, і довга відповідь обривалась на ``finish_reason=
+        # length``. ``normalise()`` усе одно застосує стелю за адресою
+        # (32k для localhost, 200k для хмари), тож тут лишаємо сам вибір
+        # користувача.
+        self.settings.llm.max_tokens = max(256, int(cloud.max_tokens or 8192))
         self.settings.llm.temperature = float(cloud.temperature or 0.3)
         # Хмарний агент уже запущений — локальний рушій не потрібен.
         self.settings.engine.auto_start = False
@@ -8220,6 +8619,27 @@ class BlackChpokIDE(tk.Tk):
         self.registry.confirm_commands = self.settings.agent.confirm_commands
         self.agent.agent_settings = self.settings.agent
         self.agent.llm_settings = self.settings.llm
+        # ── Свобода дій, довгий чат, самонавчання ──────────────────────────
+        # Застосовуємо ОДРАЗУ: людина змінила рівень і чекає, що наступний
+        # хід already матиме більше кроків. Без цих рядків налаштування
+        # діяли б лише після перезапуску.
+        try:
+            self.agent.set_autonomy(
+                getattr(self.settings.agent, "autonomy", autonomy.DEFAULT_LEVEL))
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Рівень свободи дій не застосовано", exc_info=True)
+        learning = getattr(self.agent, "learning", None)
+        if learning is not None:
+            try:
+                learning.enabled = bool(
+                    getattr(self.settings.agent, "self_learning", True))
+            except AttributeError:
+                pass
+        try:
+            # Хроніка могла бути вимкнена — тоді блок у промпті зникає.
+            self.agent._render_digest()
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Хроніку не перераховано", exc_info=True)
         # Політика простою могла змінитись у вкладці «Агент».
         try:
             policy = self.model_keeper.tracker.policy

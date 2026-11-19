@@ -194,6 +194,54 @@ class LivePreviewPanel(tk.Frame):
                 self.inner._start_watcher()
         self._tick_state()
 
+    def adopt_running(self) -> bool:
+        """Підхопити сервер, який підняв ХТОСЬ ІНШИЙ (агент через ``app_start``).
+
+        Навіщо це потрібно. ``AppController`` піднімає сервер сам, у своєму
+        потоці: сторінка вже відповідає на адресі, але колонка прев'ю про це
+        не знає — у неї порожній ``inner.server``. Через це не запускався
+        watcher, і зміни, які агент вносив далі, НЕ з'являлись на сторінці,
+        доки не натиснути ⟳ вручну. Користувач просив рівно протилежне:
+        «коли вносить зміни, щоб там все оновлювалося в реальному часі».
+
+        Повертає ``True``, якщо сторінку справді показано.
+        """
+        controller = self._controller()
+        if controller is None or not controller.running:
+            return False
+        url = ""
+        try:
+            url = str(controller.url or "")
+        except Exception:                            # noqa: BLE001
+            url = ""
+        if not url:
+            return False
+        # Стан сервера переносимо в панель: інакше ``_tick`` вважатиме, що
+        # запускати нічого, і живих оновлень не буде.
+        self.inner.server = getattr(controller, "server", None)
+        self.inner.recipe = getattr(controller, "recipe", None)
+        try:
+            self.inner.url_label.configure(text=url)
+        except tk.TclError:
+            pass
+        try:
+            self.url_label.configure(text=url)
+        except tk.TclError:
+            pass
+        # Сторінку відкриваємо ЛИШЕ якщо вона ще не ця: повторний ``show``
+        # перезапускає Chromium, і кожне збереження файлу мигало б вікном.
+        try:
+            current = str(self.inner.view.url or "")
+        except Exception:                            # noqa: BLE001
+            current = ""
+        if current.rstrip("/") != url.rstrip("/"):
+            self.inner.view.set_address(url)
+            self.inner.view.show(url)
+        # Живий watcher — та сама «реальна година», що й у ``_toggle``.
+        self.inner._start_watcher()       # noqa: SLF001 - публічного входу немає
+        self._tick_state()
+        return True
+
     def _reload(self) -> None:
         self.inner.reload_page()
 

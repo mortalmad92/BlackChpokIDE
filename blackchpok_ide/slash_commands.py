@@ -70,6 +70,10 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("дозвіл", "Змінити режим дозволів (читання / робоча / повний)",
                  GROUP_COMMANDS, aliases=("permission", "perms", "права"),
                  icon="🛡", order=60),
+    SlashCommand("свобода", "Свобода дій моделі (обережно / збалансовано / "
+                            "автономно / дослідник)",
+                 GROUP_COMMANDS, aliases=("autonomy", "кроки", "steps"),
+                 takes_argument=True, icon="⚡", order=65),
     SlashCommand("модель", "Вибрати модель для цієї розмови", GROUP_COMMANDS,
                  aliases=("model",), icon="⊟", order=70),
     SlashCommand("експорт", "Завантажити журнал сесії", GROUP_COMMANDS,

@@ -25,11 +25,14 @@ from . import evidence as evidence_module
 from . import intent_engine
 from . import language
 from . import llm_client
+from . import longchat
 from . import memory_bridge
 from . import model_profile
 from . import permissions
 from . import planning
 from . import response_engine
+from . import selflearning
+from . import selfrepair
 from . import skills as skills_module
 from . import social
 from . import tool_orchestrator
@@ -37,6 +40,7 @@ from . import tool_lazy
 from . import tool_router
 from . import tool_specs
 from . import trace_store
+from . import autonomy
 from .agent_tools import TOOL_SCHEMAS, ToolRegistry, ToolResult
 from .config import (
     DEFAULT_SYSTEM_PROMPT,
@@ -87,8 +91,40 @@ _ROUTER_ACTIONS: tuple[tuple[str, str, dict[str, Any], list[str]], ...] = (
 )
 
 
+#: Інструменти саморемонту. Агент має вміти сам з'ясувати, що його блокує
+#: або що зламалось, — інакше він пише в чат «схоже, щось заважає» замість
+#: того, щоб діяти.
+SELF_REPAIR_TOOL = "self_repair"
+SELF_DIAGNOSE_TOOL = "self_diagnose"
+
+
 #: Вікно контексту, до якого вмикається стислий системний промпт.
 COMPACT_PROMPT_LIMIT = 12_000
+
+#: Абсолютна стеля кроків агента разом зі свободою дій.
+#:
+#: Потрібна, щоб «дослідник» (+16) на базі 12 і на базі 25 не давав
+#: агента, який годинами крутиться навколо однієї помилки.
+#:
+#: Раніше тут стояло 40, і це число мовчки зрізало хмарні моделі: вони
+#: вміють вести довгі сесії (десятки викликів на побудову проєкту), а
+#: стеля вмикалась однаково для локальної 7B на 8k і для хмари на 1M.
+#: Тепер стеля залежить від РОЗМІРУ ВІКНА: модель із великим контекстом
+#: здатна тримати більше стану, тож їй дозволено більше кроків.
+#: Захист від нескінченного циклу лишається — він і не в кількості кроків:
+#: зациклення ловить ``_RepeatGuard``, а не стеля.
+STEP_BUDGET_CEILING = 40
+
+#: Стеля кроків для моделей із великим вікном (хмара).
+#:
+#: 40 кроків — це ~3 повні переписування файлу. Для агентної роботи над
+#: проєктом із кількох модулів цього мало: заміряно на реальному завданні,
+#: модель ще писала тести, коли ліміт вичерпувався. 120 кроків — це межа,
+#: за якою проблема вже не в бюджеті, а в самій моделі.
+STEP_BUDGET_CEILING_LARGE = 120
+
+#: З якого розміру вікна вважаємо модель «великою» (токени).
+LARGE_WINDOW_TOKENS = 100_000
 
 #: Порядок важливості інструментів. Менший індекс — лишається довше.
 #:
@@ -454,9 +490,18 @@ class AgentSession:
         #: Виклик перед тим, як старий блок історії зникає з вікна.
         #: Раннер передає його в NEUROMESH, щоб зміст не губився.
         self.on_evict: Optional[Callable[[list[dict[str, Any]]], None]] = None
+        #: Готовий блок хроніки довгого чату (його ставить раннер).
+        #:
+        #: Саме ГОТОВИЙ ТЕКСТ, а не об'єкт хроніки: сесія не мусить знати,
+        #: скільки токенів лишилось у моделі й хто веде хроніку. Раннер
+        #: рахує бюджет перед кожним запитом і кладе сюди результат
+        #: (:meth:`AgentRunner._render_digest`).
+        self.digest_block: str = ""
 
     def reset(self) -> None:
         self.messages.clear()
+        # Хроніка НЕ чиститься тут: вона належить чату, а не сесії. Раннер
+        # замінює її, коли відкривається інший чат (``attach_digest``).
 
     # ── знімок і відновлення (контекст належить ЧАТУ, не програмі) ─────────
     def snapshot(self) -> list[dict[str, Any]]:
@@ -524,6 +569,13 @@ class AgentSession:
             prompt += "\n\n" + self.action_prompt.strip()
         if self.extra_prompt.strip():
             prompt += "\n\n" + self.extra_prompt.strip()
+        # ── Хроніка довгого чату ───────────────────────────────────────────
+        # Ставимо ПІСЛЯ підказок, але ПЕРЕД самою історією: модель спершу
+        # читає правила й поточну задачу, а вже потім — «про що ми говорили
+        # раніше». Інакше хроніка перетягувала б увагу на старе.
+        digest_block = getattr(self, "digest_block", "")
+        if digest_block:
+            prompt += "\n\n" + digest_block
         return {"role": "system", "content": prompt}
 
     def add_user(self, text: str) -> None:
@@ -536,7 +588,7 @@ class AgentSession:
         body = result.output
         if not result.ok:
             body = "ПОМИЛКА: " + body
-        limit = max(2000, self.settings.context_char_limit // 4)
+        limit = self._tool_result_char_limit()
         if len(body) > limit:
             body = body[:limit] + "\n… (обрізано)"
         self.messages.append(
@@ -547,6 +599,27 @@ class AgentSession:
                 "content": body,
             }
         )
+
+    def _tool_result_char_limit(self) -> int:
+        """Скільки символів результату інструмента віддавати моделі.
+
+        Раніше тут стояло жорстке ``context_char_limit // 4`` = 6000
+        символів — незалежно від моделі. Для локального вікна 16k це
+        слушно, але хмарна модель із вікном 128k–1M отримувала результат,
+        обрізаний у 20–150 разів раніше за свій реальний ліміт: вона
+        фізично не могла побачити середину великого файлу, який сама ж
+        прочитала.
+
+        Тепер межа виводиться з РЕАЛЬНОГО вікна (якщо воно відоме):
+        один результат не бере більше чверті вікна, але й не менше
+        локальної норми — щоб малі вікна працювали як раніше.
+        """
+        base = max(2000, int(self.settings.context_char_limit or 24_000) // 4)
+        window = int(getattr(self, "context_limit", 0) or 0)
+        if window <= 0:
+            return base
+        # ~3 символи на токен; чверть вікна під один результат.
+        return max(base, int(window * 0.25 * 3))
     def last_tool_results(self, limit: int = 3) -> list[tuple[str, bool, str]]:
         """Останні результати інструментів: (назва, успіх, вивід).
 
@@ -582,9 +655,27 @@ class AgentSession:
         # Захист від зіпсованої історії: усе, що не є словником повідомлення,
         # відкидаємо — інакше `m.get` падає й агент гине посеред роботи.
         self.messages = [m for m in self.messages if isinstance(m, dict)]
-        limit = max(4000, self.settings.context_char_limit)
-        total = sum(len(str(m.get("content") or "")) for m in self.messages)
+        # ── Символьний ліміт — ЛИШЕ коли токенного вікна немає ────────────
+        # ``context_char_limit`` типово 24 000 символів (≈8–12k токенів) і
+        # існує як запасний варіант для випадку «вікно моделі невідоме».
+        # Раніше він діяв ЗАВЖДИ, разом із токенним бюджетом:
+        #
+        #     while (total > limit or self._estimate_tokens() > budget) ...
+        #
+        # Через це на хмарному провайдері з вікном 1 000 000 токенів історія
+        # різалась утричі-вдесятеро раніше за реальний ліміт, і модель
+        # втрачала контекст, який могла б вільно вмістити. Тепер діє те
+        # обмеження, яке справді описує поточну модель:
+        #
+        # * ``context_limit > 0`` задано → рахуємо ТОКЕНИ (``budget``), а
+        #   символьний ліміт ігноруємо;
+        # * ``context_limit`` невідоме → лишається символьний ліміт, як і
+        #   раніше (інакше агент надішле завеликий запит і сервер обірве
+        #   з'єднання).
         budget = self._token_chars_budget()
+        has_token_window = int(self.context_limit or 0) > 0
+        limit = 10**9 if has_token_window else max(4000, self.settings.context_char_limit)
+        total = sum(len(str(m.get("content") or "")) for m in self.messages)
         while (total > limit or self._estimate_tokens() > budget) and len(self.messages) > 4:
             # Ріжемо «блоком»: асистент із tool_calls і всі його результати.
             # Раніше різали рівно ``messages[1]``, і в історії лишався
@@ -923,6 +1014,42 @@ def _embedded_context_window() -> int:
     return max(0, value)
 
 
+def _cloud_context_window(base_url: str) -> int:
+    """Вікно контексту ХМАРНОГО провайдера за його адресою (0 — не хмара).
+
+    Навіщо окрема функція. У хмари немає ні ``/props`` (це ендпоінт
+    llama-server), ні ``--ctx-size`` у налаштуваннях: ліміт задає сам
+    провайдер, і він відомий із каталогу :mod:`cloud_agents`. Без цього
+    агент брав заявлене ЛОКАЛЬНЕ число (``engine.ctx_size``), та ще й
+    ділив його навпіл як «захист від поділу на слоти» — у хмарі слотів
+    немає.
+
+    Заміряно на справжньому Deploy: провайдер дає 1 000 000 токенів, а
+    агент працював із **8192**, різав історію всемеро раніше й показував
+    у чаті «вікно 8 192» — при тому, що в каталозі поруч стояло 1 000 000.
+    """
+    url = str(base_url or "").strip()
+    if not url:
+        return 0
+    # Локальність — ЄДИНОЮ перевіркою проєкту: ``native://`` та loopback
+    # теж «локальні», і для них діє звичайний шлях (рушій / ``/props``).
+    try:
+        from . import cloud_agents, provider_adapters
+
+        if provider_adapters.is_local_url(url):
+            return 0
+        provider = cloud_agents.detect(url)
+    except Exception:  # noqa: BLE001 - без каталогу лишається запасний шлях
+        LOG.debug("Хмарний провайдер за адресою не визначено", exc_info=True)
+        return 0
+    if provider is None:
+        return 0
+    try:
+        return max(0, int(provider.context or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _gguf_context(model_name: str) -> int:
     """Тренувальне вікно моделі з метаданих GGUF (0 — не вдалось).
 
@@ -1176,6 +1303,18 @@ class AgentRunner:
     #: Що пам'ять дала для цього ходу й план кроків.
     _memory_snapshot: Any = None
     _plan: Any = None
+    #: Хроніка довгого чату: те, що вже вийшло з вікна моделі
+    #: (див. :mod:`longchat`). ``None`` — хроніку не ведуть.
+    digest: Any = None
+    #: Самонавчання: уроки з власних помилок (див. :mod:`selflearning`).
+    learning: Any = None
+    #: Рівень свободи дій (див. :mod:`autonomy`). Порожній рядок — «як у
+    #: налаштуваннях»: значення підставляє ``__init__`` або ``set_autonomy``.
+    #: На рівні класу саме рядок, а не ім'я модуля: інакше однойменний
+    #: атрибут затінив би модуль у тілі класу.
+    autonomy: str = ""
+    #: Скільки кроків додає рівень свободи до ліміту режиму/налаштувань.
+    extra_steps: int = 0
 
     def __init__(
         self,
@@ -1246,6 +1385,24 @@ class AgentRunner:
         self.memory_bridge: Any = memory_bridge.MemoryBridge()
         self._memory_snapshot: Any = memory_bridge.MemorySnapshot()
         self._plan: list = []
+        # ── Довгий чат і самонавчання ──────────────────────────────────────
+        # Хроніка й уроки — необов'язкові: без них агент працює як раніше.
+        # Вмикаються налаштуваннями (``long_chat``, ``self_learning``).
+        self.digest: Any = longchat.ConversationDigest()
+        self.learning: Any = selflearning.SelfLearning(
+            self.memory_bridge,
+            enabled=bool(getattr(agent_settings, "self_learning", True)))
+        self._lesson_hints: list[str] = []
+        #: Скільки кроків цикл уже використав (для уроку «не вистачило кроків»).
+        self._steps_used: int = 0
+        #: Хук у RAG-індекс: ставить вікно IDE (``None`` — RAG не пише).
+        self.rag_archive: Any = None
+        # ── Свобода дій ────────────────────────────────────────────────────
+        # Беремо рівень із налаштувань, але НЕ пишемо його назад: раннер не
+        # має «закріплювати» те, що задав режим або тести.
+        self.autonomy = autonomy.normalise(
+            getattr(agent_settings, "autonomy", autonomy.DEFAULT_LEVEL))
+        self.extra_steps = autonomy.step_bonus(self.autonomy)
         #: Файли, які агент створив або змінив ЗА ЦЕЙ хід (відносні шляхи).
         #: Потрібно, щоб перед завершенням перевірити синтаксис записаного
         #: коду й не звітувати «готово» з файлом, що не компілюється.
@@ -1265,10 +1422,66 @@ class AgentRunner:
 
     @property
     def max_steps(self) -> int:
-        """Скільки кроків робити: ліміт режиму або налаштування."""
+        """Скільки кроків дозволяє РЕЖИМ або налаштування (без свободи дій).
+
+        Це базове число, яке задає людина. Рівень свободи дій його не
+        переписує — він додає кроки поверх (:attr:`step_budget`). Поділ
+        принциповий: «режим Код = 12 кроків» і «рівень Автономно = +8» —
+        два різні рішення, і змішувати їх в одному полі означало б, що
+        перемикання режиму тихо скасовує свободу дій (і навпаки).
+        """
         if self.max_steps_override > 0:
             return self.max_steps_override
         return max(1, int(self.agent_settings.max_steps or 8))
+
+    @property
+    def step_budget(self) -> int:
+        """Скільки кроків агент СПРАВДІ має: ліміт режиму + рівень свободи.
+
+        Навіщо окремо. Заміряно на реальній роботі: завдання «сайт із шести
+        файлів» не вкладалось у 8 кроків — модель ще писала CSS, а цикл
+        уже завершувався з «Досягнуто ліміт кроків». Рівень свободи додає
+        кроки, не чіпаючи базове налаштування й не послаблюючи дозволи.
+        """
+        base = self.max_steps
+        try:
+            extra = int(getattr(self, "extra_steps", 0) or 0)
+        except (TypeError, ValueError):
+            extra = 0
+        if extra <= 0:
+            return base
+        # ── Ліміт у 1 крок свободу не отримує ──────────────────────────────
+        # У режимі «Чат» ``max_steps`` дорівнює 1 навмисно: агент має
+        # відповісти одним ходом без інструментів. Додавання кроків
+        # перетворило б звичайну розмову на агентну роботу — це інший
+        # режим, а не «більше свободи». Те саме, якщо користувач сам
+        # поставив 1 у налаштуваннях.
+        if not self.tools_enabled or base <= 1:
+            return base
+        # Стеля є завжди: «дослідник» на слабкій моделі інакше крутився б
+        # десятки кроків навколо однієї помилки. Але стеля тепер залежить
+        # від реального вікна моделі: великий контекст тримає більше стану,
+        # і модель із 100k+ токенів справді доводить довгі завдання до кінця.
+        return min(self._step_ceiling(), base + extra)
+
+    def _step_ceiling(self) -> int:
+        """Максимум кроків для ЦІЄЇ моделі (за розміром її вікна).
+
+        Число береться з ``context_limit`` — того самого вікна, яке агент
+        уже визначив для стискання історії. Невідоме вікно трактуємо як
+        мале: обіцяти багато кроків, не знаючи ліміту, небезпечно.
+        """
+        window = int(getattr(self, "context_limit", 0) or 0)
+        if window >= LARGE_WINDOW_TOKENS:
+            return STEP_BUDGET_CEILING_LARGE
+        return STEP_BUDGET_CEILING
+
+    def set_autonomy(self, level: str) -> "autonomy.Policy":
+        """Застосувати рівень свободи дій до цього агента."""
+        policy = autonomy.get(level)
+        self.autonomy = policy.key
+        self.extra_steps = policy.extra_steps
+        return policy
 
     # ── керування ──────────────────────────────────────────────────────────
     @property
@@ -1428,6 +1641,19 @@ class AgentRunner:
             props_ctx = _server_slot_context(
                 base, str(getattr(self.llm_settings, "api_key", "") or ""))
         gguf_ctx = _gguf_context(str(getattr(self.llm_settings, "model", "") or ""))
+        # ── Хмара: вікно беремо з КАТАЛОГУ провайдера ─────────────────────
+        # У хмари немає ні ``/props``, ні ``--ctx-size``: вікно задає сам
+        # провайдер. Раніше сюди доходило лише заявлене локальне число
+        # (``engine.ctx_size``), і воно ще й ділилось навпіл — «захист від
+        # поділу на слоти», якого в хмарі не існує. Заміряно на Deploy:
+        # провайдер дає 1 000 000 токенів, а агент працював із **8192** і
+        # різав історію всемеро раніше, ніж треба.
+        if not props_ctx:
+            cloud_ctx = _cloud_context_window(base)
+            if cloud_ctx > 0:
+                return self.adopt_context_window(
+                    props_ctx=cloud_ctx, gguf_ctx=gguf_ctx, counter=counter,
+                    source="каталог хмарного провайдера")
         if props_ctx > 0:
             # Сервер сказав правду — нічого не «страхуємо».
             return self.adopt_context_window(props_ctx=props_ctx,
@@ -1624,27 +1850,145 @@ class AgentRunner:
         # завершення вже відомі. Модель бачить готові кроки й не вигадує
         # власну структуру щоразу заново.
         self._build_plan()
+        # ── Хроніка довгого чату під ПОТОЧНЕ вікно ─────────────────────────
+        # Рахуємо ДО першого запиту: вікно могло змінитись (інша модель,
+        # інший режим), і хроніка має зайняти рівно свою частку.
+        self._render_digest()
         self._thread = threading.Thread(target=self._run, args=(text,), daemon=True)
         self._thread.start()
         return True
 
     def _archive_evicted_context(self, messages: list) -> None:
-        """Стислий зміст викинутого з вікна блоку — у NEUROMESH, не в RAG.
+        """Витіснений блок історії: у хроніку, NEUROMESH і RAG.
 
-        RAG лишається індексом файлів проєкту. Розмова, яку вікно вже не
-        тримає, має жити в пам'яті, інакше наступний крок черги починається
-        з нуля. Приватний режим нічого не записує.
+        Три різні сховища, і кожне потрібне зі своєї причини:
+
+        * **хроніка** (:mod:`longchat`) — щоб модель бачила зв'язний слід
+          розмови В КОЖНОМУ наступному запиті, не переказуючи її заново;
+        * **NEUROMESH** — факти й уроки з пошуком за змістом: «що ми
+          вирішили про порт?» знайдеться через ``memory_search``;
+        * **RAG** — довгий текст розмови з індексом: він повертається як
+          контекст до файлів проєкту, і саме звідти його дістає
+          ``rag_search``.
+
+        RAG тут не замінює пам'ять, а доповнює: NEUROMESH зберігає стислий
+        факт (до 900 символів), RAG — ширший фрагмент розмови з повним
+        текстом реплік. Приватний режим не пише нічого.
         """
         if getattr(self.state, "private", False):
             return
-        bridge = getattr(self, "memory_bridge", None)
-        if bridge is None or not hasattr(bridge, "archive_messages"):
-            return
+        # ── 1. Хроніка: завжди, навіть якщо пам'ять недоступна ────────────
+        digest = getattr(self, "digest", None)
+        if digest is not None and getattr(self.agent_settings, "long_chat", True):
+            try:
+                added = digest.absorb(messages)
+                if added:
+                    LOG.info("Хроніка чату: +%s вузлів (усього %s)",
+                             added, len(digest.entries))
+            except Exception:  # noqa: BLE001 - хроніка не має ламати хід
+                LOG.debug("Хроніку не оновлено", exc_info=True)
         goal = str(getattr(self.state, "goal", "") or "")
+        # ── 2. Довгострокова пам'ять NEUROMESH ────────────────────────────
+        bridge = getattr(self, "memory_bridge", None)
+        if bridge is not None and hasattr(bridge, "archive_messages"):
+            try:
+                bridge.archive_messages(messages, task=goal)
+            except Exception:  # noqa: BLE001
+                LOG.debug("Архів контексту не записано", exc_info=True)
+        # ── 3. RAG: ширший фрагмент розмови з індексом за змістом ─────────
+        self._archive_to_rag(messages, task=goal)
+
+    def _archive_to_rag(self, messages: list, *, task: str = "") -> bool:
+        """Покласти витіснений блок у RAG-індекс (``rag_engine``).
+
+        ``rag_archive`` — викличний об'єкт, який ставить вікно IDE: сам
+        агент не тримає рушія RAG (ним володіє вікно, і він прив'язаний до
+        робочої теки). Без нього нічого не ламається — працюють хроніка й
+        пам'ять.
+        """
+        hook = getattr(self, "rag_archive", None)
+        if not callable(hook):
+            return False
+        text = self._archive_text(messages)
+        if not text:
+            return False
         try:
-            bridge.archive_messages(messages, task=goal)
+            ok = hook(text, kind="chat", task=task)
+        except TypeError:
+            # Старіший обробник без ``task``.
+            try:
+                ok = hook(text)
+            except Exception:  # noqa: BLE001
+                LOG.debug("RAG-архів не записано", exc_info=True)
+                return False
         except Exception:  # noqa: BLE001
-            LOG.debug("Архів контексту не записано", exc_info=True)
+            LOG.debug("RAG-архів не записано", exc_info=True)
+            return False
+        return bool(ok) if ok is not None else True
+
+    @staticmethod
+    def _archive_text(messages: list, *, limit: int = 2600) -> str:
+        """Текст блоку для RAG: ширший за пам'ять, але без сирих дампів.
+
+        Результат інструмента обрізаємо до перших рядків: повний вивід
+        ``read_file`` уже лежить в індексі файлів, і дублювати його в
+        індексі розмов означало б платити місцем двічі.
+        """
+        parts: list[str] = []
+        used = 0
+        for message in messages or ():
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role") or "").strip().lower()
+            body = " ".join(str(message.get("content") or "").split())
+            if not body:
+                continue
+            if role == "tool":
+                name = str(message.get("name") or "tool")
+                block = f"{name}: {body[:400]}"
+            elif role in ("user", "assistant"):
+                block = f"{role}: {body[:900]}"
+            else:
+                continue
+            if used + len(block) + 3 > limit:
+                break
+            parts.append(block)
+            used += len(block) + 3
+        if not parts:
+            return ""
+        return "Розмова (витиснуто з контексту моделі). " + " | ".join(parts)
+
+    def attach_digest(self, digest: Any) -> None:
+        """Підключити хроніку конкретного чату (``None`` — вимкнути)."""
+        self.digest = digest
+        self._render_digest()
+
+    def _render_digest(self) -> str:
+        """Перерахувати блок хроніки під поточне вікно моделі.
+
+        Викликається перед КОЖНИМ запитом: вікно могло змінитись (модель
+        перезавантажили, режим інший), а хроніка має займати рівно свою
+        частку й не більше.
+        """
+        digest = getattr(self, "digest", None)
+        block = ""
+        if digest is not None and getattr(self.agent_settings, "long_chat", True):
+            try:
+                window = int(getattr(self.session, "context_limit", 0) or 0)
+                block = digest.render(window_tokens=window,
+                                      counter=current_token_counter())
+            except Exception:  # noqa: BLE001 - хроніка не має ламати запит
+                LOG.debug("Хроніку не відрендерено", exc_info=True)
+                block = ""
+        try:
+            self.session.digest_block = block
+        except AttributeError:
+            pass
+        return block
+
+    def digest_state(self) -> str:
+        """Один рядок для інтерфейсу: скільки розмови живе поза вікном."""
+        return longchat.describe_digest(getattr(self, "digest", None))
 
     def _recall_memory(self, text: str) -> None:
         """Підкласти в контекст те, що пам'ять знає про цей запит."""
@@ -1677,6 +2021,86 @@ class AgentRunner:
         self._memory_snapshot = snapshot
         if not snapshot.empty:
             self._emit("status", memory_bridge.describe_snapshot(snapshot))
+        # ── Уроки з попередніх спроб ───────────────────────────────────────
+        # Пам'ять дає факти й обмеження проєкту, а тут — ЩО АГЕНТ САМ
+        # ЗРОБИВ НЕ ТАК минулого разу. Це різні шари: факт описує проєкт,
+        # урок описує дію агента. Без уроків агент повторював ту саму
+        # помилку тиждень поспіль, бо «знання» про неї нікуди не йшло.
+        self._recall_lessons(text)
+
+    def _recall_lessons(self, text: str) -> None:
+        """Підкласти уроки з попередніх спроб — до запиту до моделі.
+
+        Модель бачить їх разом із пам'яттю, але окремим блоком: «висновки з
+        попередніх спроб» — це інструкція до ДІЇ, а не факт про проєкт.
+        """
+        self._lesson_hints = []
+        learning = getattr(self, "learning", None)
+        if learning is None or self.state.private:
+            return
+        try:
+            hints = learning.hints(
+                text, task=str(getattr(self.state, "goal", "") or ""),
+                # Вікно моделі визначає, СКІЛЬКИ уроків має сенс підкласти:
+                # локальна на 8k отримає чотири, хмарна на 1M — до
+                # шістнадцяти. Раніше число було однакове для всіх.
+                window=int(getattr(self.session, "context_limit", 0) or 0))
+        except TypeError:
+            # Старіший SelfLearning без ``window``.
+            try:
+                hints = learning.hints(
+                    text, task=str(getattr(self.state, "goal", "") or ""))
+            except Exception:                        # noqa: BLE001
+                LOG.debug("Уроки не підкладено", exc_info=True)
+                return
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Уроки не підкладено", exc_info=True)
+            return
+        if not hints:
+            return
+        self._lesson_hints = list(hints)
+        self._emit("status", f"Уроки з минулих спроб: {len(hints)}.")
+
+    def _learn_from_turn(self, *, ok: bool) -> None:
+        """Зробити висновки з ЩОЙНО завершеного ходу.
+
+        Викликається у ``finally`` ходу: на цей момент уже відомо все —
+        які виклики впали, скільки разів правили синтаксис, чи вистачило
+        кроків. Урок записується в пам'ять, і наступного разу агент
+        отримає його як нагадування.
+        """
+        learning = getattr(self, "learning", None)
+        if learning is None or self.state.private:
+            return
+        if not getattr(self.agent_settings, "self_learning", True):
+            return
+        observations = list(self._observations or [])
+        calls = [
+            (str(getattr(item, "name", "") or ""),
+             bool(getattr(item, "ok", False)),
+             str(getattr(item, "output" if getattr(item, "ok", False) else "error", "")
+                 or ""))
+            for item in observations
+        ]
+        budget = self.step_budget
+        facts = selflearning.TurnFacts(
+            calls=calls,
+            changed_files=list(self._touched_files or []),
+            syntax_repairs=int(getattr(self, "_syntax_repairs", 0) or 0),
+            asked_permission=bool(getattr(self, "_continue_asked", False)),
+            steps=int(getattr(self, "_steps_used", 0) or 0),
+            max_steps=budget,
+            ok=bool(ok),
+            goal=str(getattr(self.state, "goal", "") or ""),
+            intent_type=str(getattr(self.intent, "intent_type", "") or ""),
+        )
+        try:
+            saved = learning.learn_turn(facts)
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Уроки ходу не зроблено", exc_info=True)
+            return
+        if saved:
+            self._emit("status", selflearning.describe_lessons(saved))
 
     def _build_plan(self) -> None:
         """Побудувати план кроків із кадру наміру (без моделі)."""
@@ -1774,6 +2198,17 @@ class AgentRunner:
                 plan_block = ""
             if plan_block:
                 parts.append(plan_block)
+        # ── Уроки: що агент уже зробив не так ──────────────────────────────
+        # Ставимо ПІСЛЯ плану: спершу «що робити», потім «чого не робити».
+        # Інакше застереження перебивало б сам план.
+        if not self.state.private:
+            hints = list(getattr(self, "_lesson_hints", ()) or ())
+            if hints:
+                parts.append("Висновки з попередніх спроб (врахуй):\n"
+                             + "\n".join(f"- {item}" for item in hints))
+            # ── Свобода дій: скільки кроків і коли вирішувати самому ──────
+            level = getattr(self, "autonomy", "") or autonomy.DEFAULT_LEVEL
+            parts.append(autonomy.prompt_hint(level))
         if not self.state.private:
             profile_block = self.profile.prompt_block()
             if profile_block:
@@ -2223,6 +2658,22 @@ class AgentRunner:
         підказка «не запускати команди» лишалась побажанням у промпті, а
         модель її регулярно порушувала — і агент запускав тести після
         прохання їх не запускати.
+
+        ── «Не видаляй наявне» ≠ «не створюй нічого» ──────────────────────
+        Тут була причина, через яку агент НЕ МІГ створити жодного файлу
+        (видно на скріншоті: «Користувач заборонив цю дію: видалення
+        наявних даних» на ``append_file`` і ``write_file``, підсумок —
+        «на диску нічого не з'явилось»).
+
+        Обмеження «не видаляти наявні дані» виникає з фраз на кшталт
+        «не видаляй», «збережи старі». Раніше воно забороняло БУДЬ-ЯКИЙ
+        запис файлу — разом зі створенням файлу, якого ще немає. Але
+        створення нового файлу наявних даних не видаляє: воно їх не
+        чіпає. Тому тепер заборона залежить від цілі запису:
+
+        * ціль не існує → це створення, отже дозволено;
+        * ціль існує → запис справді перепише наявний вміст, отже
+          заборонено (так само, як «не змінюй наявні файли»).
         """
         intent = self.intent
         if intent is None:
@@ -2241,11 +2692,38 @@ class AgentRunner:
                 return "читання файлів проєкту"
             if "не змінювати наявні файли" in text and name in (
                     "write_file", "edit_file", "append_file", "delete_file"):
-                return "зміна наявних файлів"
+                # Правка НАЯВНОГО файлу — саме те, що заборонено. Створення
+                # нового файлу заборони не порушує.
+                if self._target_exists(data):
+                    return "зміна наявних файлів"
             if "не видаляти наявні дані" in text and name in (
                     "write_file", "edit_file", "append_file", "delete_file"):
-                return "видалення наявних даних"
+                # ``delete_file`` завжди знищує наявне — тут без винятків.
+                if name == "delete_file" or self._target_exists(data):
+                    return "видалення наявних даних"
         return ""
+
+    def _target_exists(self, data: dict[str, Any]) -> bool:
+        """Чи існує файл, який збирається змінити інструмент.
+
+        Порожній шлях або помилка читання означають «невідомо». У цьому
+        разі вважаємо, що файл існує: краще зайвий раз зберегти наявні
+        дані, ніж дозволити перезапис навмання.
+        """
+        try:
+            raw = str((data or {}).get("path") or "").strip()
+        except AttributeError:
+            return True
+        if not raw:
+            return True
+        try:
+            root = getattr(self, "workspace", None)
+            target = Path(raw) if not root else (Path(root) / raw)
+            if not target.is_absolute():
+                target = Path(raw).resolve()
+            return target.exists()
+        except (OSError, ValueError):
+            return True
 
     @staticmethod
     def _looks_like_test_run(data: dict[str, Any]) -> bool:
@@ -2307,6 +2785,14 @@ class AgentRunner:
             return ToolResult(True, f"# {skill.name}\n{skill.description}\n\n{skill.body}")
         if name.startswith("router:"):
             return self._call_router_intent(name[len("router:"):], _arguments_dict(arguments))
+        # ── Саморемонт: агент перевіряє Й ВИПРАВЛЯЄ себе ────────────────────
+        # Навіщо інструментом, а не «вбудованим кроком». Модель має вміти
+        # сама з'ясувати, ЩО ЇЇ БЛОКУЄ, замість того щоб писати в чат
+        # «схоже, запис заблоковано якоюсь політикою» (саме це видно на
+        # скріншоті користувача). Діагностика й ремонт — це ДІЯ, і вона
+        # має бути в списку доступних дій.
+        if name in (SELF_REPAIR_TOOL, SELF_DIAGNOSE_TOOL):
+            return self._self_repair(dry_run=(name == SELF_DIAGNOSE_TOOL))
         # ── Інструменти керування лінивим реєстром ─────────────────────────
         # Саме вони роблять лінивість безпечною: будь-який інструмент можна
         # знайти, завантажити й викликати, навіть якщо повної схеми в запиті
@@ -2329,6 +2815,40 @@ class AgentRunner:
         if name not in self.registry.handled_names() and not name.startswith("mcp__"):
             return ToolResult(False, self._unknown_tool_hint(name))
         return self.registry.call(name, arguments)
+
+    def _self_repair(self, *, dry_run: bool = False) -> ToolResult:
+        """Перевірити власний стан IDE і (не обов'язково) полагодити його."""
+        try:
+            names = list(self.registry.handled_names())
+        except Exception:                            # noqa: BLE001
+            names = []
+        settings_path = ""
+        try:
+            settings_path = str(getattr(self.agent_settings, "path", "") or "")
+        except Exception:                            # noqa: BLE001
+            settings_path = ""
+        package_root = ""
+        try:
+            package_root = str(Path(__file__).resolve().parent)
+        except (NameError, OSError):
+            package_root = ""
+        report = selfrepair.diagnose(
+            workspace=str(self.workspace or ""),
+            settings_path=settings_path,
+            package_root=package_root,
+            # Повна компіляція пакета — це ~2 с. У межах одного виклику
+            # інструмента це прийнятно й дає чесний результат; обмежуємо
+            # лише кількість файлів, щоб не тримати хід надто довго.
+            source_limit=400,
+            registry_names=names,
+        )
+        if not dry_run:
+            selfrepair.repair_self(report)
+        text = selfrepair.format_report(report)
+        if not dry_run and report.fixed:
+            self._emit("status",
+                       f"Саморемонт: виправлено {report.fixed} з {len(report.findings)}.")
+        return ToolResult(report.ok or bool(report.fixed), text)
 
     def _call_lazy_control(self, name: str, data: dict[str, Any]) -> ToolResult:
         """Виконати інструмент керування реєстром (``find``/``load``/``run``).
@@ -2744,6 +3264,17 @@ class AgentRunner:
         if list(getattr(intent, "referenced_files", ()) or ()):
             return False
         text = str(getattr(intent, "text", "") or "")
+        # ── ПРОПОЗИЦІЯ ВАРІАНТІВ — це розмова, хай яка довга ───────────────
+        # Реальна скарга: на довге привітання з переліком можливостей
+        # («…Хочеш створити щось нове (сайт, скрипт, гру)…?») агент мовчки
+        # писав файли сайту й запускав сервер. Раніше тут стояло лише
+        # обмеження довжини (200 символів), тож така фраза автоматично
+        # ставала завданням. Питання про вибір дії завданням не є.
+        try:
+            if intent_engine.is_offer_question(text):
+                return True
+        except Exception:                        # noqa: BLE001
+            LOG.debug("Перевірка пропозиції не вдалась", exc_info=True)
         # Довга фраза навіть із «привіт» усередині — це вже завдання.
         if len(text) > 200:
             return False
@@ -2777,6 +3308,9 @@ class AgentRunner:
         Тепер повідомлення будує :meth:`AgentSession.build`, який приєднує
         зображення до останнього повідомлення користувача.
         """
+        # Хроніка потрібна й у звичайній розмові: довгий чат без інструментів
+        # теж впирається у вікно.
+        self._render_digest()
         messages = self.session.build()
         started = time.perf_counter()
         try:
@@ -3118,6 +3652,10 @@ class AgentRunner:
             self._pending_hint = []
             self._record_trace(ok=ok and not self._error)
             self._remember_outcome(ok=ok and not self._error)
+            # ── Самонавчання: висновки з цього ходу ───────────────────────
+            # Стоїть ПЕРЕД ``done``: якщо агент щось вивчив, людина має
+            # побачити це одразу, а не шукати в панелі пам'яті.
+            self._learn_from_turn(ok=ok and not self._error)
             # ── «Оновити файли на GitHub?» — ЛИШЕ після успішної роботи ────
             # Питаємо тут, у ``finally``: до цього моменту вже відомо, чи
             # робота справді відбулась, і чи є що відправляти. Питання перед
@@ -3620,7 +4158,14 @@ class AgentRunner:
         #: Виконавець інструментів цього ходу: перевіряє аргументи, виконує,
         #: повторює тимчасові збої й не дублює вже зроблені виклики.
         self.orchestrator_for_turn()
-        for step in range(self.max_steps):
+        # ── Бюджет кроків цього ходу ───────────────────────────────────────
+        # Беремо ЙОГО, а не ``max_steps``: рівень свободи дій додає кроки
+        # поверх ліміту режиму. Без цього «Автономно» і «Дослідник» були б
+        # лише словами в налаштуваннях.
+        budget = self.step_budget
+        self._steps_used = 0
+        for step in range(budget):
+            self._steps_used = step
             if self._cancel.is_set():
                 self._emit("status", "Скасовано.")
                 return
@@ -3637,6 +4182,10 @@ class AgentRunner:
                     LOG.debug("Схеми не перебудовано посеред завдання",
                               exc_info=True)
             started = time.perf_counter()
+            # Хроніка перераховується ПЕРЕД КОЖНИМ запитом: попередній крок
+            # міг витіснити блок історії, і модель має побачити оновлений
+            # слід розмови вже в цьому запиті, а не в наступному.
+            self._render_digest()
             messages = self.session.build()
             result = self._ask(client, messages, schemas)
             elapsed = time.perf_counter() - started
@@ -3683,7 +4232,7 @@ class AgentRunner:
                          and self._expects_action()
                          and not self._observations
                          and self._text_protocol_asked < TEXT_PROTOCOL_ATTEMPTS
-                         and step < self.max_steps - 1)
+                         and step < budget - 1)
                 # Текст без подальших інструментів — це вже фінальна
                 # відповідь; інакше модель коментує, що робитиме далі.
                 final = not result.tool_calls and not draft
@@ -3727,13 +4276,13 @@ class AgentRunner:
                     #   2) ще один хід із прямою вимогою діяти;
                     # і лише потім — чесна причина з поясненням.
                     if (self._pending_hint and not self._observations
-                            and step < self.max_steps - 1):
+                            and step < budget - 1):
                         self._emit("status",
                                    "Модель мовчить — пробую виконати дію напряму.")
                         if self._run_hints():
                             return
                     if self._empty_turns < EMPTY_ANSWER_RETRIES \
-                            and step < self.max_steps - 1:
+                            and step < budget - 1:
                         self._empty_turns += 1
                         self._emit("status",
                                    "Модель відповіла без тексту — прошу "
@@ -3774,9 +4323,9 @@ class AgentRunner:
                             "ще бракує, викликаючи інструменти. Не повторюй "
                             "уже збережений код у чаті."
                         )
-                        if step < self.max_steps - 1:
+                        if step < budget - 1:
                             continue
-                    if step < self.max_steps - 1:
+                    if step < budget - 1:
                         self._emit("status", "Код у відповіді замість файлів — "
                                              "прошу створити файли інструментом.")
                         self.session.add_user(
@@ -3808,7 +4357,7 @@ class AgentRunner:
                 # Результат: search_text» і ЗУПИНЯВСЯ, не внесішвши зміну
                 # (перевірено ``tools/eval_agent.py`` на перейменуванні:
                 # стара назва лишалась у файлі).
-                if self._hints_need_continue and step < self.max_steps - 1:
+                if self._hints_need_continue and step < budget - 1:
                     self.session.add_user(
                         "Ти виконав ПОШУК, але зміни ще НЕ внесено. Зроби "
                         "правку зараз: виклич edit_file (або write_file, "
@@ -3846,7 +4395,7 @@ class AgentRunner:
                 if (self._expects_action()
                         and not self._observations
                         and self._text_protocol_asked < TEXT_PROTOCOL_ATTEMPTS
-                        and step < self.max_steps - 1):
+                        and step < budget - 1):
                     self._text_protocol_asked += 1
                     self._emit("status",
                                "Модель відповіла текстом — прошу виклик "
@@ -3901,7 +4450,7 @@ class AgentRunner:
                         and not self._observations
                         and _promises_action(result.content)
                         and not self._touched_files):
-                    if step < self.max_steps - 1 and not self._promise_warned:
+                    if step < budget - 1 and not self._promise_warned:
                         self._promise_warned = True
                         self._emit("status", "Модель пообіцяла дію замість дії — "
                                              "прошу виконати.")
@@ -3931,7 +4480,7 @@ class AgentRunner:
                 if (self._asks_to_build()
                         and self._touched_files
                         and not self._continue_asked
-                        and step < self.max_steps - 1
+                        and step < budget - 1
                         and _asks_permission_or_next(result.content)):
                     self._continue_asked = True
                     self._emit("status",
@@ -4090,7 +4639,7 @@ class AgentRunner:
             if self._touched_files and self._run_smoke_check():
                 continue
         else:
-            self._emit("status", f"Досягнуто ліміт кроків ({self.max_steps}).")
+            self._emit("status", f"Досягнуто ліміт кроків ({budget}).")
             # ── Останній хід БЕЗ інструментів: підсумок ───────────────────
             # Локальні моделі часто «залипають» на викликах (list_dir →
             # find_files → list_dir) і не доходять до відповіді. Раніше
@@ -4105,7 +4654,7 @@ class AgentRunner:
                 # результатах інструментів. Раніше ця гілка показувала текст
                 # моделі без жодної перевірки — правило діяло лише на одній
                 # з п'яти гілок відповіді.
-                summary = self._enforce_evidence(summary, step=self.max_steps)
+                summary = self._enforce_evidence(summary, step=self.step_budget)
             else:
                 # ── Підсумок від моделі не вдався — збираємо з РЕАЛЬНИХ даних ──
                 # Раніше тут лишалась порожнеча, і крок черги падав із
@@ -4314,7 +4863,7 @@ class AgentRunner:
         requires_fact = evidence_module.needs_tools_for(request)
         items = self.evidence_items()
         cut_by_tokens = str(finish_reason or "").strip().lower() == "length"
-        truncated = cut_by_tokens or step >= max(1, int(self.max_steps))
+        truncated = cut_by_tokens or step >= max(1, int(self.step_budget))
         result = evidence_module.check(
             answer, items, truncated=truncated, requires_project_fact=requires_fact)
 
@@ -4796,7 +5345,7 @@ class AgentRunner:
         # Офлайн-роутер віддає СПРАВЖНІ результати інструментів, але підпис
         # «Готово. Результат: …» легко перетворюється на твердження, яких у
         # даних немає. Перевіряємо тим самим правилом, що й основну гілку.
-        answer = self._enforce_evidence(answer, step=self.max_steps)
+        answer = self._enforce_evidence(answer, step=self.step_budget)
         self._last_answer = answer
         self._emit("assistant", answer, offline=True)
 

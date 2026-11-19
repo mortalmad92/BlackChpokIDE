@@ -258,7 +258,22 @@ _TRANSIENT_MARKERS: tuple[str, ...] = (
     "timeout", "timed out", "таймаут", "connection", "з'єднання",
     "connectionreset", "temporarily", "тимчасово", "resource busy",
     "зайнятий", "try again", "спробуйте ще", "502", "503", "504",
+    # 429 — перевищення ліміту запитів. Хмарні провайдери віддають його
+    # регулярно, і саме повтор із паузою його лікує. Без цього маркера
+    # агент вважав відповідь «429 Too Many Requests» остаточною помилкою
+    # й здавався, хоч достатньо було зачекати секунду.
+    "429", "too many requests", "rate limit", "rate-limit",
 )
+
+#: Інструменти, після яких ЗБЕРЕЖЕНИЙ результат читання стає недійсним.
+#:
+#: Потрібно, щоб кеш дублікатів не віддавав моделі старий вміст файлу
+#: після того, як вона його щойно змінила (див. ``Orchestrator.run``).
+_STATE_CHANGING: frozenset[str] = frozenset({
+    "write_file", "edit_file", "append_file", "delete_file", "create_file",
+    "apply_patch", "run_command", "run_tests", "git_commit", "git_publish",
+    "memory_store", "memory_forget", "install_package",
+})
 
 
 def _is_transient(text: str) -> bool:
@@ -296,6 +311,8 @@ class Orchestrator:
         self.duplicates = 0
         self.retries = 0
         self.suspicious_hits = 0
+        #: Скільки разів кеш скидався через зміну стану (для метрик).
+        self._invalidated = 0
 
     # ── реєстр ──────────────────────────────────────────────────────────────
     def set_specs(self, specs: Mapping[str, ToolSpec]) -> None:
@@ -373,9 +390,29 @@ class Orchestrator:
             data = {key: value for key, value in data.items() if key not in extra}
 
         # 3. Той самий виклик уже дав результат у цьому ході — не дублюємо.
+        #
+        # ── Але кеш мусить бути ЧЕСНИМ ────────────────────────────────────
+        # Раніше кеш віддавався завжди. Наслідок, який ламав роботу агента:
+        # модель читала файл, змінювала його, потім читала ЩЕ РАЗ тим самим
+        # ``read_file`` — і отримувала СТАРИЙ вміст із кеша. Вона бачила, що
+        # її правка «не застосувалась», і починала переписувати файл знову
+        # (у журналі — серія однакових ``write_file`` до ліміту кроків).
+        #
+        # Тому кеш інвалідується, щойно будь-який інструмент ЗМІНИВ стан:
+        # після запису/видалення/команди попередні результати читання вже
+        # не описують реальність. Повторювати сам ЗАПИС із тими самими
+        # аргументами теж не можна — але його вже відсікає ``_RepeatGuard``
+        # в агенті; тут важливо лише не брехати про вміст файлів.
         key = self.fingerprint(name, data)
-        with self._lock:
-            previous = self._seen.get(key)
+        if name in _STATE_CHANGING:
+            with self._lock:
+                if self._seen:
+                    self._seen.clear()
+                    self._invalidated += 1
+            previous = None
+        else:
+            with self._lock:
+                previous = self._seen.get(key)
         if previous is not None and previous.ok:
             with self._lock:
                 self.duplicates += 1

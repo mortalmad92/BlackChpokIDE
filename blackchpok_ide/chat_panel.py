@@ -18,7 +18,7 @@ from pathlib import Path
 from tkinter import filedialog
 from typing import Callable, Optional
 
-from . import (command_menu, deep_mode, deep_view, effort, markdown_view,
+from . import (autonomy, command_menu, deep_mode, deep_view, effort, markdown_view,
                message_parts, model_menu, permissions, planner, safe,
                slash_commands, stage_strip, stats_bar, task_plan, theme, voice,
                voice_panel, widgets, work_log)
@@ -371,6 +371,9 @@ class ChatPanel(tk.Frame):
         #: Новий запит користувача — привід відкрити справу в панелі «Справи».
         self.on_case_start: Optional[Callable[[str], None]] = None
         self.on_permission_change: Optional[Callable[[str], None]] = None
+        #: Зміна рівня свободи дій (кроки + уточнення). Це НЕ дозволи:
+        #: права на файли й команди лишаються в ``on_permission_change``.
+        self.on_set_autonomy: Optional[Callable[[str], None]] = None
         self.on_set_goal: Optional[Callable[[str], None]] = None
         self.on_feedback: Optional[Callable[[str], None]] = None
         self.on_pick_model: Optional[Callable[[], None]] = None
@@ -1661,6 +1664,53 @@ class ChatPanel(tk.Frame):
             self._note(f"Режим дозволів: {permissions.label_for(active)}. "
                        f"{permissions.hint_for(active)}")
 
+    def _set_autonomy(self, argument: str) -> None:
+        """Виконати «/свобода <рівень>» або показати поточний рівень.
+
+        Свобода дій і дозволи — РІЗНІ речі, і плутати їх небезпечно:
+
+        * ``/дозвіл full`` дає агенту право писати будь-де;
+        * ``/свобода дослідник`` лише додає кроків і знімає дрібні
+          уточнення, НЕ розширюючи прав.
+
+        Тому цей метод не чіпає ``permissions`` і каже про це прямо.
+        """
+        clean = (argument or "").strip()
+        if not clean:
+            current = getattr(self.runner, "autonomy", autonomy.DEFAULT_LEVEL) \
+                if self.runner is not None else autonomy.DEFAULT_LEVEL
+            policy = autonomy.get(current)
+            self._note("Свобода дій: "
+                       f"{policy.label} (+{policy.extra_steps} кроків). "
+                       "Змінити: /свобода обережно | збалансовано | "
+                       "автономно | дослідник")
+            return
+        # Розпізнаємо рівень САМІ, а не через normalise: той для невідомого
+        # слова тихо повертає типовий, і «/свобода абищо» мовчки змінило б
+        # рівень на «збалансовано».
+        wanted = clean.lower().replace("-", "_").replace(" ", "_")
+        key = wanted if wanted in autonomy.LEVELS else ""
+        if not key:
+            key = autonomy._ALIASES.get(wanted, "")   # noqa: SLF001 - реєстр синонімів
+        if not key:
+            self._note("Невідомий рівень свободи. Доступні: обережно, "
+                       "збалансовано, автономно, дослідник.")
+            return
+        if self.on_set_autonomy:
+            self.on_set_autonomy(key)
+        elif self.runner is not None:
+            # Без колбека вікна все одно застосовуємо до агента: команда
+            # має працювати й у тестах, і в чаті без підключеного вікна.
+            try:
+                self.runner.set_autonomy(key)
+            except Exception:                        # noqa: BLE001
+                self._note("Не вдалось змінити рівень свободи дій.")
+                return
+        policy = autonomy.get(key)
+        self._note(f"Свобода дій: {policy.label} "
+                   f"(+{policy.extra_steps} кроків). {policy.hint} "
+                   "Дозволи на файли й команди не змінились.")
+
     # ── виконання слэш-команд ──────────────────────────────────────────────
     def _run_slash_command(self, command: "slash_commands.SlashCommand", argument: str) -> bool:
         """Виконати команду. Повертає True, якщо текст був командою."""
@@ -1699,6 +1749,11 @@ class ChatPanel(tk.Frame):
                            "(або лише читання, робоча, повний).")
                 return True
             self.toggle_permission_menu()
+        elif name == "свобода":
+            # Свобода дій — ЦЕ НЕ дозволи: рівень додає кроки й дозволяє
+            # агенту самому вирішувати дрібні неоднозначності, але права на
+            # файли й команди лишаються тими, що задані режимом «/дозвіл».
+            self._set_autonomy(argument)
         elif name == "модель":
             if self.on_pick_model:
                 self.on_pick_model()
@@ -1736,11 +1791,27 @@ class ChatPanel(tk.Frame):
         self._send(prompt)
 
     def compact_history(self) -> None:
-        """Стиснути історію: лишаємо суть, звільняємо контекст."""
+        """Стиснути історію: лишаємо суть, звільняємо контекст.
+
+        Витіснені повідомлення не зникають: ``AgentSession.trim`` віддає
+        їх у ``on_evict``, а той кладе їх у хроніку, NEUROMESH і RAG
+        (див. :mod:`longchat`). Тому людині показуємо ЧЕСНИЙ підсумок —
+        скільки розмови тепер живе поза вікном.
+        """
+        removed = 0
         if self.runner is not None:
-            self.runner.compact()
+            removed = self.runner.compact()
         self.stats_bar.reset()
-        self._note("Історію стиснуто — контекст звільнено.")
+        state = ""
+        try:
+            state = self.runner.digest_state() if self.runner is not None else ""
+        except Exception:                            # noqa: BLE001
+            state = ""
+        parts = [f"Історію стиснуто: прибрано {removed} повідомлень."]
+        if state:
+            parts.append(state)
+        parts.append("Витіснене збережено в хроніці, пам'яті й RAG-індексі.")
+        self._note(" ".join(parts))
 
     def _maybe_slash(self) -> bool:
         """Якщо в полі команда — виконати її замість надсилання агенту."""

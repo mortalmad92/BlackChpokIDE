@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 from typing import Callable, Optional
 
 from . import browser_panel, cloud_agents, secrets, social, theme, voice, widgets
+from . import autonomy
 from .agent import ModelProbe
 from .config import Settings
 from .llm_client import KNOWN_ENDPOINTS
@@ -91,6 +92,11 @@ class SettingsDialog(tk.Toplevel):
         self.after_idle(lambda: self._fit_height(notebook, footer))
         # Підказки — ПІСЛЯ побудови вкладок: дочірні віджети вже існують.
         self.after_idle(self._attach_tips)
+        # Поля введення отримують Ctrl+C/X/V/A і праве меню («Вставити»).
+        # Без цього в полі API-ключа не було ЖОДНОГО способу вставити текст:
+        # ні контекстного меню, ні робочого Ctrl+V (на українській розкладці
+        # вбудована прив'язка Tk не спрацьовує взагалі).
+        self.after_idle(self._attach_entry_actions)
 
     # ── підказки ───────────────────────────────────────────────────────────
     #: Пояснення для елементів, де самого підпису замало. Ключ — початок
@@ -141,6 +147,12 @@ class SettingsDialog(tk.Toplevel):
                               "знайдені спогади додаються в контекст агента"),
         ("будувати план кроків", "Для складних завдань спершу складати план, "
                                  "а потім виконувати"),
+        ("свобода дій моделі", "Скільки кроків має агент і чи питає він "
+                               "уточнення перед дією. Дозволи не змінюються"),
+        ("нескінченний чат", "Витіснене з вікна згортається в хроніку, а не "
+                             "зникає: довгий чат не втрачає початок розмови"),
+        ("самонавчання", "Власні помилки агента стають уроками в пам'яті й "
+                         "підкладаються наступного разу"),
         ("вивантажувати модель із відеокарти", "Звільняти VRAM після простою "
                                                "(модель підніметься на запит)"),
         ("забути всі постійні", "Прибрати всі збережені побажання користувача"),
@@ -205,6 +217,29 @@ class SettingsDialog(tk.Toplevel):
         for child in widget.winfo_children():
             try:
                 yield from SettingsDialog._walk(child)
+            except tk.TclError:
+                continue
+
+    def _attach_entry_actions(self) -> None:
+        """Дати кожному полю діалогу Ctrl+C/X/V/A і праве меню.
+
+        Навіщо централізовано. У діалозі 12 полів введення на дев'яти
+        вкладках, і в жодному не було правого меню: у поле API-ключа не
+        було жодного способу вставити текст. Окремо підключати кожне поле —
+        це 12 правок, і будь-яке нове поле знову лишилось би без вставки.
+        """
+        for widget in self._walk(self):
+            if not widgets.is_text_widget(widget):
+                continue
+            # Поля лише для читання не мають приймати вставку: інакше
+            # вибір провайдера чи регіону тихо дописував би текст.
+            readonly = False
+            try:
+                readonly = str(widget.cget("state")) in {"disabled", "readonly"}
+            except (tk.TclError, AttributeError):
+                readonly = False
+            try:
+                widgets.attach_edit_actions(widget, readonly=readonly)
             except tk.TclError:
                 continue
 
@@ -629,6 +664,48 @@ class SettingsDialog(tk.Toplevel):
         ttk.Checkbutton(options, text="Будувати план кроків для складних завдань",
                         variable=self.auto_plan_var).grid(
             row=10, column=0, columnspan=2, sticky="w", pady=2)
+
+        # ── свобода дій моделі ────────────────────────────────────────────
+        # Один вибір, який змінює ДВІ реальні речі: скільки кроків має
+        # агент і чи питає він уточнення перед дією. Дозволи на файли й
+        # команди це НЕ змінює — вони на вкладці режимів.
+        ttk.Label(options, text="Свобода дій моделі").grid(
+            row=18, column=0, sticky="w", pady=(10, 0))
+        current_autonomy = autonomy.normalise(
+            getattr(self.settings.agent, "autonomy", autonomy.DEFAULT_LEVEL))
+        self.autonomy_var = tk.StringVar(
+            value=dict(autonomy.labels()).get(current_autonomy, ""))
+        autonomy_box = ttk.Combobox(options, textvariable=self.autonomy_var,
+                                    values=[label for _key, label in autonomy.labels()],
+                                    state="readonly", width=24)
+        autonomy_box.grid(row=18, column=1, sticky="w", padx=(10, 0), pady=(10, 0))
+        self._autonomy_keys: list[str] = [key for key, _label in autonomy.labels()]
+        ttk.Label(options, text="«Автономно» й «Дослідник» додають 8 і 16 кроків "
+                               "і дозволяють агенту самому вирішувати дрібні "
+                               "неоднозначності. Дозволи на файли й команди "
+                               "не змінюються.",
+                  style="Faint.TLabel", wraplength=460).grid(
+            row=19, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+        # ── довгий чат і самонавчання ─────────────────────────────────────
+        self.long_chat_var = tk.BooleanVar(
+            value=getattr(self.settings.agent, "long_chat", True))
+        ttk.Checkbutton(options, text="Нескінченний чат: витіснене з вікна "
+                                      "згортати в хроніку (а не втрачати)",
+                        variable=self.long_chat_var).grid(
+            row=20, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        self.self_learning_var = tk.BooleanVar(
+            value=getattr(self.settings.agent, "self_learning", True))
+        ttk.Checkbutton(options, text="Самонавчання: власні помилки стають "
+                                      "уроками в пам'яті",
+                        variable=self.self_learning_var).grid(
+            row=21, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Label(options, text="Уроки зберігаються в NEUROMESH (тип «lesson»): "
+                               "їх видно в панелі пам'яті, можна виправити або "
+                               "видалити. Модель на цьому не перенавчається.",
+                  style="Faint.TLabel", wraplength=460).grid(
+            row=22, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # ── GitHub: питати й відправляти ──────────────────────────────────
         # Питання «оновити файли на GitHub?» — лише питання: сама відправка
@@ -1463,6 +1540,20 @@ class SettingsDialog(tk.Toplevel):
         s.agent.save_traces = bool(self.traces_var.get())
         s.agent.memory_participates = bool(self.memory_join_var.get())
         s.agent.auto_plan = bool(self.auto_plan_var.get())
+        # ── свобода дій: ПІДПИС у списку → ключ ───────────────────────────
+        # Комбобокс показує підпис, а зберігається ключ. Шукаємо за
+        # підписом, а не за індексом: порядок може змінитись, і тоді
+        # збережений рівень тихо перескочив би на сусідній.
+        try:
+            chosen = str(self.autonomy_var.get() or "").strip()
+            labels = dict(autonomy.labels())
+            key = next((item for item, label in labels.items() if label == chosen), "")
+            if key:
+                s.agent.autonomy = autonomy.normalise(key)
+        except (AttributeError, tk.TclError):
+            LOG.debug("Рівень свободи дій не збережено", exc_info=True)
+        s.agent.long_chat = bool(self.long_chat_var.get())
+        s.agent.self_learning = bool(self.self_learning_var.get())
         # GitHub: прапорець питати й токен (шифрується під час save()).
         try:
             s.git.offer_after_work = bool(self.git_offer_var.get())

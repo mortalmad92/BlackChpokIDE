@@ -37,15 +37,39 @@ __all__ = [
     "MemorySnapshot",
     "describe_snapshot",
     "format_memories",
+    "item_chars",
+    "recall_limit",
 ]
 
 LOG = logging.getLogger("blackchpok.memory_bridge")
 
-#: Скільки спогадів максимум підкладаємо в промпт.
+#: Скільки спогадів максимум підкладаємо в промпт (для МАЛОГО вікна).
 #:
 #: Мало — бо пам'ять має допомагати, а не займати вікно. Кожен спогад
-#: — це реально перевірений факт, тому шести зазвичай досить.
+#: — це реально перевірений факт, тому шести зазвичай досить локальній
+#: моделі на 8–32k.
 DEFAULT_LIMIT = 6
+
+#: Скільки спогадів давати моделі з ВЕЛИКИМ вікном (хмара).
+#:
+#: Раніше шість було абсолютним числом для всіх. На хмарній моделі з вікном
+#: 128k–1M це означало, що агент бачить шість рядків по 220 символів —
+#: тобто «довготривала пам'ять» існувала формально, але не впливала на
+#: роботу: модель усе одно починала кожне завдання з нуля.
+LARGE_WINDOW_LIMIT = 40
+
+#: З якого розміру вікна вмикається великий ліміт спогадів.
+LARGE_WINDOW_TOKENS = 100_000
+
+#: Скільки символів максимум віддаємо на ОДИН спогад.
+#:
+#: Обрізання до 220 символів робило з пояснення «огризок». Для великого
+#: вікна це не має сенсу: там місця вдосталь, і втрачати половину
+#: пояснення — це втрачати саму користь спогаду.
+DEFAULT_ITEM_CHARS = 220
+
+#: Ліміт символів на спогад для великого вікна.
+LARGE_ITEM_CHARS = 900
 
 #: Скільки токенів максимум віддаємо пам'яті в контексті (частка вікна).
 MEMORY_WINDOW_SHARE = 0.15
@@ -87,14 +111,40 @@ class MemorySnapshot:
         return "\n".join(parts)
 
 
+def recall_limit(window: int) -> int:
+    """Скільки спогадів давати моделі з таким вікном.
+
+    Число виводиться з РЕАЛЬНОГО вікна (те саме, що агент уже визначив для
+    стискання історії), а не з константи. Невідоме вікно (0) трактуємо як
+    мале: обіцяти багато, не знаючи ліміту, небезпечно.
+    """
+    size = int(window or 0)
+    if size >= LARGE_WINDOW_TOKENS:
+        return LARGE_WINDOW_LIMIT
+    return DEFAULT_LIMIT
+
+
+def item_chars(window: int) -> int:
+    """Скільки символів можна віддати на один спогад для такого вікна."""
+    size = int(window or 0)
+    if size >= LARGE_WINDOW_TOKENS:
+        return LARGE_ITEM_CHARS
+    return DEFAULT_ITEM_CHARS
+
+
 def format_memories(hits: Iterable[Mapping[str, Any]], *,
-                    limit: int = DEFAULT_LIMIT) -> list[str]:
+                    limit: int = DEFAULT_LIMIT,
+                    max_chars: int = DEFAULT_ITEM_CHARS) -> list[str]:
     """Перетворити результати пошуку пам'яті в людські рядки.
 
     Пам'ять повертає структуровані спогади; моделі ж потрібні речення.
     Джерело додаємо, бо воно — частина довіри до факту.
+
+    ``max_chars`` обрізає КОЖЕН спогад. Раніше тут стояло жорстке 220 —
+    для великого вікна це викидало половину пояснення.
     """
     lines: list[str] = []
+    cap = max(80, int(max_chars or DEFAULT_ITEM_CHARS))
     for hit in hits or ():
         if not isinstance(hit, Mapping):
             continue
@@ -103,8 +153,8 @@ def format_memories(hits: Iterable[Mapping[str, Any]], *,
         if not content:
             continue
         content = " ".join(content.split())
-        if len(content) > 220:
-            content = content[:219] + "…"
+        if len(content) > cap:
+            content = content[: cap - 1] + "…"
         source = str(memory.get("source") or "").strip()
         kind = str(memory.get("kind") or "").strip()
         suffix_bits = [item for item in (kind, source) if item]
@@ -162,31 +212,43 @@ class MemoryBridge:
         task: str = "",
         files: Sequence[str] = (),
         window: int = 0,
-        limit: int = DEFAULT_LIMIT,
+        limit: int = 0,
     ) -> MemorySnapshot:
         """Що пам'ять знає про цей запит — з бюджетом під вікно моделі.
 
         Спершу пробуємо ``project_context`` (він сам стежить за бюджетом і
         додає критичні обмеження). Якщо його немає — звичайний пошук.
         Помилка пам'яті не має ламати хід: повертаємо порожній знімок.
+
+        ``limit=0`` (типово) означає «порахувати з вікна»: мала модель
+        отримує шість спогадів, велика — до сорока. Раніше число було
+        константою, і хмарна модель із вікном 1M бачила ті самі шість
+        рядків по 220 символів, що й локальна на 8k: довготривала пам'ять
+        існувала формально, але на роботу не впливала.
         """
         if not self.ready():
             return MemorySnapshot(note="пам'ять не підключена")
         clean_query = " ".join((query or "").split())
         if not clean_query:
             return MemorySnapshot()
+        effective = int(limit) if int(limit or 0) > 0 else recall_limit(window)
+        cap = item_chars(window)
 
         if callable(getattr(self.service, "project_context", None)) and window > 0:
             snapshot = self._from_context(clean_query, task=task, files=files,
-                                          window=window)
+                                          window=window, limit=effective,
+                                          max_chars=cap)
             if not snapshot.empty:
                 return snapshot
 
-        return self._from_search(clean_query, task=task, files=files, limit=limit)
+        return self._from_search(clean_query, task=task, files=files,
+                                 limit=effective, max_chars=cap)
 
     def _from_context(self, query: str, *, task: str,
-                      files: Sequence[str], window: int) -> MemorySnapshot:
+                      files: Sequence[str], window: int, limit: int = 0,
+                      max_chars: int = DEFAULT_ITEM_CHARS) -> MemorySnapshot:
         """Контекст із губернатором бюджету: обмеження + релевантні факти."""
+        cap_limit = int(limit) if int(limit or 0) > 0 else DEFAULT_LIMIT
         try:
             bundle = self.service.project_context(
                 query=query, window=max(256, int(window)), task=task,
@@ -202,12 +264,13 @@ class MemoryBridge:
 
         memories: list[str] = []
         constraints: list[str] = []
+        cap = max(80, int(max_chars or DEFAULT_ITEM_CHARS))
         for piece in pieces:
             text = " ".join(str(getattr(piece, "text", "") or "").split())
             if not text:
                 continue
-            if len(text) > 220:
-                text = text[:219] + "…"
+            if len(text) > cap:
+                text = text[: cap - 1] + "…"
             critical = bool(getattr(piece, "critical", False))
             label = str(getattr(piece, "label", "") or "")
             reason = str(getattr(piece, "reason", "") or "")
@@ -216,13 +279,13 @@ class MemoryBridge:
                 constraints.append(body)
             else:
                 memories.append(body)
-        return MemorySnapshot(memories=memories[:DEFAULT_LIMIT],
-                              constraints=constraints[:DEFAULT_LIMIT],
+        return MemorySnapshot(memories=memories[:cap_limit],
+                              constraints=constraints[:cap_limit],
                               tokens=tokens, dropped=dropped,
                               note=str(getattr(bundle, "note", "") or ""))
 
     def _from_search(self, query: str, *, task: str, files: Sequence[str],
-                     limit: int) -> MemorySnapshot:
+                     limit: int, max_chars: int = DEFAULT_ITEM_CHARS) -> MemorySnapshot:
         """Запасний шлях: звичайний пошук по пам'яті."""
         try:
             result = self.service.search(query, limit=max(1, int(limit)),
@@ -243,7 +306,7 @@ class MemoryBridge:
             hits = result.get("hits") or []
         elif isinstance(result, list):
             hits = result
-        memories = format_memories(hits, limit=limit)
+        memories = format_memories(hits, limit=limit, max_chars=max_chars)
         return MemorySnapshot(memories=memories,
                               note="" if memories else "нічого релевантного")
 

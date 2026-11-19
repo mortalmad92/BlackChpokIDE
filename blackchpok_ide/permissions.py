@@ -48,7 +48,16 @@ READ_TOOLS = frozenset({
     "read_file", "list_dir", "search_text", "find_files", "project_tree",
     "git_status", "git_diff", "git_remote_info", "python_check",
     "list_skills", "read_skill",
+    # Діагностика лише читає й компілює в тимчасову теку — стан проєкту
+    # вона не змінює, тому дозволена навіть у режимі «лише читання».
+    "self_diagnose",
 })
+
+#: Інструменти, які змінюють файли САМОЇ IDE (не проєкту).
+#:
+#: ``self_repair`` править власні модулі й файли стану, тому в режимі
+#: «лише читання» він заборонений, як і будь-який запис.
+SELF_REPAIR_TOOLS = frozenset({"self_repair"})
 
 #: Інструменти, які змінюють стан ПОЗА цією машиною (публікація).
 #:
@@ -206,6 +215,15 @@ def check_tool(
     if name in READ_TOOLS:
         return Decision(True)
 
+    if name in SELF_REPAIR_TOOLS:
+        # Саморемонт править файли САМОЇ IDE, а не проєкту — тому перевірка
+        # «шлях усередині робочої теки» тут незастосовна (у нього немає
+        # аргументу ``path``). Заборона лишається одна, за станом:
+        # у режимі «лише читання» нічого не змінюємо.
+        if active == READ_ONLY:
+            return Decision(False, "Режим «лише читання»: саморемонт вимкнено.")
+        return Decision(True)
+
     if name in PUBLISH_TOOLS:
         # Публікація на GitHub: незворотна зовнішня дія.
         if active == READ_ONLY:
@@ -307,6 +325,7 @@ __all__ = [
     "MODES",
     "READ_ONLY",
     "READ_TOOLS",
+    "SELF_REPAIR_TOOLS",
     "SYSTEM_PREFIXES",
     "WORKSPACE",
     "WRITE_TOOLS",

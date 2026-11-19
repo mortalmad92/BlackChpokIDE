@@ -169,6 +169,48 @@ def _clean_context(raw: Any) -> list[dict[str, Any]]:
     return cleaned[-CONTEXT_KEEP:]
 
 
+#: Скільки вузлів хроніки максимум зберігаємо в записі чату.
+DIGEST_KEEP = 80
+
+
+def _clean_digest(raw: Any) -> dict[str, Any]:
+    """Привести хроніку до безпечного словника для диска.
+
+    Хроніка приходить із зовнішнього модуля (:mod:`longchat`), тож тут
+    перевіряємо структуру, а не довіряємо їй: зіпсований файл чатів не має
+    ламати завантаження історії. Ніколи не кидає.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    entries: list[dict[str, Any]] = []
+    raw_entries = raw.get("entries")
+    if isinstance(raw_entries, list):
+        for item in raw_entries:
+            if not isinstance(item, dict):
+                continue
+            role = _as_text(item.get("role")).strip().lower()
+            text = _collapse(item.get("text"))
+            if role not in ("user", "assistant", "tool") or not text:
+                continue
+            entries.append({"role": role, "text": text[:400],
+                            "at": _as_float(item.get("at"), 0.0)})
+    if not entries:
+        return {}
+    try:
+        trimmed = max(0, int(raw.get("trimmed") or 0))
+    except (TypeError, ValueError):
+        trimmed = 0
+    try:
+        absorbed = max(0, int(raw.get("absorbed_blocks") or 0))
+    except (TypeError, ValueError):
+        absorbed = 0
+    return {
+        "entries": entries[-DIGEST_KEEP:],
+        "trimmed": trimmed,
+        "absorbed_blocks": absorbed,
+    }
+
+
 _HEAD_MARKS = re.compile(r"^[#>\s]+")
 _LIST_MARK = re.compile(r"^([-+*•]|\d+[.)])\s+")
 _EMPHASIS = re.compile(r"\*\*|__|~~|\*|`")
@@ -295,6 +337,14 @@ class Chat:
     #: «на що посилалось „воно“». Без цього після перезапуску агент знову
     #: питав би те, що людина вже пояснила.
     state: dict[str, Any] = field(default_factory=dict)
+    #: Хроніка довгого чату: стислий слід того, що вже не вміщається у
+    #: вікно моделі (див. :mod:`longchat`).
+    #:
+    #: Навіщо в записі чату. Без цього поля довгий чат після перезапуску
+    #: IDE втрачав би початок розмови НАЗАВЖДИ: ``context`` містить лише
+    #: те, що влізло у вікно, а витіснене осідало тільки в пам'яті, звідки
+    #: його ще треба знайти пошуком. Хроніка повертає зв'язність одразу.
+    digest: dict[str, Any] = field(default_factory=dict)
     #: Git-публікація, прив'язана до ЦЬОГО чату й ЦЬОГО проєкту.
     #:
     #: Навіщо в чаті, а не в налаштуваннях. Користувач працює в кількох
@@ -325,6 +375,7 @@ class Chat:
             "status": self.status,
             "context": _clean_context(self.context),
             "state": dict(self.state) if isinstance(self.state, dict) else {},
+            "digest": _clean_digest(self.digest),
             "git_remote": _as_text(self.git_remote),
             "git_last_push": _as_float(self.git_last_push, 0.0),
             "git_auto_ask": bool(self.git_auto_ask),
@@ -371,6 +422,7 @@ class Chat:
             status=normalise_status(data.get("status")),
             context=_clean_context(data.get("context")),
             state=data.get("state") if isinstance(data.get("state"), dict) else {},
+            digest=_clean_digest(data.get("digest")),
             git_remote=_as_text(data.get("git_remote")),
             git_last_push=_as_float(data.get("git_last_push"), 0.0),
             git_auto_ask=_as_bool(data.get("git_auto_ask", True), True),
@@ -850,6 +902,10 @@ class ChatStore:
             return False
         chat.messages.clear()
         chat.context.clear()
+        # Хроніка теж очищається: «очистити чат» означає очистити ЙОГО
+        # ЦІЛКОМ. Лишити хроніку означало б, що після очищення модель усе
+        # ще пам'ятає стару розмову — це суперечило б дії користувача.
+        chat.digest = {}
         chat.updated_at = time.time()
         self.save()
         return True
@@ -917,6 +973,31 @@ class ChatStore:
         if chat is None:
             return {}
         return dict(chat.state) if isinstance(chat.state, dict) else {}
+
+    def store_digest(self, chat_id: str, digest: dict[str, Any]) -> bool:
+        """Зберегти хроніку довгого чату (див. :mod:`longchat`).
+
+        Порожня хроніка ЗБЕРІГАЄТЬСЯ як ``{}``: це не «нічого не робити»,
+        а чесне очищення, коли людина натиснула «/очистити».
+        """
+        chat = self.get(chat_id)
+        if chat is None:
+            return False
+        chat.digest = _clean_digest(digest)
+        try:
+            self.save()
+        except Exception:  # noqa: BLE001
+            LOG.debug("Не вдалось зберегти хроніку чату %s", chat_id,
+                      exc_info=True)
+            return False
+        return True
+
+    def load_digest(self, chat_id: str) -> dict[str, Any]:
+        """Прочитати хроніку цього чату (порожній словник, якщо немає)."""
+        chat = self.get(chat_id)
+        if chat is None:
+            return {}
+        return _clean_digest(chat.digest)
 
     # ── запуск ─────────────────────────────────────────────────────────────
     def ensure_active(self, *, workspace: str = "", model: str = "") -> Chat:

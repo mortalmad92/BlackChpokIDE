@@ -106,11 +106,25 @@ def main() -> int:
             app.hide_welcome()
             pump(app, 0.4)
             idle = 0.0
-            while app.agent.busy and idle < 90:
+            while app.agent.busy and idle < 180:
                 pump(app, 0.5)
                 idle += 0.5
+            if app.agent.busy:
+                print(f"   УВАГА: агент зайнятий {idle:.0f} с після старту")
 
-            app.chat._send(phrase, plan_step=True)
+            accepted = app.chat._send(phrase, plan_step=True)
+            if accepted is False:
+                # Показуємо СПРАВЖНЮ причину відмови: без цього «файл не
+                # створено» виглядає як провал агента, хоч агент навіть не
+                # починав (перевірено в check_plain_language_live).
+                guard = getattr(app.chat, "folder_guard", None)
+                active = app.chat_store.active()
+                print(f"   УВАГА: запит НЕ прийнято — busy={app.agent.busy}, "
+                      f"has_project={app.has_project()}, "
+                      f"project_ok={app.chat._project_ok(phrase)}, "
+                      f"guard={guard() if guard else None}, "
+                      f"chat_ws={active.workspace if active else None!r}, "
+                      f"agent_ws={app.agent.workspace}")
             # Виправлення синтаксису додає цикли, тож часу треба більше:
             # один хід моделі — це 15–40 с, а виправлень може бути два.
             waited = 0.0
@@ -149,6 +163,24 @@ def main() -> int:
                 app.task_queue.clear()
                 app.destroy()
             except Exception:  # noqa: BLE001
+                pass
+            # ── ПРИБИРАЄМО ЧАТ РАЗОМ ІЗ ТЕКОЮ ─────────────────────────────
+            # Без цього наступний сценарій успадковує активний чат із
+            # ПОПЕРЕДНЬОЇ теки (``chats.json`` спільний), сторож теки
+            # відмовляє, і сценарій виглядає проваленим:
+            #
+            #   guard=False, chat_ws=…\selfheal-ghlsqn7a (попередній),
+            #   agent_ws=…\selfheal-tg1352tk (цей)
+            #
+            # — «файл не створено», хоч агент навіть не починав.
+            # Те саме виправлено в check_plain_language_live.
+            try:
+                for chat in list(app.chat_store.chats or []):
+                    if str(getattr(chat, "workspace", "") or "").startswith(
+                            str(workspace)):
+                        app.chat_store.delete(chat.id)
+                app.chat_store.save()
+            except Exception:  # noqa: BLE001 - прибирання не має ламати прогін
                 pass
             shutil.rmtree(workspace, ignore_errors=True)
 

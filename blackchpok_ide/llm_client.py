@@ -20,6 +20,7 @@ import base64
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -51,6 +52,43 @@ def _is_local_url(url: str) -> bool:
     from .provider_adapters import is_local_url as _shared
 
     return _shared(url)
+
+
+#: Скільки разів повторювати запит до хмарного API.
+#:
+#: Хмарні провайдери РЕГУЛЯРНО віддають 429 (ліміт запитів) і 5xx
+#: (перевантаження) — це штатна поведінка, а не помилка коду. Раніше
+#: будь-яка така відповідь одразу перетворювалась на ``LLMError``, хід
+#: агента падав, і користувач бачив «модель не працює», хоч достатньо
+#: було зачекати секунду.
+RETRY_ATTEMPTS = 4
+
+#: Базовий інтервал відступу (секунди). Далі — подвоєння: 1, 2, 4…
+RETRY_BASE_DELAY = 1.0
+
+#: Стеля інтервалу: довше чекати не варто, краще показати помилку.
+RETRY_MAX_DELAY = 20.0
+
+#: Коди, які означають «спробуй ще раз» (а не «ти помилився в запиті»).
+_RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
+
+
+def _retry_after_seconds(exc: "urllib.error.HTTPError") -> float:
+    """Скільки секунд радить зачекати сервер (заголовок ``Retry-After``).
+
+    Провайдери надсилають його саме для 429. Ігнорувати це число означало б
+    або чекати замало (і знову отримати 429), або зайве довго.
+    """
+    try:
+        raw = exc.headers.get("Retry-After") if exc.headers else None
+    except Exception:                                # noqa: BLE001
+        return 0.0
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, min(RETRY_MAX_DELAY, float(str(raw).strip())))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def is_reasoning_model(model: str) -> bool:
@@ -833,23 +871,58 @@ class LLMClient:
 
     def _request(self, path: str, payload: dict[str, Any] | None = None, *, method: str = "POST") -> Any:
         url = self.adapter.url(self.base_url, path.lstrip("/"), self.api_key)
-        try:
-            with self._open(url, payload, method=method) as response:
-                body = response.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as exc:
-            detail = secrets.redact(
-                exc.read().decode("utf-8", errors="replace")[:800])
-            raise LLMError(f"HTTP {exc.code} від {url}: {_human_error_body(detail)}") from exc
-        except urllib.error.URLError as exc:
-            raise LLMError(self._connection_error(url, exc.reason)) from exc
-        except TimeoutError as exc:
-            raise LLMError(f"Таймаут {self.timeout} с під час запиту до {url}") from exc
+        body = self._request_text(url, payload, method=method)
         if not body.strip():
             raise LLMError(f"Порожня відповідь від {url}")
         try:
             return json.loads(body)
         except json.JSONDecodeError as exc:
             raise LLMError(f"Відповідь не JSON: {body[:300]}") from exc
+
+    def _request_text(self, url: str, payload: dict[str, Any] | None, *,
+                      method: str = "POST") -> str:
+        """Виконати запит із повторами на 429/5xx/мережевих збоях.
+
+        Навіщо окремо від :meth:`_request`. Ті самі повтори потрібні й у
+        потоці стрімінгу (він читає відповідь построково й не може йти
+        через ``_request``). Раніше логіка була лише в одному місці, тож
+        стрім падав на першому ж 429.
+        """
+        last: LLMError | None = None
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                with self._open(url, payload, method=method) as response:
+                    return response.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as exc:
+                detail = secrets.redact(
+                    exc.read().decode("utf-8", errors="replace")[:800])
+                last = LLMError(
+                    f"HTTP {exc.code} від {url}: {_human_error_body(detail)}")
+                if exc.code not in _RETRYABLE_STATUS or attempt >= RETRY_ATTEMPTS:
+                    raise last from exc
+                wait = _retry_after_seconds(exc)
+                if wait <= 0:
+                    wait = min(RETRY_MAX_DELAY,
+                               RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                LOG.info("HTTP %s від %s — повтор %s/%s через %.1f с",
+                         exc.code, url, attempt, RETRY_ATTEMPTS, wait)
+                time.sleep(wait)
+                continue
+            except urllib.error.URLError as exc:
+                last = LLMError(self._connection_error(url, exc.reason))
+                if attempt >= RETRY_ATTEMPTS:
+                    raise last from exc
+                time.sleep(min(RETRY_MAX_DELAY,
+                               RETRY_BASE_DELAY * (2 ** (attempt - 1))))
+                continue
+            except TimeoutError as exc:
+                last = LLMError(f"Таймаут {self.timeout} с під час запиту до {url}")
+                if attempt >= RETRY_ATTEMPTS:
+                    raise last from exc
+                time.sleep(min(RETRY_MAX_DELAY,
+                               RETRY_BASE_DELAY * (2 ** (attempt - 1))))
+                continue
+        raise last if last is not None else LLMError(f"Запит до {url} не вдався")
 
     def _connection_error(self, url: str, reason: Any) -> str:
         """Зрозуміла підказка про з'єднання — ЗАЛЕЖНО від адреси.

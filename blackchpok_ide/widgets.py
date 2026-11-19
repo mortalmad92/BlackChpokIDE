@@ -615,6 +615,109 @@ def clipboard_select_all(widget) -> None:
             pass
 
 
+#: Фізичні коди клавіш (Windows virtual-key codes) для Ctrl+C/X/V/A.
+#:
+#: Навіщо коди, а не літери. У Tk прив'язка ``<Control-v>`` звіряє СИМВОЛ,
+#: який дає клавіша в поточній розкладці. На українській розкладці клавіша
+#: «V» дає «і» (U+0456), символ не збігається з ``v`` — і ``<<Paste>>`` не
+#: виникає взагалі. Тобто Ctrl+V мовчки не працював у ВСЬОМУ застосунку
+#: (перевірено на живому вікні: подія приходить із keysym ``??`` і code 86).
+#: Фізичний код клавіші однаковий у будь-якій розкладці, тому він надійний.
+_CLIPBOARD_KEYCODES = {
+    65: clipboard_select_all,                   # A
+    67: clipboard_copy,                         # C
+    86: clipboard_paste,                        # V
+    88: clipboard_cut,                          # X
+}
+
+#: Латинські символи, які Tk обробляє сам. Якщо keysym збігається — вбудована
+#: обробка вже спрацювала, і власна дія дала б подвійну вставку.
+CLIPBOARD_KEYSYMS = {
+    "a": clipboard_select_all, "A": clipboard_select_all,
+    "c": clipboard_copy, "C": clipboard_copy,
+    "v": clipboard_paste, "V": clipboard_paste,
+    "x": clipboard_cut, "X": clipboard_cut,
+}
+
+#: Віджети, у яких дії буфера мають сенс.
+TEXT_WIDGETS = (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox, ttk.Spinbox,
+                tk.Spinbox)
+
+
+def is_text_widget(widget) -> bool:
+    """Чи це поле введення або текстова область."""
+    return isinstance(widget, TEXT_WIDGETS)
+
+
+def clipboard_action_for(event, *, readonly: bool = False):
+    """Дія буфера для натиснутого Ctrl+C/X/V/A (або ``None``).
+
+    Спільна логіка і для поля, і для застосунку: розбирає модифікатори,
+    відсіює Ctrl+Alt (це команди IDE), повертає саму функцію дії.
+    """
+    try:
+        state = int(getattr(event, "state", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    # Control обов'язковий; Ctrl+Alt — це вже команда IDE, не буфер.
+    # Біти Tk на Windows: 0x1 Shift, 0x4 Control, 0x8 NumLock (стоїть
+    # завжди, до буфера не стосується), 0x20000 Alt.
+    if not state & 0x0004:
+        return None
+    if state & 0x20000:
+        return None
+    # Спершу символ: якщо Tk його впізнав, вбудований механізм уже працює.
+    action = CLIPBOARD_KEYSYMS.get(str(getattr(event, "keysym", "") or ""))
+    if action is not None:
+        return None
+    try:
+        keycode = int(getattr(event, "keycode", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    action = _CLIPBOARD_KEYCODES.get(keycode)
+    if action is None:
+        return None
+    if readonly and action is not clipboard_copy and action is not clipboard_select_all:
+        return None
+    return action
+
+
+def _clipboard_event_handler(event, *, readonly: bool = False):
+    """Виконати дію буфера для події; ``"break"`` — подію поглинуто."""
+    if not is_text_widget(getattr(event, "widget", None)):
+        return None
+    action = clipboard_action_for(event, readonly=readonly)
+    if action is None:
+        return None
+    try:
+        action(event.widget)
+    except Exception:                            # noqa: BLE001 - поле може бути закрите
+        return None
+    return "break"
+
+
+def install_clipboard_fallback(root: tk.Misc) -> None:
+    """Зробити Ctrl+C/X/V/A робочими за будь-якої розкладки клавіатури.
+
+    Ставиться один раз на головне вікно. Спрацьовує ЛИШЕ тоді, коли Tk не
+    впізнав символ (тобто на нелатинській розкладці), тому подвійної
+    вставки на англійській розкладці немає.
+
+    ``"break"`` НЕ повертаємо: на ``bind_all`` він глушить інші глобальні
+    обробники (зокрема скидання таймера простою). Дублювання від цього не
+    виникає — вбудовані прив'язки Tk на нелатинській розкладці не
+    спрацьовують зовсім.
+    """
+    def on_control_key(event):
+        _clipboard_event_handler(event)
+        return None
+
+    try:
+        root.bind_all("<Control-KeyPress>", on_control_key, add="+")
+    except tk.TclError:
+        pass
+
+
 def attach_edit_actions(widget, *, readonly: bool = False) -> None:
     """Підключити Ctrl+C/X/V/A і праве меню до поля введення.
 
@@ -625,6 +728,10 @@ def attach_edit_actions(widget, *, readonly: bool = False) -> None:
         widget._bchpok_readonly = bool(readonly)     # type: ignore[attr-defined]
     except Exception:                            # noqa: BLE001 - буває read-only віджет
         pass
+    # Прив'язка за фізичним кодом: працює й на українській розкладці, де
+    # <Control-v> не спрацьовує (символ «і» замість «v»).
+    widget.bind("<Control-KeyPress>",
+                lambda event: _clipboard_event_handler(event, readonly=readonly))
     widget.bind("<Control-v>", lambda _e: (clipboard_paste(widget), "break")[1])
     widget.bind("<Control-V>", lambda _e: (clipboard_paste(widget), "break")[1])
     widget.bind("<Shift-Insert>", lambda _e: (clipboard_paste(widget), "break")[1])

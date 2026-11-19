@@ -158,7 +158,13 @@ class ContextPanel(tk.Frame):
         host = self.scroll.inner
 
         # Секція «агент» іде ПЕРШОЮ: це найважливіше, що робить IDE.
-        self.agent_section = self._section(host, "АГЕНТ · ЛОКАЛЬНА МОДЕЛЬ", "agent")
+        #
+        # Підпис НЕ фіксує «локальна»: модель буває й хмарною, і заголовок
+        # «АГЕНТ · ЛОКАЛЬНА МОДЕЛЬ» просто над підписом «модель:
+        # deepseek-ai/… · хмара deploy» суперечив сам собі (видно на
+        # скріншоті користувача). Вид підключення пише рядок моделі —
+        # саме там, де він і потрібен.
+        self.agent_section = self._section(host, "АГЕНТ · МОДЕЛЬ", "agent")
         self.project_section = self._section(host, "ПРОЄКТ", "project")
         self.tools_section = self._section(host, "ІНСТРУМЕНТИ", "tools")
         self.tabs_section = self._section(host, "ВІДКРИТІ ВКЛАДКИ", "tabs")
