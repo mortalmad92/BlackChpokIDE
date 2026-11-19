@@ -41,6 +41,16 @@ HISTORY_RENDER_LIMIT = 200
 #: Вікно IDE перераховує це адаптивно до екрана (див. :meth:`set_max_lines`).
 _DEFAULT_BODY_LINES = 60
 
+#: Інструменти, чий результат — ЦЕ вміст файлу.
+#:
+#: Їхній результат НЕ виводимо в стрічку чату: людина просила «прочитай
+#: файл», а не «покажи код». Раніше кожен ``read_file`` вивалював у чат
+#: сотні рядків коду (з номерами рядків), стрічка розросталась, прокрутка
+#: смикалась, а власне відповідь агента губилась під простирадлом коду.
+#: Повний результат нікуди не зникає: він лишається за кліком у вікні
+#: «Результат інструмента» (``_show_full``).
+QUIET_RESULT_TOOLS = frozenset({"read_file", "read_files"})
+
 #: Абсолютний запобіжник: довший текст показуємо з власною прокруткою.
 #: Полотно Tk перестає малювати вміст під ~24 000 px, тож відповідь на
 #: тисячі рядків усе одно треба обмежити — інакше вона просто зникне.
@@ -455,6 +465,13 @@ class ChatPanel(tk.Frame):
         #: Помилки озвучення з фонового потоку → головний потік.
         self._speech_errors: "queue.Queue[str]" = queue.Queue()
         self._body_lines = _DEFAULT_BODY_LINES
+        #: Чи показувати ВМІСТ прочитаних файлів у стрічці чату.
+        #:
+        #: Типово ні: ``read_file`` — це робочий крок агента, а не відповідь
+        #: людині. Коли користувач прямо просить «покажи код файлу», це
+        #: вмикається (див. :meth:`set_show_file_content`).
+        self._show_file_content = bool(
+            getattr(getattr(settings, "ui", None), "show_file_content", False))
         #: Запобіжник для справді великих текстів (див. _HARD_TEXT_LINES).
         self._hard_line_limit = _HARD_TEXT_LINES
         #: Режим глибокого аналізу: картка сеансу й прапорець «не вмикати».
@@ -3189,6 +3206,30 @@ class ChatPanel(tk.Frame):
         # ── diff після правки файлу: картка +зелені/−червоні
         if name in ("edit_file", "write_file") and ok:
             self._maybe_show_diff(name, body)
+        quiet = name in QUIET_RESULT_TOOLS and not self._show_file_content
+        if quiet:
+            # ── Вміст прочитаного файлу в чат НЕ виводимо ─────────────────
+            # Прохання було «прочитай і зроби», а не «покажи код». Раніше
+            # кожен ``read_file`` клав у стрічку та в журнал кількасот
+            # рядків із номерами рядків: відповідь агента губилась під
+            # простирадлом коду, а експорт чату роздувався в рази.
+            # Лишаємо один короткий рядок «прочитано <файл>»; повний
+            # результат, як і раніше, відкривається кліком (``clickable``).
+            label = ""
+            first = body.splitlines()[0] if body.splitlines() else ""
+            if first.startswith("# "):
+                label = first[2:].split("(")[0].strip()
+            short = " ".join(body.split())[:80]
+            if log is not None:
+                try:
+                    log.add_row(work_log.KIND_NOTE, "▤",
+                                f"прочитано: {short}",
+                                colour=theme.FG_FAINT, clickable=body)
+                except tk.TclError:
+                    pass
+            self.transcript.add(f"▤ прочитано {label or name}\n")
+            self._scroll_to_end()
+            return
         # Повний результат не захаращує стрічку: він за рядком у журналі
         # й відкривається кліком у вікні «Результат інструмента».
         preview = body if len(body) <= 90 else body[:89] + "…"
