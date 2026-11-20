@@ -47,7 +47,7 @@ class ProjectGate(tk.Frame):
         body.columnconfigure(0, weight=1)
 
         self.icon = tk.Label(body, text="🗂", bg=theme.BG_CARD, fg=theme.ACCENT,
-                             font=("Segoe UI", 26))
+                             font=theme.font(26))
         self.icon.grid(row=0, column=0, pady=(theme.SPACE_XL, theme.SPACE_MD))
 
         self.title = tk.Label(body, text="Спершу вибери теку проєкту",
@@ -69,19 +69,33 @@ class ProjectGate(tk.Frame):
         buttons = tk.Frame(body, bg=theme.BG_CARD)
         buttons.grid(row=3, column=0, pady=(0, theme.SPACE_XL))
 
-        self.pick_btn = widgets.Chip(buttons, "🗂  Вибрати папку проєкту",
-                                     self._pick, font=("Segoe UI", 10))
-        self.pick_btn.pack(side="left", padx=(0, theme.SPACE_MD))
+        #: Кнопка «Працювати тут» — створюється ПЕРШОЮ, але показується лише
+        #: тоді, коли попередній проєкт справді існує. Саме вона має бути
+        #: головною дією екрана: користувач просив, щоб застосунок
+        #: автоматично продовжував роботу в останньому проєкті й не питав
+        #: теку щоразу.
+        self.use_btn = widgets.Chip(buttons, "✓  Продовжити тут",
+                                    self._use_current, font=theme.font(10))
+        widgets.Tip(self.use_btn,
+                    "Продовжити з уже вибраною текою, не шукаючи її знову")
+
+        self.pick_btn = widgets.Chip(buttons, "🗂  Інша папка…",
+                                     self._pick, font=theme.font(10))
         widgets.Tip(self.pick_btn, "Відкрити теку, з якою працюватиме агент")
 
+        # ── «Створити нову» — ЦЕ ІНША ДІЯ, НІЖ «Вибрати папку» ────────────
+        # Раніше обидві кнопки відкривали той самий ``askdirectory``, і
+        # користувач слушно питав: «вибери папку і створити папку виконує
+        # одну й ту саму дію». Тепер «створити» справді створює: спершу
+        # питає МІСЦЕ (батьківську теку), потім ІМ'Я нової папки — і лише
+        # тоді створює її на диску й відкриває.
         self.create_btn = widgets.Chip(buttons, "＋  Створити нову",
-                                       self._create, font=("Segoe UI", 10))
-        self.create_btn.pack(side="left")
+                                       self._create, font=theme.font(10))
         widgets.Tip(self.create_btn,
-                    "Обери місце у провіднику й створи теку кнопкою «Нова папка»")
+                    "Спитає місце на диску й ім'я — і створить теку проєкту")
 
         self.hint = tk.Label(body, text="", bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                             font=("Segoe UI", 8), justify="center", wraplength=460)
+                             font=theme.font(8), justify="center", wraplength=460)
         self.hint.grid(row=4, column=0, padx=theme.SPACE_2XL,
                        pady=(0, theme.SPACE_LG))
 
@@ -93,13 +107,11 @@ class ProjectGate(tk.Frame):
                                 font=self.fonts.ui_small, justify="center",
                                 wraplength=460)
         self.current.grid(row=5, column=0, padx=theme.SPACE_2XL)
-        self.use_btn = widgets.Chip(buttons, "✓  Працювати тут",
-                                    self._use_current, font=("Segoe UI", 10))
-        widgets.Tip(self.use_btn,
-                    "Продовжити з уже вибраною текою, не шукаючи її знову")
         # Кнопка показується лише коли тека справді є.
         self._current_path = ""
         self._on_use_current: Optional[Callable[[], None]] = None
+        #: Порядок кнопок, поки «працювати тут» недоступна: вибір → створення.
+        self._repack_without_use()
 
     # ── дії ────────────────────────────────────────────────────────────────
     def _pick(self) -> None:
@@ -125,7 +137,7 @@ class ProjectGate(tk.Frame):
     def set_current(self, path: str, *, on_use: Optional[Callable[[], None]] = None) -> None:
         """Показати поточну теку й дозволити продовжити з нею.
 
-        ``on_use`` викликається кнопкою «Працювати тут». Якщо шлях
+        ``on_use`` викликається кнопкою «Продовжити тут». Якщо шлях
         порожній — кнопка ховається, бо продовжувати нема з чим.
         """
         clean = str(path or "").strip()
@@ -133,13 +145,35 @@ class ProjectGate(tk.Frame):
         self._on_use_current = on_use
         try:
             if clean:
-                self.current.configure(text=f"Поточна тека: {clean}")
-                self.use_btn.pack(side="left", padx=(theme.SPACE_MD, 0))
+                self.current.configure(text=f"Минулого разу: {clean}")
+                self._repack_with_use()
             else:
                 self.current.configure(text="")
-                self.use_btn.pack_forget()
+                self._repack_without_use()
         except tk.TclError:
             pass
+
+    def _repack_without_use(self) -> None:
+        """Кнопки без «Продовжити тут»: вибір іншої теки → створити нову."""
+        self.use_btn.pack_forget()
+        self.pick_btn.pack_forget()
+        self.create_btn.pack_forget()
+        self.pick_btn.pack(side="left", padx=(0, theme.SPACE_MD))
+        self.create_btn.pack(side="left")
+
+    def _repack_with_use(self) -> None:
+        """«Продовжити тут» — ГОЛОВНА дія: стоїть першою й виділена.
+
+        Решта — другорядні: людина, яка вже працювала з проєктом, має
+        продовжити одним натисканням, без провідника.
+        """
+        self.use_btn.pack_forget()
+        self.pick_btn.pack_forget()
+        self.create_btn.pack_forget()
+        self.use_btn.pack(side="left", padx=(0, theme.SPACE_MD))
+        self.pick_btn.pack(side="left", padx=(0, theme.SPACE_MD))
+        self.create_btn.pack(side="left")
+
 
 
 __all__ = ["ProjectGate"]

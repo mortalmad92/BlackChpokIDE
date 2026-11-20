@@ -35,7 +35,41 @@ from typing import Callable, Iterable, Optional
 
 from . import theme, widgets
 
+#: Висота одного рядка меню (px).
 ROW_HEIGHT = 34
+
+#: Ознаки ТИМЧАСОВИХ тек: проби, тести й аудити створюють їх у %TEMP% і
+#: пишуть у список недавніх через ``remember_workspace``. Користувач бачив
+#: у меню «probe-cmd-554bt5iv» і не міг зрозуміти, що це, а «×» не
+#: допомагав: список поповнювався знову після кожного прогону.
+TEMP_MARKERS: tuple[str, ...] = (
+    "probe-cmd", "probe-", "bchk_", "bchk-", "modelearn-", "blackchpok-tmp",
+)
+
+#: Скільки останніх тек показуємо (решта лишається в шапці).
+RECENT_LIMIT = 8
+
+
+def is_temporary(path: str) -> bool:
+    """Чи це тимчасова тека, яка не має засмічувати список проєктів.
+
+    Дві умови разом: ім'я схоже на згенероване І тека лежить у системному
+    ``%TEMP%``. Сама лише назва не ознака: користувач цілком може мати
+    робочий проєкт із словом «probe» в імені — його ховати не можна.
+    """
+    text = str(path or "").strip()
+    if not text:
+        return False
+    name = Path(text).name.lower()
+    if not any(name.startswith(marker) or marker in name for marker in TEMP_MARKERS):
+        return False
+    try:
+        import tempfile
+
+        temp_root = str(Path(tempfile.gettempdir()).resolve()).lower()
+        return str(Path(text).resolve()).lower().startswith(temp_root)
+    except (OSError, ValueError):
+        return False
 
 
 class WorkspaceMenu(tk.Toplevel):
@@ -71,7 +105,7 @@ class WorkspaceMenu(tk.Toplevel):
 
     # ── дані ───────────────────────────────────────────────────────────────
     def _existing_recent(self, recent: Iterable[str]) -> list[str]:
-        """Лише ті теки, що справді існують і не дублюють поточну."""
+        """Лише ті теки, що справді існують, не дублюють поточну й не тимчасові."""
         result: list[str] = []
         current = self._norm(self.current)
         for raw in recent:
@@ -82,10 +116,13 @@ class WorkspaceMenu(tk.Toplevel):
                 continue
             if not Path(text).is_dir():
                 continue
+            # Тимчасові теки проб і тестів — не робочі простори користувача.
+            if is_temporary(text):
+                continue
             if any(self._norm(text) == self._norm(item) for item in result):
                 continue
             result.append(text)
-            if len(result) >= 8:
+            if len(result) >= RECENT_LIMIT:
                 break
         return result
 
@@ -141,11 +178,11 @@ class WorkspaceMenu(tk.Toplevel):
         add.grid(row=5, column=0, sticky="ew", padx=4, pady=(0, 6))
         add.columnconfigure(1, weight=1)
         self._add_icon = tk.Label(add, text="＋", bg=theme.BG_ELEVATED, fg=theme.ACCENT,
-                                  font=("Segoe UI", 10), anchor="center")
+                                  font=theme.font(10), anchor="center")
         self._add_icon.grid(row=0, column=0, padx=(8, 6), pady=6)
         self._add_label = tk.Label(add, text="Додати робочий простір…",
                                    bg=theme.BG_ELEVATED, fg=theme.FG,
-                                   font=("Segoe UI", 9), anchor="w")
+                                   font=theme.font(9), anchor="w")
         self._add_label.grid(row=0, column=1, sticky="ew", pady=6)
         self._hover_bind(add, [self._add_icon, self._add_label],
                          theme.BG_ELEVATED, self._add)
@@ -160,22 +197,22 @@ class WorkspaceMenu(tk.Toplevel):
 
         icon = tk.Label(row, text="🗂", bg=bg,
                         fg=theme.ACCENT if active else theme.FG_DIM,
-                        font=("Segoe UI", 10), anchor="center")
+                        font=theme.font(10), anchor="center")
         icon.grid(row=0, column=0, padx=(8, 6), pady=6)
 
         name = tk.Label(row, text=title, bg=bg,
                         fg=theme.FG_BRIGHT if active else theme.FG,
-                        font=("Segoe UI", 9, "bold" if active else "normal"), anchor="w")
+                        font=theme.font(9, "bold" if active else "normal"), anchor="w")
         name.grid(row=0, column=1, sticky="ew", pady=6)
 
         mark = tk.Label(row, text="✓" if active else "", bg=bg, fg=theme.ACCENT,
-                        font=("Segoe UI", 9), width=2, anchor="center")
+                        font=theme.font(9), width=2, anchor="center")
         mark.grid(row=0, column=2, padx=(4, 4 if forgettable else 8), pady=6)
 
         forget = None
         if forgettable:
             forget = tk.Label(row, text="×", bg=bg, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 11), width=2, anchor="center",
+                              font=theme.font(11), width=2, anchor="center",
                               cursor="hand2")
             forget.grid(row=0, column=3, padx=(0, 6), pady=6)
             widgets.Tip(forget, "Прибрати зі списку. Папку на диску не чіпає.")

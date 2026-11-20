@@ -65,7 +65,7 @@ class VoiceButton(tk.Frame):
     # ── побудова ───────────────────────────────────────────────────────────
     def _build(self) -> None:
         self.button = tk.Label(self, text="🎙", bg=self._bg, fg=theme.FG_DIM,
-                               font=("Segoe UI", 11), padx=6, cursor="hand2")
+                               font=theme.font(11), padx=6, cursor="hand2")
         self.button.pack(side="left")
         self.button.bind("<Button-1>", lambda _e: self.toggle())
         widgets.Tip(self.button, "Голосове керування — натисни й говори")

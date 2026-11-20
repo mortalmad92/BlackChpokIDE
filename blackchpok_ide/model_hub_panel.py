@@ -136,7 +136,7 @@ class ModelHubPanel(ttk.Frame):
         # бути видно, велика іконка». Емодзі-значок масштабується шрифтом,
         # тож додаткових ресурсів не потрібно.
         self.hub_icon = tk.Label(head, text="🗂", bg=theme.BG_ALT, fg=theme.ACCENT,
-                                 font=("Segoe UI", 20))
+                                 font=theme.font(20))
         self.hub_icon.grid(row=0, column=3, sticky="e", padx=(0, 8))
         self.hw_label = ttk.Label(head, text="Визначаю залізо…", style="Panel.TLabel")
         self.hw_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))

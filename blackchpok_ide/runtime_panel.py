@@ -99,15 +99,15 @@ class RuntimePanel(tk.Frame):
                  fg=theme.FG_DIM, font=self.fonts.ui_tiny, anchor="w").grid(
             row=0, column=0, sticky="w")
         self.lib_label = tk.Label(head, text="перевіряю рушій…", bg=theme.BG_ALT,
-                                  fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                                  fg=theme.FG_FAINT, font=theme.font(8),
                                   anchor="w", justify="left", wraplength=265)
         self.lib_label.grid(row=1, column=0, sticky="ew", pady=(2, 0))
         widgets.IconButton(head, "⟳", self.refresh_all, bg=theme.BG_ALT,
-                           fg=theme.FG_FAINT, font=("Segoe UI", 10),
+                           fg=theme.FG_FAINT, font=theme.font(10),
                            tooltip="Оновити все").grid(row=0, column=1, rowspan=2)
 
         self.metrics = tk.Label(self, text="", bg=theme.BG_ALT, fg=theme.FG,
-                                font=("Segoe UI", 8), anchor="w", justify="left",
+                                font=theme.font(8), anchor="w", justify="left",
                                 wraplength=270)
         self.metrics.grid(row=1, column=0, sticky="ew", padx=theme.SPACE_MD,
                           pady=(4, 2))
@@ -118,18 +118,18 @@ class RuntimePanel(tk.Frame):
         ctx_wrap = tk.Frame(actions, bg=theme.BG_ALT)
         ctx_wrap.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 3))
         tk.Label(ctx_wrap, text="контекст:", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8)).pack(side="left")
+                 font=theme.font(8)).pack(side="left")
         self.ctx_entry = tk.Entry(ctx_wrap, textvariable=self.ctx_var, width=8,
                                   bg=theme.BG_INPUT, fg=theme.FG, relief="flat",
-                                  insertbackground=theme.FG, font=("Segoe UI", 8),
+                                  insertbackground=theme.FG, font=theme.font(8),
                                   bd=0)
         self.ctx_entry.pack(side="left", padx=(4, 6), ipady=2)
         tk.Label(ctx_wrap, text="шарів на GPU:", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8)).pack(side="left")
+                 font=theme.font(8)).pack(side="left")
         self.layers_var = tk.StringVar(value="")
         tk.Entry(ctx_wrap, textvariable=self.layers_var, width=6, bg=theme.BG_INPUT,
                  fg=theme.FG, relief="flat", insertbackground=theme.FG,
-                 font=("Segoe UI", 8), bd=0).pack(side="left", padx=(4, 0), ipady=2)
+                 font=theme.font(8), bd=0).pack(side="left", padx=(4, 0), ipady=2)
 
         buttons = (
             ("Завантажити", self.run_load, "Завантажити вибрану модель у рушій"),
@@ -249,7 +249,7 @@ class RuntimePanel(tk.Frame):
             child.destroy()
         if not self._models:
             tk.Label(self.list_host, text="Моделей .gguf не знайдено.",
-                     bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                     bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8),
                      anchor="w").pack(fill="x", padx=theme.SPACE_SM,
                                       pady=theme.SPACE_SM)
             return
@@ -264,7 +264,7 @@ class RuntimePanel(tk.Frame):
         name = str(model.get("name") or model.get("key") or "")
         mark = "● " if loaded else ""
         title = tk.Label(card, text=f"{mark}{name}", bg=bg, fg=theme.FG_BRIGHT,
-                         font=("Segoe UI", 8, "bold"), anchor="w",
+                         font=theme.font(8, "bold"), anchor="w",
                          wraplength=250, justify="left")
         title.pack(fill="x", padx=theme.SPACE_SM, pady=(3, 0))
         bits = [
@@ -276,13 +276,13 @@ class RuntimePanel(tk.Frame):
              "impossible": "не влізе"}.get(str(model.get("fits")), ""),
         ]
         meta = tk.Label(card, text=" · ".join(part for part in bits if part),
-                        bg=bg, fg=theme.FG_DIM, font=("Segoe UI", 7), anchor="w")
+                        bg=bg, fg=theme.FG_DIM, font=theme.font(7), anchor="w")
         meta.pack(fill="x", padx=theme.SPACE_SM)
         forecast = (f"~{model.get('vram_needed_gb', 0)} ГБ VRAM · "
                     f"{model.get('suggested_gpu_layers', 0)} шарів · "
                     f"~{model.get('ram_needed_gb', 0)} ГБ RAM")
         tk.Label(card, text=forecast, bg=bg, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 7), anchor="w").pack(
+                 font=theme.font(7), anchor="w").pack(
             fill="x", padx=theme.SPACE_SM, pady=(0, 3))
         for widget in (card, title, meta):
             widget.bind("<Button-1>", lambda _e, p=path: self._select(p))

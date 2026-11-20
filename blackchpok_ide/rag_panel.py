@@ -63,14 +63,14 @@ class RagPanel(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         tk.Label(head, text="ЗНАННЯ ПРО ПРОЄКТ", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w")
+                 font=theme.font(8, "bold")).grid(row=0, column=0, sticky="w")
         self.count_label = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), anchor="e")
+                                    font=theme.font(8), anchor="e")
         self.count_label.grid(row=0, column=1, sticky="e")
 
         self.status_label = tk.Label(
             self, text="Перевіряю індекс…", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 8), justify="left", anchor="w", wraplength=210,
+            font=theme.font(8), justify="left", anchor="w", wraplength=210,
         )
         self.status_label.grid(row=1, column=0, sticky="ew", padx=(12, 8), pady=(0, 6))
 
@@ -80,22 +80,22 @@ class RagPanel(tk.Frame):
 
         self.entry = tk.Entry(
             search, bg=theme.BG_INPUT, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
-            relief="flat", font=("Segoe UI", 9), bd=0, highlightthickness=1,
+            relief="flat", font=theme.font(9), bd=0, highlightthickness=1,
             highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT_SOFT,
         )
         self.entry.grid(row=0, column=0, sticky="ew", ipady=4)
         self.entry.bind("<Return>", lambda _e: self.run_search())
         widgets.IconButton(search, "⌕", self.run_search, bg=theme.BG_INPUT,
-                           fg=theme.FG_DIM, font=("Segoe UI", 10),
+                           fg=theme.FG_DIM, font=theme.font(10),
                            tooltip="Шукати в індексі").grid(row=0, column=1, padx=(4, 0))
 
         actions = tk.Frame(self, bg=theme.BG_ALT)
         actions.grid(row=3, column=0, sticky="ew", padx=(10, 8), pady=(0, 6))
         self.index_btn = widgets.Chip(actions, "⟳ Індексувати", self.run_index,
-                                       font=("Segoe UI", 8))
+                                       font=theme.font(8))
         self.index_btn.pack(side="left", padx=(0, 4))
         self.reindex_btn = widgets.Chip(actions, "Переіндексувати", self.run_reindex,
-                                         font=("Segoe UI", 8))
+                                         font=theme.font(8))
         self.reindex_btn.pack(side="left")
 
         self.scroll = widgets.ScrollFrame(self, bg=theme.BG_ALT)
@@ -106,7 +106,7 @@ class RagPanel(tk.Frame):
             self.host,
             text=("Індекс ще не створено.\nНатисни «Індексувати», щоб агент міг "
                   "шукати по всьому проєкту."),
-            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 9), justify="left",
+            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(9), justify="left",
             wraplength=210,
         )
         self.hint.pack(anchor="w", padx=6, pady=8)
@@ -264,7 +264,7 @@ class RagPanel(tk.Frame):
             if message:
                 tk.Label(self.host, text=message, bg=theme.BG_ALT,
                          fg=theme.ERROR if error else theme.FG_FAINT,
-                         font=("Segoe UI", 9), justify="left",
+                         font=theme.font(9), justify="left",
                          wraplength=210).pack(anchor="w", padx=6, pady=8)
             return
         for hit in hits:
@@ -278,24 +278,24 @@ class RagPanel(tk.Frame):
         head = tk.Frame(row, bg=theme.BG_CARD)
         head.pack(fill="x", padx=8, pady=(6, 2))
         tk.Label(head, text=hit.path or "файл", bg=theme.BG_CARD, fg=theme.ACCENT,
-                 font=("Segoe UI", 8), anchor="w", justify="left",
+                 font=theme.font(8), anchor="w", justify="left",
                  wraplength=180).pack(side="left")
         if hit.start_line:
             tk.Label(head, text=f":{hit.start_line}", bg=theme.BG_CARD,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 8)).pack(side="left")
+                     fg=theme.FG_FAINT, font=theme.font(8)).pack(side="left")
 
         preview = " ".join((hit.preview or "").split())
         if preview:
             tk.Label(row, text=preview[:180], bg=theme.BG_CARD, fg=theme.FG_DIM,
-                     font=("Segoe UI", 8), justify="left", anchor="w",
+                     font=theme.font(8), justify="left", anchor="w",
                      wraplength=200).pack(fill="x", padx=8, pady=(0, 4))
 
         actions = tk.Frame(row, bg=theme.BG_CARD)
         actions.pack(fill="x", padx=8, pady=(0, 6))
         widgets.Chip(actions, "Відкрити", lambda h=hit: self._open(h),
-                     font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
+                     font=theme.font(8)).pack(side="left", padx=(0, 4))
         widgets.Chip(actions, "У контекст", lambda h=hit: self._insert(h),
-                     font=("Segoe UI", 8)).pack(side="left")
+                     font=theme.font(8)).pack(side="left")
 
     def _open(self, hit: rag.RagHit) -> None:
         if not self.on_open_path or not hit.path:

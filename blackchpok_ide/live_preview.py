@@ -71,39 +71,39 @@ class LivePreviewPanel(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         self.state_dot = tk.Label(head, text="●", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                  font=("Segoe UI", 9))
+                                  font=theme.font(9))
         self.state_dot.grid(row=0, column=0, padx=(0, 6))
         tk.Label(head, text="Live Preview", bg=theme.BG_ALT, fg=theme.FG,
-                 font=("Segoe UI", 9, "bold"), anchor="w").grid(row=0, column=1, sticky="w")
+                 font=theme.font(9, "bold"), anchor="w").grid(row=0, column=1, sticky="w")
 
         actions = tk.Frame(head, bg=theme.BG_ALT)
         actions.grid(row=0, column=2, sticky="e")
         self.run_btn = widgets.IconButton(actions, "▶", self._toggle, bg=theme.BG_ALT,
-                                          fg=theme.STATUS_WORKING, font=("Segoe UI", 10),
+                                          fg=theme.STATUS_WORKING, font=theme.font(10),
                                           tooltip="Запустити / зупинити застосунок")
         self.run_btn.pack(side="left")
         self.reload_btn = widgets.IconButton(actions, "⟳", self._reload, bg=theme.BG_ALT,
-                                             fg=theme.FG_DIM, font=("Segoe UI", 10),
+                                             fg=theme.FG_DIM, font=theme.font(10),
                                              tooltip="Перезавантажити сторінку")
         self.reload_btn.pack(side="left")
         self.open_btn = widgets.IconButton(actions, "↗", self._open_external, bg=theme.BG_ALT,
-                                           fg=theme.FG_DIM, font=("Segoe UI", 10),
+                                           fg=theme.FG_DIM, font=theme.font(10),
                                            tooltip="Відкрити в системному браузері")
         self.open_btn.pack(side="left")
         # ── сторінка як дані: інспектор, консоль, знімок, перевірка
         self.inspect_btn = widgets.IconButton(
             actions, "◎", self.toggle_inspect, bg=theme.BG_ALT,
-            fg=theme.FG_DIM, font=("Segoe UI", 10),
+            fg=theme.FG_DIM, font=theme.font(10),
             tooltip="Інспектор елементів: натисни на елемент сайту й передай агенту")
         self.inspect_btn.pack(side="left")
         self.console_btn = widgets.IconButton(
             actions, "⚠", self.collect_console, bg=theme.BG_ALT,
-            fg=theme.FG_DIM, font=("Segoe UI", 10),
+            fg=theme.FG_DIM, font=theme.font(10),
             tooltip="Консоль сторінки: помилки JS, ресурсів і HTTP")
         self.console_btn.pack(side="left")
         self.shot_btn = widgets.IconButton(
             actions, "⊠", lambda: self.run_action("screenshot"), bg=theme.BG_ALT,
-            fg=theme.FG_DIM, font=("Segoe UI", 10),
+            fg=theme.FG_DIM, font=theme.font(10),
             tooltip="Знімок самої сторінки (не екрана) у PNG")
         self.shot_btn.pack(side="left")
 
@@ -112,12 +112,12 @@ class LivePreviewPanel(tk.Frame):
         url_host.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
         url_host.columnconfigure(0, weight=1)
         self.url_label = tk.Label(url_host, text="—", bg=theme.BG_CARD, fg=theme.FG_DIM,
-                                  font=("Segoe UI", 8), anchor="w")
+                                  font=theme.font(8), anchor="w")
         self.url_label.grid(row=0, column=0, sticky="ew", ipady=5, padx=(10, 6))
 
         # ── статус-стрічка
         self.status_label = tk.Label(self, text="Стек не визначено", bg=theme.BG_ALT,
-                                     fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w",
+                                     fg=theme.FG_FAINT, font=theme.font(8), anchor="w",
                                      justify="left")
         self.status_label.grid(row=2, column=0, sticky="ew", padx=(14, 10), pady=(0, 2))
 
@@ -316,7 +316,7 @@ class LivePreviewPanel(tk.Frame):
         head.pack(fill="x", padx=(12, 8), pady=(4, 0))
         self.inspect_tag = tk.Label(head, text="ЕЛЕМЕНТ", bg=theme.BG_ALT,
                                     fg=theme.FG_BRIGHT,
-                                    font=("Segoe UI", 9, "bold"), anchor="w")
+                                    font=theme.font(9, "bold"), anchor="w")
         self.inspect_tag.pack(side="left")
         self.inspect_selector = tk.Label(head, text="", bg=theme.BG_ALT,
                                          fg=theme.ACCENT, font=self.fonts.mono_small,
@@ -324,10 +324,10 @@ class LivePreviewPanel(tk.Frame):
         self.inspect_selector.pack(side="left", padx=(8, 0))
 
         self.inspect_meta = tk.Label(box, text="", bg=theme.BG_ALT, fg=theme.FG_DIM,
-                                     font=("Segoe UI", 8), anchor="w", justify="left")
+                                     font=theme.font(8), anchor="w", justify="left")
         self.inspect_meta.pack(fill="x", padx=(12, 8))
         self.inspect_styles = tk.Label(box, text="", bg=theme.BG_ALT,
-                                       fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                                       fg=theme.FG_FAINT, font=theme.font(8),
                                        anchor="w", justify="left")
         self.inspect_styles.pack(fill="x", padx=(12, 8))
 
@@ -336,20 +336,20 @@ class LivePreviewPanel(tk.Frame):
         widgets.HoverLabel(
             actions, text="→ Передати агенту", command=self._send_element,
             bg=theme.ACCENT, fg=theme.ON_ACCENT, hover_bg=theme.ACCENT_SOFT,
-            hover_fg=theme.ON_ACCENT, font=("Segoe UI", 8, "bold"),
+            hover_fg=theme.ON_ACCENT, font=theme.font(8, "bold"),
             padx=8, pady=2).pack(side="left")
         widgets.HoverLabel(
             actions, text="Копіювати селектор", command=self._copy_selector,
             bg=theme.BG_CARD, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,
-            hover_fg=theme.FG_BRIGHT, font=("Segoe UI", 8),
+            hover_fg=theme.FG_BRIGHT, font=theme.font(8),
             padx=8, pady=2).pack(side="left", padx=(6, 0))
         widgets.HoverLabel(
             actions, text="Закрити", command=self.hide_inspector,
             bg=theme.BG_ALT, fg=theme.FG_FAINT, hover_bg=theme.BG_HOVER,
-            hover_fg=theme.FG_DIM, font=("Segoe UI", 8),
+            hover_fg=theme.FG_DIM, font=theme.font(8),
             padx=8, pady=2).pack(side="left", padx=(6, 0))
         self.inspect_status = tk.Label(actions, text="", bg=theme.BG_ALT,
-                                       fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                                       fg=theme.FG_FAINT, font=theme.font(8),
                                        anchor="e")
         self.inspect_status.pack(side="right")
 
@@ -484,14 +484,14 @@ class LivePreviewPanel(tk.Frame):
         head = tk.Frame(box, bg=theme.BG_EDITOR)
         head.pack(fill="x", padx=(10, 6), pady=(3, 0))
         tk.Label(head, text="КОНСОЛЬ СТОРІНКИ", bg=theme.BG_EDITOR,
-                 fg=theme.FG_FAINT, font=("Segoe UI", 7, "bold")).pack(side="left")
+                 fg=theme.FG_FAINT, font=theme.font(7, "bold")).pack(side="left")
         self.console_summary = tk.Label(head, text="", bg=theme.BG_EDITOR,
-                                        fg=theme.FG_FAINT, font=("Segoe UI", 7))
+                                        fg=theme.FG_FAINT, font=theme.font(7))
         self.console_summary.pack(side="right")
         widgets.HoverLabel(
             head, text="×", command=self.hide_console, bg=theme.BG_EDITOR,
             fg=theme.FG_FAINT, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_DIM,
-            font=("Segoe UI", 9), padx=6).pack(side="right", padx=(0, 4))
+            font=theme.font(9), padx=6).pack(side="right", padx=(0, 4))
 
         self.console_text = tk.Text(
             box, height=7, wrap="none", bd=0, highlightthickness=0,

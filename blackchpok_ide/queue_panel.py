@@ -52,9 +52,9 @@ class QueuePanel(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         tk.Label(head, text="ЧЕРГА ЗАВДАНЬ", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w")
+                 font=theme.font(8, "bold")).grid(row=0, column=0, sticky="w")
         self.count_label = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), anchor="e")
+                                    font=theme.font(8), anchor="e")
         self.count_label.grid(row=0, column=1, sticky="e", padx=(6, 0))
 
         # Поле додавання
@@ -70,14 +70,14 @@ class QueuePanel(tk.Frame):
         self.entry.bind("<Shift-Return>", lambda _e: self._add())
 
         widgets.IconButton(add_row, "＋", self._add, bg=theme.BG_INPUT, fg=theme.FG_DIM,
-                           font=("Segoe UI", 10), tooltip="Додати задачу").grid(row=0, column=1, padx=(4, 0))
+                           font=theme.font(10), tooltip="Додати задачу").grid(row=0, column=1, padx=(4, 0))
 
         # Список
         self.scroll = widgets.ScrollFrame(self, bg=theme.BG_ALT)
         self.scroll.grid(row=2, column=0, sticky="nsew", padx=(8, 4), pady=(0, 6))
         self.list_host = self.scroll.inner
         self.empty = tk.Label(self.list_host, text="Черга порожня.\nДодай задачу — агент виконає її після поточної.",
-                              bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 9),
+                              bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(9),
                               justify="left")
         self.empty.pack(anchor="w", padx=6, pady=10)
 
@@ -85,11 +85,11 @@ class QueuePanel(tk.Frame):
         footer = tk.Frame(self, bg=theme.BG_ALT)
         footer.grid(row=3, column=0, sticky="ew", padx=(8, 4), pady=(0, 10))
         self.pause_btn = widgets.Chip(footer, "⏸ Пауза", self._toggle_pause,
-                                      font=("Segoe UI", 9))
+                                      font=theme.font(9))
         self.pause_btn.pack(side="left", padx=(0, 4))
-        self.run_btn = widgets.Chip(footer, "▶ Запустити", self._run_next, font=("Segoe UI", 9))
+        self.run_btn = widgets.Chip(footer, "▶ Запустити", self._run_next, font=theme.font(9))
         self.run_btn.pack(side="left", padx=(0, 4))
-        widgets.Chip(footer, "Очистити", self._clear_done, font=("Segoe UI", 9)).pack(side="left")
+        widgets.Chip(footer, "Очистити", self._clear_done, font=theme.font(9)).pack(side="left")
 
     # ── дії ────────────────────────────────────────────────────────────────
     def _notify(self, text: str) -> None:
@@ -225,7 +225,7 @@ class QueuePanel(tk.Frame):
         row.columnconfigure(1, weight=1)
 
         mark = tk.Label(row, text=STATUS_MARKS.get(task.status, "•"), bg=theme.BG_CARD, fg=colour,
-                        font=("Segoe UI", 9))
+                        font=theme.font(9))
         mark.grid(row=0, column=0, padx=(8, 6), pady=(6, 0), sticky="n")
 
         # Текст кроку — САМЕ те, що робити. Номер показуємо окремим
@@ -236,7 +236,7 @@ class QueuePanel(tk.Frame):
         text = task.text if len(task.text) <= 160 else task.text[:157] + "…"
         head = f"{index + 1}. " if index >= 0 else ""
         label = tk.Label(row, text=head + text, bg=theme.BG_CARD, fg=colour,
-                         font=("Segoe UI", 9), justify="left", anchor="w",
+                         font=theme.font(9), justify="left", anchor="w",
                          wraplength=240)
         label.grid(row=0, column=1, sticky="ew", pady=(6, 0), padx=(0, 6))
 
@@ -246,7 +246,7 @@ class QueuePanel(tk.Frame):
         if task.elapsed_text:
             meta_bits.append(task.elapsed_text)
         meta = tk.Label(row, text=" · ".join(meta_bits), bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                        font=("Segoe UI", 8), anchor="w")
+                        font=theme.font(8), anchor="w")
         meta.grid(row=1, column=1, sticky="ew", padx=(0, 6), pady=(1, 6))
 
         for widget in (row, mark, label, meta):

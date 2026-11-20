@@ -80,7 +80,7 @@ class NavButton(tk.Frame):
         self.columnconfigure(1, weight=1)
 
         self.icon_label = tk.Label(self, text=icon, bg=bg, fg=theme.FG_DIM,
-                                   font=("Segoe UI", 13), width=2, anchor="center",
+                                   font=theme.font(13), width=2, anchor="center",
                                    bd=0, highlightthickness=0)
         self.icon_label.grid(row=0, column=0, padx=(theme.SPACE_MD, 0), pady=6, sticky="w")
 
@@ -168,29 +168,33 @@ class NavSidebar(tk.Frame):
 
     # ── побудова ───────────────────────────────────────────────────────────
     def _build(self) -> None:
-        # 1. Бренд
+        # 1. Заголовок панелі.
+        #
+        # Назви «BlackChpok» тут НЕМАЄ: бренд живе лише в шапці вікна
+        # (``header_bar``). Раніше обидва місця малювали логотип і напис, і
+        # в лівому верхньому куті стояло два «BlackChpok» поспіль. Рядок
+        # зайнятий кнопкою згортання — це те, що справді потрібно під рукою.
         brand = tk.Frame(self, bg=theme.BG_ALT)
         brand.pack(fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_MD))
         self.brand = brand
 
         self.logo = tk.Label(brand, text="◤", bg=theme.BG_ALT, fg=theme.ACCENT,
-                             font=("Segoe UI", 13, "bold"))
+                             font=theme.font(13, "bold"))
         self.logo.pack(side="left")
 
-        self.brand_label = tk.Label(brand, text="BlackChpok", bg=theme.BG_ALT,
-                                    fg=theme.FG_BRIGHT, font=self.fonts.ui_h2, anchor="w")
-        self.brand_label.pack(side="left", padx=(theme.SPACE_SM, 0))
+        #: Сумісність: код і тести звертаються до ``brand_label``.
+        self.brand_label = None
 
         self.collapse_btn = widgets.IconButton(
             brand, "«", self.toggle_collapsed, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 9), tooltip="Згорнути панель (Ctrl+B)")
+            font=theme.font(9), tooltip="Згорнути панель (Ctrl+B)")
         self.collapse_btn.pack(side="right")
 
         # 2. Головна дія
         new_btn = widgets.HoverLabel(
             self, text="  ＋  Нова сесія", command=self._new_session,
             bg=theme.BG_INPUT, fg=theme.FG_BRIGHT, hover_bg=theme.BG_HOVER,
-            hover_fg=theme.FG_BRIGHT, font=("Segoe UI", 9, "bold"),
+            hover_fg=theme.FG_BRIGHT, font=theme.font(9, "bold"),
             padx=theme.SPACE_MD, pady=6, anchor="w",
         )
         new_btn.pack(fill="x", padx=theme.SPACE_MD, pady=(0, theme.SPACE_MD))
@@ -218,10 +222,10 @@ class NavSidebar(tk.Frame):
         self.project_row = tk.Frame(self.workspace_host, bg=theme.BG_ALT, cursor="hand2")
         self.project_row.pack(fill="x")
         self.project_icon = tk.Label(self.project_row, text="🗂", bg=theme.BG_ALT,
-                                     fg=theme.FG_DIM, font=("Segoe UI", 9))
+                                     fg=theme.FG_DIM, font=theme.font(9))
         self.project_icon.pack(side="left", padx=(theme.SPACE_MD, theme.SPACE_SM))
         self.project_label = tk.Label(self.project_row, text="не обрано", bg=theme.BG_ALT,
-                                      fg=theme.FG, font=("Segoe UI", 9), anchor="w")
+                                      fg=theme.FG, font=theme.font(9), anchor="w")
         self.project_label.pack(side="left", fill="x", expand=True, pady=3)
         for widget in (self.project_row, self.project_icon, self.project_label):
             widget.bind("<Button-1>", lambda _e: self._open_project())
@@ -245,12 +249,12 @@ class NavSidebar(tk.Frame):
         self.footer = footer
 
         self.user_label = tk.Label(footer, text="● локально", bg=theme.BG_ALT,
-                                   fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w")
+                                   fg=theme.FG_FAINT, font=theme.font(8), anchor="w")
         self.user_label.pack(side="left", padx=(theme.SPACE_SM, 0))
         widgets.Tip(self.user_label, "Local-first: дані не покидають ваш комп'ютер")
 
         widgets.IconButton(footer, "◔", self._open_settings, bg=theme.BG_ALT,
-                           fg=theme.FG_FAINT, font=("Segoe UI", 10),
+                           fg=theme.FG_FAINT, font=theme.font(10),
                            tooltip="Налаштування (Ctrl+,)").pack(side="right")
 
     # ── дії ────────────────────────────────────────────────────────────────
@@ -330,7 +334,7 @@ class NavSidebar(tk.Frame):
             return
         if not chats:
             tk.Label(self.history_host, text="Сесій ще немає", bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w").pack(
+                     fg=theme.FG_FAINT, font=theme.font(8), anchor="w").pack(
                 fill="x", padx=theme.SPACE_MD, pady=theme.SPACE_SM)
             return
         for chat in chats[:40]:
@@ -345,10 +349,10 @@ class NavSidebar(tk.Frame):
             title = "★ " + title
         label = tk.Label(row, text=title, bg=bg,
                          fg=theme.FG_BRIGHT if active else theme.FG_DIM,
-                         font=("Segoe UI", 9), anchor="w")
+                         font=theme.font(9), anchor="w")
         label.pack(fill="x", padx=(theme.SPACE_MD, theme.SPACE_SM), pady=(3, 0))
         meta = tk.Label(row, text=f"{chat.message_count} повід. · {chat.age_text}", bg=bg,
-                        fg=theme.FG_FAINT, font=("Segoe UI", 7), anchor="w")
+                        fg=theme.FG_FAINT, font=theme.font(7), anchor="w")
         meta.pack(fill="x", padx=(theme.SPACE_MD, theme.SPACE_SM), pady=(0, 3))
 
         def open_chat(_e=None, cid=chat.id):
@@ -401,7 +405,6 @@ class NavSidebar(tk.Frame):
                 pass
         else:
             self.configure(width=self._width)
-            self.brand_label.pack(side="left", padx=(theme.SPACE_SM, 0), after=self.logo)
             self.workspace_host.pack(fill="x", padx=theme.SPACE_SM,
                                     pady=(theme.SPACE_MD, 0), after=self.items_host)
             self.history_title.pack(fill="x", padx=theme.SPACE_LG,

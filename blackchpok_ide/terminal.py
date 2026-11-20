@@ -56,11 +56,11 @@ class TerminalPanel(tk.Frame):
         bar.columnconfigure(1, weight=1)
 
         self.title = tk.Label(bar, text="ТЕРМІНАЛ", bg=theme.BG, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 8, "bold"))
+                              font=theme.font(8, "bold"))
         self.title.grid(row=0, column=0, sticky="w")
 
         self.cwd_label = tk.Label(bar, text=_short_path(self.cwd), bg=theme.BG, fg=theme.FG_DIM,
-                                  font=("Segoe UI", 8))
+                                  font=theme.font(8))
         self.cwd_label.grid(row=0, column=1, sticky="w", padx=(10, 8))
 
         quick = tk.Frame(bar, bg=theme.BG)
@@ -70,12 +70,12 @@ class TerminalPanel(tk.Frame):
             ("Git", "git status --short --branch"),
             ("Компіляція", f'"{sys.executable}" -m compileall -q .'),
         ):
-            widgets.Chip(quick, text, lambda c=command: self.run(c), font=("Segoe UI", 8)).pack(
+            widgets.Chip(quick, text, lambda c=command: self.run(c), font=theme.font(8)).pack(
                 side="left", padx=(0, 4))
         widgets.IconButton(quick, "⌫", self.clear, bg=theme.BG, fg=theme.FG_FAINT,
-                           font=("Segoe UI", 9), tooltip="Очистити (Ctrl+L)").pack(side="left", padx=(4, 0))
+                           font=theme.font(9), tooltip="Очистити (Ctrl+L)").pack(side="left", padx=(4, 0))
         widgets.IconButton(quick, "⟳", self.restart, bg=theme.BG, fg=theme.FG_FAINT,
-                           font=("Segoe UI", 9), tooltip="Перезапустити сесію").pack(side="left")
+                           font=theme.font(9), tooltip="Перезапустити сесію").pack(side="left")
 
         self.output = tk.Text(
             self, height=8, wrap="none", border=0, highlightthickness=0,
@@ -116,7 +116,7 @@ class TerminalPanel(tk.Frame):
         self.entry.bind("<Control-c>", lambda _e: (self.interrupt(), "break")[1])
 
         widgets.IconButton(entry_row, "■", self.interrupt, bg=theme.BG, fg=theme.ERROR,
-                           font=("Segoe UI", 9), tooltip="Перервати команду (Ctrl+C)").grid(
+                           font=theme.font(9), tooltip="Перервати команду (Ctrl+C)").grid(
             row=0, column=2)
 
         self._write("BlackChpok IDE · термінал готовий.\n", "info")

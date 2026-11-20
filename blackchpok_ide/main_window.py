@@ -54,6 +54,7 @@ from . import (
     mcp_watch,
     cloud_agents,
     effort,
+    hidpi,
     layout,
     memory_bridge,
     modes,
@@ -226,6 +227,65 @@ PANEL_TITLES: dict[str, str] = {
 }
 
 
+# ── Ознаки помилки вибору режиму (див. ``_learn_mode_choice``) ─────────────
+#
+# Слова, якими агент САМ каже «мій режим не підходить». Така відповідь —
+# найчесніший сигнал: вона з'являється лише тоді, коли запит справді
+# вимагав інструментів, а режим їх вимикав.
+_SWITCH_MODE_MARKERS: tuple[str, ...] = (
+    "перемкни режим", "увімкни режим", "зміни режим", "переключи режим",
+    "потрібен режим", "без інструментів",
+)
+
+#: Слова відмови дозволів. ``permissions`` формує їх сам, і вони означають
+#: рівно одне: режим був замалий для цієї роботи.
+_DENIED_MARKERS: tuple[str, ...] = (
+    "заборонено режимом дозволів", "лише читання", "тільки читання",
+    "read-only", "read_only",
+)
+
+
+def _says_switch_mode(answer: str) -> bool:
+    """Чи агент сам сказав, що режим не підходить для цього запиту."""
+    low = str(answer or "").lower()
+    return any(marker in low for marker in _SWITCH_MODE_MARKERS)
+
+
+#: Символи, заборонені в іменах тек Windows. Перевіряємо самі, щоб людина
+#: дізналась причину ДО створення теки, а не отримала OSError від системи.
+_BAD_FOLDER_CHARS = '<>:"/\\|?*'
+
+#: Імена, зарезервовані Windows (теку з таким ім'ям не створити ніколи).
+_RESERVED_NAMES = frozenset({
+    "con", "prn", "aux", "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+})
+
+
+def folder_name_problem(name: str) -> str:
+    """Чому таке ім'я теки не годиться. Порожній рядок — ім'я нормальне."""
+    body = str(name or "").strip()
+    if not body:
+        return "Ім'я не може бути порожнім."
+    if body in {".", ".."}:
+        return "Ім'я не може бути «.» або «..»."
+    bad = sorted({char for char in body if char in _BAD_FOLDER_CHARS})
+    if bad:
+        return f"Ім'я не може містити: {' '.join(bad)}"
+    if body.endswith("."):
+        return "Ім'я не може закінчуватись крапкою: Windows її відкидає."
+    if body != body.strip():
+        return "Ім'я не може починатись або закінчуватись пробілом."
+    stem = body.split(".")[0].lower()
+    if stem in _RESERVED_NAMES:
+        return (f"«{body}» — зарезервоване ім'я Windows "
+                f"(напр. CON, PRN, NUL, COM1).")
+    if len(body) > 120:
+        return "Ім'я задовге (понад 120 символів)."
+    return ""
+
+
 def _plan_text_for(task) -> str:
     """Короткий опис задачі людською мовою для плану автономного режиму."""
     who = "твоя задача" if getattr(task, "from_user", False) else "покращення"
@@ -273,11 +333,18 @@ class BlackChpokIDE(tk.Tk):
         self._apply_start_geometry()
         self._apply_icon()
 
-        self.theme = theme.Theme(self, settings.ui.font_family, settings.ui.font_size)
+        self.theme = theme.Theme(self, settings.ui.font_family, settings.ui.font_size,
+                                 scale=getattr(settings.ui, "ui_scale", 1.0))
         # Тема з налаштувань (типово темна) діє одразу — до побудови віджетів,
         # тож жодного «світлого спалаху» при старті.
         theme.set_mode(getattr(settings.ui, "theme", theme.DEFAULT_MODE))
         self.theme.apply()
+        # Чіткий рендер: без цього після оголошення DPI-обізнаності пункти
+        # рахуються за старим припущенням 96 DPI і текст лишається дрібним.
+        try:
+            self._dpi_scale = hidpi.apply_scaling(self)
+        except Exception:  # noqa: BLE001 - масштаб не має ламати старт
+            self._dpi_scale = 1.0
 
         root = Path(settings.workspace or Path.cwd())
         if not root.exists():
@@ -378,6 +445,18 @@ class BlackChpokIDE(tk.Tk):
         self._preview_shown = False
         #: Режим роботи агента (реальні дозволи + кроки, див. :mod:`modes`).
         self.agent_mode = modes.normalise(getattr(settings.ui, "mode", modes.DEFAULT_MODE))
+        #: Самонавчання на ВИБОРІ РЕЖИМУ (див. :mod:`mode_learning`).
+        #:
+        #: Режим агент обирає сам, і правилa іноді помиляються. Кожна
+        #: доведена помилка (запит про факти пішов у «Чат», запис відхилено
+        #: дозволами, повний цикл на вітання) стає правилом, і наступного
+        #: разу ця сама фраза одразу отримує правильний режим.
+        self.mode_learning: Any = None
+        #: Текст останнього запиту — щоб записати помилку вибору режиму,
+        #: коли хід завершиться (на той момент фраза вже не в аргументах).
+        self._mode_text = ""
+        #: Режим, обраний для цього ходу (для порівняння з потрібним).
+        self._mode_chosen = ""
         #: Спливні картки (селектор моделі, меню режимів).
         self._model_selector = None
         self._mode_menu = None
@@ -463,6 +542,9 @@ class BlackChpokIDE(tk.Tk):
         # Пам'ять NEUROMESH бере участь у розумінні запиту: факти й
         # обмеження проєкту потрапляють у контекст ДО запиту до моделі.
         self._attach_memory_bridge(self.agent)
+        # Самонавчання на виборі режиму: правила живуть у файлі, а висновки
+        # додатково йдуть у пам'ять (міст уже підключено вище).
+        self._attach_mode_learning()
         self.chat.attach_runner(self.agent)
         self.chat._workspace_root = root
         # Адаптивний ліміт рядків однієї відповіді: на малому екрані
@@ -1039,26 +1121,54 @@ class BlackChpokIDE(tk.Tk):
             LOG.debug("Панель не додалась у PanedWindow", exc_info=True)
             self.sidebar.grid(row=0, column=0, sticky="ns")
 
-        # ── бренд + згортання
+        # ── бренд + швидкі налаштування + згортання
+        #
+        # Назва «BlackChpok» тут БІЛЬШЕ НЕ МАЛЮЄТЬСЯ. Раніше її показували
+        # два місця — шапка вікна (``header_bar``) і цей рядок, — і в
+        # лівому верхньому куті стояло два логотипи поспіль. Тепер бренд
+        # живе лише в шапці, а цей рядок зайнятий тим, що справді потрібно
+        # під рукою: швидке регулювання вигляду й згортання панелі.
         head = tk.Frame(self.sidebar, bg=theme.BG_ALT)
-        head.pack(fill="x", padx=theme.SPACE_LG, pady=(theme.SPACE_LG, theme.SPACE_MD))
+        head.pack(fill="x", padx=theme.SPACE_MD, pady=(theme.SPACE_SM, theme.SPACE_MD))
         self.nav_head = head
 
-        self.brand_icon = tk.Label(head, text="◤", bg=theme.BG_ALT, fg=theme.ACCENT,
-                                   font=("Segoe UI", 13, "bold"))
-        self.brand_icon.pack(side="left")
-        self.brand_label = tk.Label(head, text="BlackChpok", bg=theme.BG_ALT,
-                                    fg=theme.FG_BRIGHT, font=self.theme.ui_h2, anchor="w")
-        self.brand_label.pack(side="left", padx=(theme.SPACE_SM, 0))
+        # Сумісність: частина коду й тестів звертається до цих атрибутів.
+        self.brand_icon = None
+        self.brand_label = None
+
         self.collapse_btn = widgets.IconButton(
-            head, "«", self.toggle_sidebar, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 9), tooltip="Згорнути панель (Ctrl+B)")
-        self.collapse_btn.pack(side="right")
+            head, "«", self.toggle_sidebar, bg=theme.BG_ALT, fg=theme.FG_DIM,
+            font=theme.font(10), tooltip="Згорнути панель (Ctrl+B)")
+        self.collapse_btn.pack(side="left")
+
+        # ── швидке регулювання вигляду просто в панелі ────────────────────
+        # Дрібніше / більше шрифт, масштаб панелей, тема — без походу в
+        # налаштування. Раніше для цього треба було відкрити діалог.
+        view_bar = tk.Frame(head, bg=theme.BG_ALT)
+        view_bar.pack(side="right")
+        self._view_buttons: list[widgets.IconButton] = []
+
+        def quick(icon: str, command, tip: str) -> widgets.IconButton:
+            # ``fg=theme.FG``, а не FG_DIM: це постійно видимі керуючі
+            # кнопки, і приглушений колір робив їх майже невидимими на
+            # темній панелі (перевірено на скріншоті).
+            button = widgets.IconButton(
+                view_bar, icon, command, bg=theme.BG_ALT, fg=theme.FG,
+                font=theme.font(10), tooltip=tip)
+            button.pack(side="left", padx=(0, 1))
+            self._view_buttons.append(button)
+            return button
+
+        self.theme_btn = quick("◐", self.toggle_theme, "Перемкнути тему: темна / світла")
+        self.font_small_btn = quick("A−", self.font_smaller, "Дрібніший шрифт (Ctrl+-)")
+        self.font_big_btn = quick("A+", self.font_bigger, "Більший шрифт (Ctrl+=)")
+        self.scale_btn = quick("⤢", self.cycle_ui_scale,
+                               "Масштаб інтерфейсу: 100 → 110 → 125 → 150 %")
 
         # ── головна дія: новий чат (підпис українською)
         self.new_session_btn = tk.Label(
             self.sidebar, text="＋  Новий чат", bg=theme.BTN_BG, fg=theme.BTN_FG,
-            font=("Segoe UI", 10, "bold"), padx=12, pady=8, cursor="hand2", anchor="w",
+            font=theme.font(10, "bold"), padx=12, pady=8, cursor="hand2", anchor="w",
         )
         self.new_session_btn.pack(fill="x", padx=theme.SPACE_MD, pady=(0, theme.SPACE_MD))
         self.new_session_btn.bind("<Enter>", lambda _e: self.new_session_btn.configure(bg=theme.BTN_HOVER))
@@ -1095,7 +1205,7 @@ class BlackChpokIDE(tk.Tk):
                 nav_row, text=caption, command=command, bg=theme.BG_ALT,
                 fg=theme.FG_FAINT, hover_bg=theme.BG_HOVER,
                 hover_fg=theme.FG_BRIGHT, active_bg=theme.BG_ACTIVE,
-                active_fg=theme.FG_BRIGHT, font=("Segoe UI", 8),
+                active_fg=theme.FG_BRIGHT, font=theme.font(8),
                 padx=theme.SPACE_SM, pady=2, anchor="center")
             chip.pack(side="left", padx=(0, 2))
             widgets.Tip(chip, tip)
@@ -1112,7 +1222,7 @@ class BlackChpokIDE(tk.Tk):
         self.panel_home = widgets.HoverLabel(
             panel_head, text="", command=self._panel_home, bg=theme.BG_ALT,
             fg=theme.FG_DIM, hover_bg=theme.BG_ALT, hover_fg=theme.FG_BRIGHT,
-            font=("Segoe UI", 10), padx=0, pady=0, anchor="w")
+            font=theme.font(10), padx=0, pady=0, anchor="w")
         self.panel_home.pack(side="left", padx=(0, theme.SPACE_SM))
 
         self.panel_title = tk.Label(panel_head, text="", bg=theme.BG_ALT,
@@ -1203,6 +1313,9 @@ class BlackChpokIDE(tk.Tk):
             on_open_path=lambda path: self.open_path(Path(path)),
             on_status=self.set_status,
             on_show_diff=self.show_diff_for,
+            # Після прийняття/відкату вміст файлів на диску інший — відкриті
+            # вкладки мають показати це, а не тримати старий текст.
+            on_changed=self._reload_open_tabs,
         )
         # ── Власний рушій і пам'ять NEUROMESH ────────────────────────────
         # Обидві панелі працюють із живими сервісами вікна: рушій один на
@@ -1241,10 +1354,10 @@ class BlackChpokIDE(tk.Tk):
         self.project_row = tk.Frame(foot, bg=theme.BG_ALT, cursor="hand2")
         self.project_row.pack(fill="x")
         self.project_icon = tk.Label(self.project_row, text="🗂", bg=theme.BG_ALT,
-                                     fg=theme.FG_FAINT, font=("Segoe UI", 9))
+                                     fg=theme.FG_FAINT, font=theme.font(9))
         self.project_icon.pack(side="left", padx=(theme.SPACE_SM, theme.SPACE_SM))
         self.project_label = tk.Label(self.project_row, text="не обрано", bg=theme.BG_ALT,
-                                      fg=theme.FG_DIM, font=("Segoe UI", 8), anchor="w")
+                                      fg=theme.FG_DIM, font=theme.font(8), anchor="w")
         self.project_label.pack(side="left", fill="x", expand=True, pady=2)
         for widget in (self.project_row, self.project_icon, self.project_label):
             widget.bind("<Button-1>", lambda _e: self.open_folder_dialog())
@@ -1253,11 +1366,11 @@ class BlackChpokIDE(tk.Tk):
         state_row = tk.Frame(foot, bg=theme.BG_ALT)
         state_row.pack(fill="x")
         self.local_label = tk.Label(state_row, text="● локально", bg=theme.BG_ALT,
-                                    fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w")
+                                    fg=theme.FG_FAINT, font=theme.font(8), anchor="w")
         self.local_label.pack(side="left", padx=(theme.SPACE_SM, 0), pady=(0, 2))
         widgets.Tip(self.local_label, "Local-first: дані й моделі лишаються на цьому комп'ютері")
         widgets.IconButton(state_row, "◔", self.open_settings, bg=theme.BG_ALT,
-                           fg=theme.FG_FAINT, font=("Segoe UI", 10),
+                           fg=theme.FG_FAINT, font=theme.font(10),
                            tooltip="Налаштування (Ctrl+,)").pack(side="right")
 
     # 2. Центр: заголовок сесії + робоча область
@@ -1335,6 +1448,8 @@ class BlackChpokIDE(tk.Tk):
         # шапці, але там, де користувач пише задачу.
         self.chat.on_workspace_menu = self.show_workspace_menu
         self.chat.on_mode_menu = self.show_mode_menu
+        #: Режим визначається з тексту запиту (див. ``_auto_mode_for``).
+        self.chat.on_auto_mode = self._auto_mode_for
         self.chat.on_effort_pick = self._on_chat_effort_pick
         self.chat.on_voice_query = self._on_voice_query
         self.chat.on_voice_action = self._on_voice_action
@@ -1560,7 +1675,7 @@ class BlackChpokIDE(tk.Tk):
         self.status_bar = bar
 
         self.status_label = tk.Label(bar, text="Готово", bg=theme.BG_ALT, fg=theme.FG_DIM,
-                                     font=("Segoe UI", 8), anchor="w")
+                                     font=theme.font(8), anchor="w")
         self.status_label.pack(side="left", padx=theme.SPACE_LG)
 
         # ── індикатор прихованих збоїв ─────────────────────────────────────
@@ -1569,7 +1684,7 @@ class BlackChpokIDE(tk.Tk):
         # але «нічого не сталося», і причини не видно ніде.
         self.failure_label = tk.Label(
             bar, text="", bg=theme.BG_ALT, fg=theme.WARN,
-            font=("Segoe UI", 8), cursor="hand2")
+            font=theme.font(8), cursor="hand2")
         self.failure_label.pack(side="left", padx=(theme.SPACE_SM, 0))
         self.failure_label.bind("<Button-1>", lambda _e: self.show_failures())
         widgets.Tip(self.failure_label, "Приховані збої — натисни, щоб побачити")
@@ -1579,26 +1694,26 @@ class BlackChpokIDE(tk.Tk):
             LOG.debug("Не вдалось підписатись на реєстр збоїв", exc_info=True)
 
         self.cursor_label = tk.Label(bar, text="Ln 1, Col 1", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                     font=("Segoe UI", 8))
+                                     font=theme.font(8))
         self.cursor_label.pack(side="right", padx=theme.SPACE_LG)
 
         self.ast_label = tk.Label(bar, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                  font=("Segoe UI", 8))
+                                  font=theme.font(8))
         self.ast_label.pack(side="right", padx=theme.SPACE_MD)
 
         self.lang_label = tk.Label(bar, text="—", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8))
+                                   font=theme.font(8))
         self.lang_label.pack(side="right", padx=theme.SPACE_MD)
 
         self.agent_label = tk.Label(bar, text="агент: очікує", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8))
+                                    font=theme.font(8))
         self.agent_label.pack(side="right", padx=theme.SPACE_MD)
 
         # Без вибраного проєкту не показуємо шлях домашньої теки: інакше
         # статусбар казав «C:\Users\<ім'я>», ніби агент уже працює там.
         self.ws_label = tk.Label(
             bar, text=(str(self.settings.workspace) if self.has_project() else "теку не обрано"),
-            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8))
+            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8))
         self.ws_label.pack(side="right", padx=theme.SPACE_LG)
 
     def _on_root_configure(self, event=None) -> None:
@@ -2184,6 +2299,9 @@ class BlackChpokIDE(tk.Tk):
         self.set_view(getattr(self.settings.ui, "view", "chat"))
 
         self._sync_rail_state()
+        # Кнопка «☰» у шапці має відповідати реальному стану панелі одразу
+        # після старту: якщо панель згорнута, розгорнути її треба мишею.
+        self._sync_reveal_button()
         self._refresh_context()
         self._update_queue_badge()
         # Прибираємо рушії, що лишились від попереднього запуску IDE. Якщо
@@ -3346,6 +3464,20 @@ class BlackChpokIDE(tk.Tk):
         self.agent.llm_settings = self.settings.llm
         self.agent.agent_settings = self.settings.agent
         self.chat.set_online(bool(self.settings.llm.model))
+        # ── Зір перераховується РАЗОМ із моделлю ──────────────────────────
+        # Раніше ``vision_enabled`` оновлювався лише у трьох місцях
+        # (автозапуск, хаб, хмара) — і НЕ тут. Через це після вибору моделі
+        # в чаті чи збереження налаштувань прапорець лишався від
+        # ПОПЕРЕДНЬОЇ моделі: користувач обирав мультимодальну модель, а
+        # чат продовжував казати «Поточна модель не читає зображення» і не
+        # давав прикріпити картинку (див. скріншот: два червоні рядки).
+        #
+        # Помилка тут не має ламати перемикання моделі: без візуальної
+        # перевірки краще працювати, ніж не перемикатись узагалі.
+        try:
+            self.refresh_agent_vision()
+        except Exception:  # noqa: BLE001 - зір не має валити зміну моделі
+            LOG.debug("Зір не перераховано після зміни моделі", exc_info=True)
         # ── Після зміни моделі ВСЕ старе стає недійсним ────────────────────
         # Вікно контексту, набір схем інструментів і стан сервера описували
         # ІНШУ модель. Раніше вони лишались, і агент надсилав промпт,
@@ -3710,7 +3842,15 @@ class BlackChpokIDE(tk.Tk):
         return True
 
     def _show_project_gate(self, *, reason: str = "") -> None:
-        """Показати екран вибору проєкту замість чату."""
+        """Показати екран вибору проєкту замість чату.
+
+        ── ЕКРАН НЕ ПРОСИТЬ ПАПКУ, ЯКЩО ВОНА ВЖЕ Є ──────────────────────
+        Вимога користувача: «працювати тут запам'ятовує останній проєкт і
+        автоматично продовжує роботу в ньому, не потрібно щоб вискакувало
+        вікно вибору папки». Тому, коли попередній проєкт існує, екран
+        одразу пропонує ПРОДОВЖИТИ в ньому (єдина помітна дія), а вибір
+        іншої теки лишається другорядною кнопкою.
+        """
         self._close_project_gate()
         gate = project_gate.ProjectGate(
             self.conversation_host, self.theme,
@@ -3787,11 +3927,17 @@ class BlackChpokIDE(tk.Tk):
         self.set_status(message)
 
     def create_project_folder(self) -> None:
-        """Створити нову теку проєкту через провідник і одразу її відкрити.
+        """Створити нову теку проєкту: спитати МІСЦЕ, потім ІМ'Я.
 
-        Шлях набирати не треба: у системному вікні обираєш місце, кнопкою
-        «Нова папка» створюєш теку й підтверджуєш її. Якщо теки ще немає
-        на диску — створюємо її тут.
+        Раніше цей метод лише відкривав ``askdirectory`` — тобто робив рівно
+        те саме, що «Вибрати папку». Користувач бачив дві кнопки з однією
+        дією. Тепер діалог справді двоступеневий:
+
+        1. **місце** — провідник, де лежатиме нова тека (можна вибрати будь-яку);
+        2. **ім'я** — діалог, у якому набираєш назву нової папки.
+
+        Після цього тека створюється й одразу стає робочою: людина не
+        шукає її вдруге у провіднику.
         """
         current = Path(self.settings.workspace or "")
         if current.is_dir() and self.has_project():
@@ -3800,22 +3946,52 @@ class BlackChpokIDE(tk.Tk):
             home = Path.home()
             projects = home / "Projects"
             initial = projects if projects.is_dir() else home
-        chosen = filedialog.askdirectory(
+        # 1. МІСЦЕ: батьківська тека, у якій з'явиться нова папка проєкту.
+        parent_dir = filedialog.askdirectory(
             parent=self,
-            title="Створити теку проєкту",
+            title="Де створити теку проєкту",
             initialdir=str(initial),
-            mustexist=False,
+            mustexist=True,
         )
-        if not chosen:
+        if not parent_dir:
+            self.set_status("Створення скасовано: місце не вибрано.")
             return
-        target = Path(chosen)
+        base = Path(parent_dir)
+        if not base.is_dir():
+            self.set_status(f"Теки більше немає: {base}")
+            return
+        # 2. ІМ'Я: назва нової папки (порожня відповідь — скасування).
+        from tkinter import simpledialog as _sd
+
+        name = _sd.askstring(
+            "Нова тека проєкту",
+            f"Ім'я нової папки в {base}:\n\n(латинські літери, цифри, «-» і «_»)",
+            parent=self,
+        )
+        name = str(name or "").strip()
+        if not name:
+            self.set_status("Створення скасовано: ім'я не вказано.")
+            return
+        problem = folder_name_problem(name)
+        if problem:
+            messagebox.showwarning("Недопустиме ім'я", problem, parent=self)
+            return
+        target = base / name
+        if target.exists():
+            messagebox.showwarning(
+                "Тека вже є",
+                f"{target}\n\nВідкрий її кнопкою «Вибрати папку проєкту» "
+                f"або введи інше ім'я.",
+                parent=self)
+            return
         try:
-            target.mkdir(parents=True, exist_ok=True)
+            target.mkdir(parents=True, exist_ok=False)
         except OSError as exc:
             messagebox.showerror("Не вдалось створити",
                                  f"{target}\n\n{exc}", parent=self)
             return
         self.set_workspace(target)
+        self.set_status(f"Створено теку проєкту: {target.name}")
 
     def new_chat_session(self, folder: Path | None = None) -> bool:
         """Новий чат: одразу вибір однієї робочої теки.
@@ -6434,6 +6610,12 @@ class BlackChpokIDE(tk.Tk):
                 summary = getattr(self.chat.runner, "last_answer", "") if self.chat.runner else ""
                 error = getattr(self.chat.runner, "last_error", "") if self.chat.runner else ""
                 self.case_book.end(ok=ok, summary=summary, error=error)
+                # ── Самонавчання на ВИБОРІ РЕЖИМУ ──────────────────────────
+                # Хід завершено — і саме тепер видно, чи вибір режиму був
+                # правильний: агент або сам сказав «перемкни режим», або
+                # дозволи відхилили роботу, або повний цикл пішов на вітання.
+                # Записуємо ЛИШЕ доведені випадки (див. ``_learn_mode_choice``).
+                self._learn_mode_choice(ok=ok, answer=summary or error)
                 # Модель щойно відповіла — шапка не має лишатись «ОФЛАЙН».
                 # Перевірка HTTP під час генерації часто не встигає, і
                 # статус брехав, хоч відповідь уже була в чаті.
@@ -7333,6 +7515,21 @@ class BlackChpokIDE(tk.Tk):
         if self.tabs.reopen_last_closed():
             self.set_status("Вкладку відновлено.")
 
+    def _reload_open_tabs(self) -> None:
+        """Перечитати відкриті файли з диска (після відкату/прийняття змін).
+
+        Вкладки з незбереженими правками ``reload_from_disk`` пропускає:
+        викидати набраний текст користувача не можна.
+        """
+        try:
+            updated = self.tabs.reload_from_disk()
+        except Exception:  # noqa: BLE001 - перезавантаження не має ламати вікно
+            LOG.debug("Перезавантаження вкладок не вдалось", exc_info=True)
+            return
+        if updated:
+            self._refresh_context()
+            self.set_status(f"Оновлено вкладок із диска: {updated}.")
+
     def _recent_closed_tabs(self) -> list[tuple[str, str, callable]]:
         items: list[tuple[str, str, callable]] = []
         for path in self.tabs.closed_paths()[:10]:
@@ -7586,6 +7783,66 @@ class BlackChpokIDE(tk.Tk):
             self._sidebar_forget()
             self._sync_rail_state("")
         self._sash_after(0)
+        self._sync_reveal_button()
+
+    # ── швидке регулювання вигляду ─────────────────────────────────────────
+    def _sync_reveal_button(self) -> None:
+        """Показати «☰» у шапці, коли панель згорнута.
+
+        Інакше розгорнути її можна було лише через меню або ``Ctrl+B`` —
+        користувач бачив порожній лівий край і не знав, де кнопка.
+        """
+        bar = getattr(self, "header_bar", None)
+        if bar is None or not hasattr(bar, "set_reveal_visible"):
+            return
+        try:
+            bar.set_reveal_visible(not self._sidebar_visible())
+        except (tk.TclError, AttributeError):
+            LOG.debug("Кнопку розгортання не оновлено", exc_info=True)
+
+    def toggle_theme(self) -> None:
+        """Перемкнути темну й світлу тему одним натисканням."""
+        current = theme.current_mode()
+        target = "light" if current == "dark" else "dark"
+        self.settings.ui.theme = target
+        self.apply_theme_mode(target)
+        try:
+            self.settings.save()
+        except Exception:  # noqa: BLE001 - тема не має ламати вікно
+            LOG.debug("Тему не збережено", exc_info=True)
+        self.set_status("Тема: світла" if target == "light" else "Тема: темна")
+
+    def font_smaller(self) -> None:
+        """Зменшити шрифт на крок."""
+        self.zoom(-1)
+
+    def font_bigger(self) -> None:
+        """Збільшити шрифт на крок."""
+        self.zoom(+1)
+
+    #: Сходинки масштабу інтерфейсу для кнопки «⤢».
+    UI_SCALE_STEPS = (1.0, 1.1, 1.25, 1.5)
+
+    def cycle_ui_scale(self) -> None:
+        """Перебрати масштаб інтерфейсу по колу (100 → 110 → 125 → 150 %)."""
+        try:
+            current = float(getattr(self.settings.ui, "ui_scale", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            current = 1.0
+        steps = self.UI_SCALE_STEPS
+        # Беремо наступну сходинку; якщо поточне значення між ними —
+        # наступна більша, а після останньої повертаємось на першу.
+        nxt = next((step for step in steps if step > current + 0.001), steps[0])
+        self.settings.ui.ui_scale = nxt
+        self.theme.set_family(self.settings.ui.font_family or self.theme.mono_family,
+                              self.settings.ui.font_size, scale=nxt)
+        self.tabs.apply_settings()
+        self.chat.apply_font()
+        try:
+            self.settings.save()
+        except Exception:  # noqa: BLE001
+            LOG.debug("Масштаб не збережено", exc_info=True)
+        self.set_status(f"Масштаб інтерфейсу: {int(round(nxt * 100))} %")
 
     def _sidebar_visible(self) -> bool:
         """Чи панель справді в розкладці.
@@ -7938,9 +8195,10 @@ class BlackChpokIDE(tk.Tk):
             step = int(delta) if delta is not None else 1
         except (TypeError, ValueError):
             step = 1
-        size = max(8, min(30, self.settings.ui.font_size + step))
+        size = max(9, min(32, self.settings.ui.font_size + step))
         self.settings.ui.font_size = size
-        self.theme.set_family(self.settings.ui.font_family, size)
+        self.theme.set_family(self.settings.ui.font_family, size,
+                              scale=getattr(self.settings.ui, "ui_scale", 1.0))
         self.tabs.apply_settings()
         self.chat.apply_font()
         self.terminal.output.configure(font=self.theme.mono_small)
@@ -8315,18 +8573,19 @@ class BlackChpokIDE(tk.Tk):
                          name="verify-model-url").start()
 
     def show_mode_menu(self, anchor: object = None) -> None:
-        """Меню режимів роботи агента (реальні дозволи й кроки).
+        """Показати, який режим агент обрав, і що він означає.
 
-        ``anchor`` передає шапка або пігулка композера: меню мусить
-        відкритись під ТІЄЮ кнопкою, яку натиснули, а не під підписом
-        режиму в шапці.
+        Ручного ПЕРЕМИКАЧА більше немає: режим визначається з тексту запиту
+        (:meth:`_auto_mode_for`). Клік по індикатору показує пояснення —
+        який режим зараз, чому він такий і що це змінює. Саме тому тут не
+        ``ModeMenu`` зі списком, а проста картка-пояснення: обирати нічого,
+        а зрозуміти — потрібно.
         """
-        if self._mode_menu is not None and self._mode_menu.visible:
-            self._mode_menu.close()
-            return
-        self._mode_menu = modes_menu.ModeMenu(
-            self, self.theme, self._on_mode_selected, current=self.agent_mode)
-        self._mode_menu.show_below(anchor or self.header.mode_label)
+        mode = modes.get(getattr(self, "agent_mode", modes.DEFAULT_MODE))
+        # Найдешевший і найчесніший спосіб показати стан: той самий статус,
+        # що й у рядку стану, плюс підказка режиму.
+        self.set_status(f"Режим: {mode.label} — {mode.hint} "
+                        f"(обирається автоматично з запиту)")
 
     def show_workspace_menu(self, anchor: object = None) -> None:
         """Меню робочого простору: поточна тека, останні, «додати».
@@ -8449,6 +8708,110 @@ class BlackChpokIDE(tk.Tk):
     def _on_mode_selected(self, key: str) -> None:
         self.set_agent_mode(key)
 
+    def _auto_mode_for(self, text: str) -> None:
+        """Обрати режим роботи з тексту запиту — без ручного перемикача.
+
+        Користувач пише завдання, а не «режим». Раніше перемикач у композері
+        змушував вгадувати, чи це «Чат», «Код» чи «План», і найчастіше
+        лишався в «Чат» — агент відповідав текстом замість роботи з файлами.
+        Тепер режим визначає :func:`modes.auto_mode` (наявний рушій намірів),
+        однаково для локальних і хмарних моделей.
+
+        ── САМОНАВЧАННЯ ───────────────────────────────────────────────────
+        Сталі правила іноді помиляються на живій фразі. ``mode_learning``
+        зберігає кожну доведену помилку й наступного разу обирає режим, що
+        справді працював. Запобіжник ``modes.safe_mode`` не дає цьому
+        правилу вимкнути інструменти там, де запит вимагає фактів.
+        """
+        previous = list(getattr(self, "_recent_user_texts", []) or [])
+        try:
+            key = modes.auto_mode(text, previous=previous,
+                                  learner=getattr(self, "mode_learning", None),
+                                  veto=modes.safe_mode)
+        except Exception:  # noqa: BLE001 - визначення не має зривати запит
+            LOG.debug("Режим не визначено", exc_info=True)
+            return
+        #: Запам'ятати для запису помилки вибору (див. ``_learn_mode_choice``).
+        self._mode_text = str(text or "")
+        if key == getattr(self, "agent_mode", ""):
+            self._mode_chosen = key
+            return
+        self.set_agent_mode(key, notify=False)
+        self._mode_chosen = key
+        #: Історію останніх запитів рушій намірів використовує для «продовж».
+        texts = list(getattr(self, "_recent_user_texts", []) or [])
+        texts.append(text)
+        self._recent_user_texts = texts[-5:]
+
+    # ── самонавчання на виборі режиму ──────────────────────────────────────
+    def _attach_mode_learning(self) -> None:
+        """Підключити навчач режиму (правила з файлу + міст до пам'яті)."""
+        try:
+            from . import mode_learning
+
+            bridge = getattr(self.agent, "memory_bridge", None)
+            learner = mode_learning.learner_for(self.settings, bridge=bridge)
+            self.mode_learning = learner
+            LOG.info("Режим: %s", learner.describe())
+        except Exception:  # noqa: BLE001 - навчання не має ламати старт
+            LOG.debug("Самонавчання режиму не підключено", exc_info=True)
+            self.mode_learning = None
+
+    def _learn_mode_choice(self, *, ok: bool, answer: str = "") -> None:
+        """Записати помилку вибору режиму, якщо цей хід її довів.
+
+        Три доведені ознаки — і всі три видно з САМОГО результату, без
+        здогадів:
+
+        ``Чат`` на запиті про факти
+            Агент чесно відповів «перемкни режим на Агент» — отже, вибір
+            був помилковий, і саме ця фраза має наступного разу йти в роботу.
+        ``План``/лише читання на запиті про запис
+            Дозволи відхилили мутацію: режим був замалий для цієї роботи.
+        ``Код``/``Агент`` на вітанні
+            Хід упав або відповідь порожня, а запит — розмова: повний цикл
+            тут не потрібен.
+
+        Помилка мережі й таймаут правилом не стають: повтор лікує.
+        """
+        learner = getattr(self, "mode_learning", None)
+        if learner is None or not ok:
+            return
+        text = str(getattr(self, "_mode_text", "") or "")
+        chosen = str(getattr(self, "_mode_chosen", "") or self.agent_mode or "")
+        if not text or not chosen:
+            return
+        wanted = ""
+        reason = ""
+        try:
+            from . import evidence, intent_engine
+
+            if not modes.get(chosen).use_tools and evidence.needs_tools_for(text):
+                # Запит про факти, а інструменти вимкнено режимом.
+                wanted, reason = modes.AGENT, "need_tools"
+            elif chosen == modes.CHAT and _says_switch_mode(answer):
+                wanted, reason = modes.AGENT, "need_tools"
+            elif (modes.get(chosen).permission == permissions.READ_ONLY
+                  and any(word in str(answer or "").lower()
+                          for word in _DENIED_MARKERS)):
+                wanted, reason = modes.CODE, "denied"
+            elif (modes.get(chosen).use_tools
+                  and intent_engine.classify_message(text) == intent_engine.CONVERSE):
+                wanted, reason = modes.CHAT, "smalltalk"
+        except Exception:  # noqa: BLE001 - навчання не має ламати хід
+            LOG.debug("Помилку режиму не розібрано", exc_info=True)
+            return
+        if not wanted or wanted == chosen:
+            return
+        try:
+            rule = learner.record(text, chosen=chosen, wanted=wanted, reason=reason)
+        except Exception:  # noqa: BLE001
+            LOG.debug("Правило режиму не записано", exc_info=True)
+            return
+        if rule is not None:
+            self.set_status(f"Режим: вивчено правило — {rule.describe()}")
+
+
     def set_agent_mode(self, key: str, *, notify: bool = True) -> None:
         """Застосувати режим: дозволи, ліміт кроків, підказка агенту.
 
@@ -8491,9 +8854,11 @@ class BlackChpokIDE(tk.Tk):
             LOG.debug("Свободу дій не перезастосовано", exc_info=True)
         # Пігулка над полем вводу показує той самий режим: це те, що агент
         # справді застосує (дозволи, кроки, інструменти), а не підпис.
+        # ``hint`` — опис СЛОВАМИ: з самої назви не видно, чи агент правитиме
+        # файли, чи лише відповідатиме текстом (вимога користувача).
         try:
             self.chat.set_mode(mode.label, icon=mode.icon,
-                               accent=mode.key != modes.CHAT)
+                               accent=mode.key != modes.CHAT, hint=mode.hint)
         except (tk.TclError, AttributeError):
             pass
         self.set_status(f"Режим: {mode.label} · {mode.hint}")
@@ -8778,6 +9143,22 @@ class BlackChpokIDE(tk.Tk):
         self.set_status(f"Відкрито панель: {PANEL_TITLES.get(key, key)}")
 
     def _after_settings(self) -> None:
+        """Застосувати змінені налаштування до живого вікна.
+
+        Обгорнуто в ``try``: збій будь-якого кроку раніше валив callback
+        Tk, і діалог закривався з «вильотом» — без жодного повідомлення про
+        причину. Тепер кожен крок захищений окремо, а помилка одного не
+        скасовує решти й не закриває вікно.
+        """
+        try:
+            self._apply_settings_steps()
+        except Exception:  # noqa: BLE001 - налаштування не мають валити вікно
+            LOG.warning("Застосування налаштувань упало", exc_info=True)
+            self.set_status("Налаштування збережено, але застосувати вдалося не все — "
+                            "подробиці в журналі.")
+
+    def _apply_settings_steps(self) -> None:
+        """Кроки застосування налаштувань (кожен може впасти окремо)."""
         self.registry.confirm_commands = self.settings.agent.confirm_commands
         self.agent.agent_settings = self.settings.agent
         self.agent.llm_settings = self.settings.llm
@@ -8795,6 +9176,16 @@ class BlackChpokIDE(tk.Tk):
             try:
                 learning.enabled = bool(
                     getattr(self.settings.agent, "self_learning", True))
+            except AttributeError:
+                pass
+        # Самонавчання режиму: перемикач у вкладці «Агент» діє ОДРАЗУ, без
+        # перезапуску — людина змінила його й чекає, що наступний хід уже
+        # використає нові правила (або перестане їх писати).
+        mode_learner = getattr(self, "mode_learning", None)
+        if mode_learner is not None:
+            try:
+                mode_learner.enabled = bool(
+                    getattr(self.settings.agent, "mode_learning", True))
             except AttributeError:
                 pass
         try:
@@ -8816,7 +9207,8 @@ class BlackChpokIDE(tk.Tk):
         if self.settings.ui.theme != theme.current_mode():
             self.apply_theme_mode(self.settings.ui.theme)
         self.theme.set_family(self.settings.ui.font_family or self.theme.mono_family,
-                              self.settings.ui.font_size)
+                              self.settings.ui.font_size,
+                              scale=getattr(self.settings.ui, "ui_scale", 1.0))
         self.tabs.apply_settings()
         # GitHub: токен і «питати після роботи» могли змінити у вкладці.
         self._sync_git_settings()

@@ -44,11 +44,11 @@ class _TabLabel(tk.Frame):
         self.inner.pack(padx=(11, 4), pady=4)
 
         self.title_label = tk.Label(self.inner, text=title, bg=theme.BG_ALT, fg=theme.FG_DIM,
-                                    font=("Segoe UI", 9), bd=0, cursor="hand2")
+                                    font=theme.font(9), bd=0, cursor="hand2")
         self.title_label.pack(side="left")
 
         self.close_label = tk.Label(self.inner, text="✕", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), bd=0, padx=4, cursor="hand2")
+                                    font=theme.font(8), bd=0, padx=4, cursor="hand2")
         self.close_label.pack(side="left", padx=(4, 0))
 
         for widget in (self, self.inner, self.title_label):
@@ -170,7 +170,7 @@ class EditorTabs(tk.Frame):
         self._canvas.bind("<MouseWheel>", self._on_wheel)
 
         self.new_tab_btn = widgets.IconButton(strip, "＋", self._request_new_tab, bg=theme.BG_EDITOR,
-                                              fg=theme.FG_FAINT, font=("Segoe UI", 11),
+                                              fg=theme.FG_FAINT, font=theme.font(11),
                                               tooltip="Новий файл (Ctrl+N)")
         self.new_tab_btn.grid(row=0, column=1, padx=(4, 8))
 
@@ -182,7 +182,7 @@ class EditorTabs(tk.Frame):
         self.empty_hint = tk.Label(
             self.content,
             text="Немає відкритих файлів\n\nCtrl+P — швидке відкриття · Ctrl+Shift+P — палітра команд",
-            bg=theme.BG_EDITOR, fg=theme.FG_FAINT, font=("Segoe UI", 10), justify="center",
+            bg=theme.BG_EDITOR, fg=theme.FG_FAINT, font=theme.font(10), justify="center",
         )
         self.empty_hint.place(relx=0.5, rely=0.42, anchor="center")
 
@@ -595,6 +595,39 @@ class EditorTabs(tk.Frame):
         self._notify_changed()
 
     # ── відновлення закритих вкладок ──────────────────────────────────────
+    def reload_from_disk(self, *, force: bool = False) -> int:
+        """Перечитати відкриті файли з диска. Повертає кількість оновлених.
+
+        Потрібно після дій, що змінюють файли ПОВЗ редактор: відкат чи
+        прийняття змін у панелі «Зміни», ``git checkout``, робота агента в
+        іншій копії. Без цього вкладка показувала старий текст, і наступне
+        збереження повертало б скасовану зміну назад.
+
+        Вкладки з незбереженими правками пропускаємо (``force=True``
+        перезаписує і їх): мовчки викидати текст користувача не можна.
+        """
+        updated = 0
+        for frame_id, path in list(self.paths.items()):
+            editor = self.editors.get(frame_id)
+            if editor is None or path is None:
+                continue
+            try:
+                if not path.exists():
+                    continue
+                if not force and editor.modified:
+                    continue
+                content, encoding = ws.read_text_file(path)
+            except (ws.WorkspaceError, OSError):
+                continue
+            current = editor.text.get("1.0", "end-1c")
+            if current == content:
+                continue
+            editor.set_text(content)
+            editor.encoding = encoding  # type: ignore[attr-defined]
+            self._notify_changed()
+            updated += 1
+        return updated
+
     def reopen_last_closed(self) -> bool:
         """Відкрити останню закриту вкладку (Ctrl+Shift+T)."""
         while self._closed:

@@ -135,12 +135,12 @@ class ToolsPanel(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         tk.Label(head, text="ІНСТРУМЕНТИ", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w")
+                 font=theme.font(8, "bold")).grid(row=0, column=0, sticky="w")
         self.count_label = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), anchor="e")
+                                    font=theme.font(8), anchor="e")
         self.count_label.grid(row=0, column=1, sticky="e")
         widgets.IconButton(head, "⟳", self.reload, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                           font=("Segoe UI", 9), tooltip="Оновити каталог").grid(
+                           font=theme.font(9), tooltip="Оновити каталог").grid(
             row=0, column=2, padx=(6, 0))
 
         search = tk.Frame(self, bg=theme.BG_ALT)
@@ -148,14 +148,14 @@ class ToolsPanel(tk.Frame):
         search.columnconfigure(0, weight=1)
         self.entry = tk.Entry(
             search, bg=theme.BG_INPUT, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
-            relief="flat", font=("Segoe UI", 9), bd=0, highlightthickness=1,
+            relief="flat", font=theme.font(9), bd=0, highlightthickness=1,
             highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT_SOFT,
         )
         self.entry.grid(row=0, column=0, sticky="ew", ipady=4)
         self.entry.bind("<KeyRelease>", self._on_query)
 
         self.result_label = tk.Label(
-            self, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+            self, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8),
             justify="left", anchor="w", wraplength=210,
         )
         self.result_label.grid(row=2, column=0, sticky="ew", padx=(12, 8), pady=(0, 4))
@@ -220,7 +220,7 @@ class ToolsPanel(tk.Frame):
 
         if not shown:
             tk.Label(self.host, text="Нічого не знайдено.", bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 9)).pack(
+                     fg=theme.FG_FAINT, font=theme.font(9)).pack(
                 anchor="w", padx=6, pady=8)
             return
 
@@ -229,7 +229,7 @@ class ToolsPanel(tk.Frame):
             if not group:
                 continue
             tk.Label(self.host, text=category.upper(), bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 7, "bold")).pack(
+                     fg=theme.FG_FAINT, font=theme.font(7, "bold")).pack(
                 anchor="w", padx=6, pady=(8, 2))
             for item in group:
                 self._tool_card(item)
@@ -248,7 +248,7 @@ class ToolsPanel(tk.Frame):
         card.columnconfigure(1, weight=1)
 
         arrow = tk.Label(card, text="▾" if expanded else "▸", bg=theme.BG_CARD,
-                         fg=theme.FG_FAINT, font=("Segoe UI", 8), cursor="hand2")
+                         fg=theme.FG_FAINT, font=theme.font(8), cursor="hand2")
         arrow.grid(row=0, column=0, padx=(8, 4), pady=(6, 0), sticky="n")
 
         title = tk.Label(card, text=name, bg=theme.BG_CARD, fg=theme.FG_BRIGHT,
@@ -257,13 +257,13 @@ class ToolsPanel(tk.Frame):
         title.grid(row=0, column=1, sticky="ew", pady=(6, 0), padx=(0, 4))
 
         source = tk.Label(card, text=str(item.get("source") or ""), bg=theme.BG_CARD,
-                          fg=theme.FG_FAINT, font=("Segoe UI", 7), anchor="e")
+                          fg=theme.FG_FAINT, font=theme.font(7), anchor="e")
         source.grid(row=0, column=2, padx=(0, 8), pady=(6, 0), sticky="ne")
 
         description = str(item.get("description") or "")
         if description:
             tk.Label(card, text=description[:160], bg=theme.BG_CARD, fg=theme.FG_DIM,
-                     font=("Segoe UI", 8), justify="left", anchor="w",
+                     font=theme.font(8), justify="left", anchor="w",
                      wraplength=200).grid(row=1, column=1, columnspan=2, sticky="ew",
                                           padx=(0, 8), pady=(1, 4))
 
@@ -287,16 +287,16 @@ class ToolsPanel(tk.Frame):
         if not params:
             tk.Label(body, text="Без параметрів" if item["category"] != "MCP"
                                 else "Параметри задаються на MCP-сервері",
-                     bg=theme.BG_CARD, fg=theme.FG_FAINT, font=("Segoe UI", 8)).grid(
+                     bg=theme.BG_CARD, fg=theme.FG_FAINT, font=theme.font(8)).grid(
                 row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
         for index, (key, hint, required) in enumerate(params):
             label = f"{key}*" if required else key
             tk.Label(body, text=label, bg=theme.BG_CARD, fg=theme.FG_DIM,
-                     font=("Segoe UI", 8), anchor="w").grid(
+                     font=theme.font(8), anchor="w").grid(
                 row=index, column=0, sticky="w", padx=(0, 6), pady=1)
             entry = tk.Entry(body, bg=theme.BG_INPUT, fg=theme.FG,
                              insertbackground=theme.FG_BRIGHT, relief="flat",
-                             font=("Segoe UI", 8), bd=0, highlightthickness=1,
+                             font=theme.font(8), bd=0, highlightthickness=1,
                              highlightbackground=theme.BORDER)
             entry.grid(row=index, column=1, sticky="ew", pady=1, ipady=2)
             widgets.Tip(entry, hint)
@@ -305,11 +305,11 @@ class ToolsPanel(tk.Frame):
         buttons = tk.Frame(body, bg=theme.BG_CARD)
         buttons.grid(row=len(params), column=0, columnspan=2, sticky="ew", pady=(6, 0))
         run = widgets.Chip(buttons, "▶ Виконати",
-                           lambda n=name: self.run_tool(n), font=("Segoe UI", 8))
+                           lambda n=name: self.run_tool(n), font=theme.font(8))
         run.pack(side="left", padx=(0, 4))
         widgets.Chip(buttons, "Заповнити прикладом",
                      lambda n=name: self._fill_example(n),
-                     font=("Segoe UI", 8)).pack(side="left")
+                     font=theme.font(8)).pack(side="left")
 
     def _fill_example(self, name: str) -> None:
         """Підставити безпечний приклад значень (щоб було з чого почати)."""

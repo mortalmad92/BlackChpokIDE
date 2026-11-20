@@ -20,8 +20,8 @@ from typing import Callable, Optional
 
 from . import (autonomy, command_menu, deep_mode, deep_view, effort, markdown_view,
                message_parts, model_menu, permissions, planner, safe,
-               slash_commands, stage_strip, stats_bar, task_plan, theme, voice,
-               voice_panel, widgets, work_log)
+               slash_commands, stage_strip, stats_bar, task_plan, theme, thumbs,
+               voice, voice_panel, widgets, work_log)
 from .agent import AgentEvent, AgentRunner
 from .agent_tools import ToolRegistry
 from .config import Settings
@@ -93,11 +93,22 @@ class Transcript:
 
 
 class _MessageCard(tk.Frame):
-    """Картка одного повідомлення в стилі Cursor: м'яка, світла, заокруглена.
+    """Картка одного повідомлення з підписом ролі й пласкою відповіддю.
 
-    Запит користувача — біла картка з тонкою рамкою; відповідь агента — на
-    тлі стрічки, з підписом ролі. Жодних важких «коробок».
+    * запит людини — плашка з акцентною смужкою ліворуч і підписом «ВИ»;
+    * відповідь агента — текст на полотні з підписом «АГЕНТ».
+
+    Підписи ролі повернено на прохання користувача: без них у довгій
+    розмові не видно, де закінчилась відповідь і почався новий запит.
+
+    Кнопки дій («копіювати», «вставити код», «повторити») НЕ додаються в
+    компонування при наведенні — вони лежать поверх картки (``place``).
+    Раніше рядок дій пакувався ``pack``-ом і зсував текст: пункти
+    «підстрибували» від найменшого руху миші.
     """
+
+    #: Відступ під карткою (px): розділяє повідомлення, не роблячи дірок.
+    GAP = 14
 
     def __init__(self, master: tk.Misc, fonts: theme.Theme, role: str, *, accent: str = theme.FG_DIM,
                  bg: str = theme.BG_CARD) -> None:
@@ -106,28 +117,63 @@ class _MessageCard(tk.Frame):
         self.role = role
         self._bg = bg
         self._accent = accent
+        #: Чи це плашка людини (у неї є власне тло й смужка).
+        self.is_user = role == ROLE_USER
 
         body = tk.Frame(self, bg=bg, bd=0, highlightthickness=0)
-        body.pack(fill="both", expand=True)
+        body.pack(fill="both", expand=True,
+                  padx=(theme.SPACE_LG, theme.SPACE_LG) if self.is_user else 0,
+                  pady=(theme.SPACE_MD, theme.SPACE_MD) if self.is_user else 0)
 
+        # ── Підпис ролі ───────────────────────────────────────────────────
+        # «ВИ» / «АГЕНТ» — маленький приглушений рядок над текстом. Час
+        # лишається поруч, але дрібним: він потрібен рідко, а місце займає.
         head = tk.Frame(body, bg=bg)
-        head.pack(fill="x", pady=(theme.SPACE_MD, 0))
+        head.pack(fill="x", pady=(0, theme.SPACE_XS))
+        self._head = head
         self.role_label = tk.Label(head, text=role, bg=bg, fg=accent,
-                                   font=("Segoe UI", 8, "bold"))
+                                   font=theme.font(8, "bold"))
         self.role_label.pack(side="left")
-        self.time_label = tk.Label(head, text=time.strftime("%H:%M"), bg=bg, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8))
+        self.time_label = tk.Label(head, text=time.strftime("%H:%M"), bg=bg,
+                                   fg=theme.FG_FAINT, font=theme.font(8))
         self.time_label.pack(side="right")
-        self.extra = tk.Frame(head, bg=bg)
-        self.extra.pack(side="right", padx=(0, 8))
+        if not role:
+            # Службові картки (журнал, diff) мають власний заголовок.
+            head.pack_forget()
+
+        #: Чи можна взагалі показувати кнопки дій (службові картки — ні).
+        self.head_allowed = bool(role)
 
         self.content = tk.Frame(body, bg=bg)
-        self.content.pack(fill="both", expand=True, pady=(theme.SPACE_XS, theme.SPACE_LG))
+        self.content.pack(fill="both", expand=True)
+
+        #: Рядок дій лежить ПОВЕРХ картки у правому верхньому куті, тому
+        #: його поява не змінює розкладку й нічого не зсуває.
+        self.extra = tk.Frame(self, bg=bg)
+        self._actions_visible = False
+        self.bind("<Enter>", lambda _e: self._show_actions(True), add="+")
+        self.bind("<Leave>", lambda _e: self._show_actions(False), add="+")
+
+    def _show_actions(self, visible: bool) -> None:
+        """Показати кнопки дій поверх картки (без зсуву тексту)."""
+        if not getattr(self, "head_allowed", False):
+            return
+        if visible == self._actions_visible:
+            return
+        self._actions_visible = visible
+        try:
+            if visible:
+                self.extra.place(relx=1.0, x=-4, y=2, anchor="ne")
+                self.extra.lift()
+            else:
+                self.extra.place_forget()
+        except tk.TclError:
+            pass
 
     def add_action(self, text: str, command: Callable[[], None], tooltip: str = "") -> tk.Label:
         label = widgets.HoverLabel(self.extra, text=text, command=command, bg=self._bg,
                                    fg=theme.FG_FAINT, hover_fg=theme.FG,
-                                   font=("Segoe UI", 8), padx=4, pady=0)
+                                   font=theme.font(8), padx=4, pady=0)
         label.pack(side="right")
         if tooltip:
             widgets.Tip(label, tooltip)
@@ -179,11 +225,11 @@ class _QueueStrip(tk.Frame):
         self.header.columnconfigure(1, weight=1)
 
         self.title = tk.Label(self.header, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 9, "bold"), anchor="w")
+                              font=theme.font(9, "bold"), anchor="w")
         self.title.grid(row=0, column=0, sticky="w")
 
         self.more = tk.Label(self.header, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                             font=("Segoe UI", 8), anchor="e")
+                             font=theme.font(8), anchor="e")
         self.more.grid(row=0, column=1, sticky="e")
 
         self.list_host = tk.Frame(self, bg=theme.BG_ALT)
@@ -237,16 +283,16 @@ class _QueueStrip(tk.Frame):
             row.pack(fill="x", pady=0)
             row.columnconfigure(1, weight=1)
             tk.Label(row, text=mark, bg=theme.BG_ALT, fg=colour,
-                     font=("Segoe UI", 10)).grid(row=0, column=0, padx=(0, 4), sticky="w")
+                     font=theme.font(10)).grid(row=0, column=0, padx=(0, 4), sticky="w")
             text = " ".join(str(getattr(task, "text", "") or "").split())
             shown = text if len(text) <= 92 else text[:91] + "…"
             tk.Label(row, text=shown, bg=theme.BG_ALT,
                      fg=theme.FG if running else theme.FG_DIM,
-                     font=("Segoe UI", 9), anchor="w", justify="left").grid(
+                     font=theme.font(9), anchor="w", justify="left").grid(
                 row=0, column=1, sticky="ew")
             if mine:
                 tk.Label(row, text="від тебе", bg=theme.BG_ALT, fg=theme.ACCENT,
-                         font=("Segoe UI", 8)).grid(row=0, column=2, padx=(6, 0), sticky="e")
+                         font=theme.font(8)).grid(row=0, column=2, padx=(6, 0), sticky="e")
             if on_open is not None:
                 for widget in row.winfo_children():
                     widget.bind("<Button-1>", lambda _e: on_open())
@@ -275,8 +321,15 @@ class _ComposerPill(tk.Frame):
         text: str = "",
         command: Optional[Callable[[], None]] = None,
         tip: str = "",
-        bg: str = theme.BG_ACTIVE,
+        bg: str = "",
     ) -> None:
+        # ``bg=""`` → беремо ``BG_INPUT`` ПІД ЧАС СТВОРЕННЯ, а не на імпорті.
+        #
+        # Раніше тут стояло ``bg: str = theme.BG_ACTIVE``, і значення
+        # фіксувалось при завантаженні модуля: якщо тема в той момент була
+        # темною, пігулка лишалась темною й у світлій темі — саме ті чорні
+        # плашки над полем вводу.
+        bg = bg or theme.BG_INPUT
         super().__init__(master, bg=bg, bd=0, highlightthickness=0, cursor="hand2")
         self._bg = bg
         self._command = command
@@ -284,13 +337,13 @@ class _ComposerPill(tk.Frame):
         self._arrow_text = "▾"
         self._fg = theme.FG
         self.icon = tk.Label(self, text=icon, bg=bg, fg=theme.FG_DIM,
-                             font=("Segoe UI", 9), cursor="hand2")
+                             font=theme.font(9), cursor="hand2")
         self.icon.pack(side="left", padx=(theme.SPACE_MD, theme.SPACE_XS), pady=4)
         self.label = tk.Label(self, text=text, bg=bg, fg=theme.FG,
-                              font=("Segoe UI", 9), cursor="hand2", anchor="w")
+                              font=theme.font(9), cursor="hand2", anchor="w")
         self.label.pack(side="left", pady=4)
         self.arrow = tk.Label(self, text=self._arrow_text, bg=bg, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 8), cursor="hand2")
+                              font=theme.font(8), cursor="hand2")
         self.arrow.pack(side="left", padx=(theme.SPACE_XS, theme.SPACE_MD), pady=4)
         for widget in (self, self.icon, self.label, self.arrow):
             widget.bind("<Enter>", self._on_enter, add="+")
@@ -418,6 +471,8 @@ class ChatPanel(tk.Frame):
         #: тек і застосовує вибір через ``set_workspace``.
         self.on_workspace_menu: Optional[Callable[["_ComposerPill"], None]] = None
         #: Пігулка «режим» над полем вводу: оболонка показує меню режимів.
+        #: Визначити режим роботи з тексту запиту (кличемо ПЕРЕД стартом).
+        self.on_auto_mode: Optional[Callable[[str], None]] = None
         self.on_mode_menu: Optional[Callable[["_ComposerPill"], None]] = None
         self.chat_model: str = ""
         self.chat_effort: str = effort.DEFAULT_EFFORT
@@ -575,24 +630,18 @@ class ChatPanel(tk.Frame):
         self.bottom_box = tk.Frame(host, bg=theme.BG_ALT)
         self.bottom_box.columnconfigure(0, weight=1)
 
-        # 2a. Компактні підказки — один тонкий рядок над полем.
-        # Підказка має називати РЕАЛЬНИЙ файл: якщо нічого не відкрито,
-        # агент отримував «поясни відкритий файл» без жодного шляху й
-        # відповідав «локальна модель недоступна» замість корисної дії.
+        # 2a. Рядок швидких підказок над полем вводу.
+        #
+        # Кнопки «Поясни файл / Знайди помилки / Додай тести / Рефакторинг»
+        # прибрано на прохання користувача: вони дублювали звичайний текст і
+        # займали місце над полем. Те саме пишеться словами, а агент тепер
+        # сам визначає режим із запиту. Рядок лишається порожнім — його
+        # використовують черга й етапи нижче.
         quick = tk.Frame(self.bottom_box, bg=theme.BG_ALT)
         quick.grid(row=0, column=0, sticky="ew", padx=(theme.SPACE_SM, theme.SPACE_SM),
                    pady=(0, theme.SPACE_SM))
-        for text, prompt in (
-            ("Поясни файл",
-             "Поясни, що робить файл {file}. Спершу прочитай його інструментом read_file."),
-            ("Знайди помилки",
-             "Перевір файл {file} на помилки та ризики. Спершу прочитай його."),
-            ("Додай тести", "Додай unit-тести для файлу {file} й запусти їх."),
-            ("Рефакторинг", "Запропонуй і зроби безпечний рефакторинг файлу {file}."),
-        ):
-            chip = widgets.Chip(quick, text, lambda p=prompt: self._send_quick(p),
-                                font=("Segoe UI", 9))
-            chip.pack(side="left", padx=(0, theme.SPACE_SM))
+        quick.grid_remove()
+        self.quick_row = quick
 
         # 2a2. Черга завдань — компактний список над полем вводу.
         # Раніше черга жила окремою панеллю в сайдбарі: щоб побачити, що
@@ -620,7 +669,7 @@ class ChatPanel(tk.Frame):
         self.thought_box.grid_remove()
         self._thought_label = tk.Label(
             self.thought_box, text="", bg=theme.BG_ALT, fg=theme.FG_DIM,
-            font=("Segoe UI", 8), anchor="w", justify="left", wraplength=900)
+            font=theme.font(8), anchor="w", justify="left", wraplength=900)
         self._thought_label.pack(fill="x", padx=(2, 2))
 
         # 2b. Сам композер: одна компактна картка, без «стіни» на весь екран.
@@ -654,11 +703,31 @@ class ChatPanel(tk.Frame):
             tip="Робочий простір: тека, у якій агент працює з файлами")
         self.workspace_btn.grid(row=0, column=0, sticky="w")
 
+        #: Пігулка режиму БІЛЬШЕ НЕ КЛІКАЄТЬСЯ й не перемикається вручну.
+        #:
+        #: Вона лишається лише як ІНДИКАТОР: показує, який режим агент
+        #: обрав сам із запиту («Чат» для розмови, «Агент» для роботи з
+        #: файлами, «Код» для правок). Клік по ній нічого не змінює —
+        #: ручний вибір прибрано на прохання користувача: агент має
+        #: визначати режим автоматично й самонавчатися.
         self.mode_btn = _ComposerPill(
             self.space_row, self.fonts, icon="◈", text="Агент",
-            command=self._open_mode_menu,
-            tip="Режим роботи агента: чат / агент / код / план / інструменти")
+            command=None,
+            tip="Режим обрано автоматично з вашого запиту")
         self.mode_btn.grid(row=0, column=1, sticky="w", padx=(theme.SPACE_SM, 0))
+
+        # ── Підпис режиму СЛОВАМИ ──────────────────────────────────────────
+        # Вимога користувача: «щоб писало, який режим зараз вибрано, не
+        # тільки кнопки». Пігулка показує саму назву («◈ Агент»), і з неї не
+        # видно, ЩО цей режим робить: чи агент правитиме файли, чи лише
+        # відповідатиме текстом. Тут — короткий опис простою мовою, який
+        # оновлюється тим самим викликом, що й пігулка.
+        self.mode_caption = tk.Label(
+            self.space_row, text="", bg=theme.BG_INPUT, fg=theme.FG_FAINT,
+            font=theme.font(8), anchor="w",
+        )
+        self.mode_caption.grid(row=0, column=2, sticky="w",
+                               padx=(theme.SPACE_MD, theme.SPACE_MD), pady=4)
 
         self.input_box = tk.Text(
             box, height=2, width=30, wrap="word", bd=0, highlightthickness=0,
@@ -680,6 +749,17 @@ class ChatPanel(tk.Frame):
         self.input_box.bind("<Control-x>", lambda _e: self._clip_cut())
         self.input_box.bind("<<Modified>>", self._on_input_modified)
 
+        #: Смуга прикріплених зображень — над полем вводу.
+        #:
+        #: Показує, ЩО саме агент отримає разом із запитом. Раніше
+        #: зображення тихо лягало в чергу моделі, і єдиним слідом був
+        #: рядок у нотатках, який зникав зі стрічки.
+        self.attachments_row = tk.Frame(box, bg=theme.BG_INPUT)
+        self.attachments_row.grid(row=4, column=0, sticky="ew",
+                                  padx=(theme.SPACE_MD, theme.SPACE_MD))
+        self._attachment_chips: list[tk.Widget] = []
+        self._refresh_attachments()
+
         #: Підказка в полі введення БІЛЬШЕ не вставляється як текст.
         #:
         #: Раніше ``_show_placeholder`` писав рядок усередину ``Text``, і
@@ -695,7 +775,7 @@ class ChatPanel(tk.Frame):
         #: курсор у поле введення.
         self.hint_label = tk.Label(
             box, text="", bg=theme.BG_INPUT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 8), anchor="w", justify="left",
+            font=theme.font(8), anchor="w", justify="left",
         )
         self.hint_label.grid(row=3, column=0, sticky="ew",
                              padx=(theme.SPACE_LG, theme.SPACE_MD),
@@ -707,14 +787,25 @@ class ChatPanel(tk.Frame):
                        pady=(0, theme.SPACE_MD))
         tools_row.columnconfigure(3, weight=1)
 
+        # Кнопка прикріплення: картинка й файл — РІЗНІ дії, тому й кнопки
+        # різні. «＋» відкриває будь-який файл, «🖼» — одразу діалог
+        # зображень. Раніше картинку можна було додати лише через «＋» і
+        # вгадування типу за розширенням: користувач не бачив, що агент
+        # узагалі вміє дивитись зображення.
         widgets.IconButton(tools_row, "＋", self._attach_file, bg=theme.BG_INPUT, fg=theme.FG_DIM,
-                           font=("Segoe UI", 11), tooltip="Додати файл до запиту").grid(
+                           font=theme.font(11), tooltip="Додати файл або зображення").grid(
             row=0, column=0, padx=(0, theme.SPACE_XS))
+
+        self.image_btn = widgets.IconButton(
+            tools_row, "🖼", self._attach_image_dialog, bg=theme.BG_INPUT,
+            fg=theme.FG_DIM, font=theme.font(11),
+            tooltip="Додати зображення — агент із зором його побачить")
+        self.image_btn.grid(row=0, column=9, padx=(0, theme.SPACE_XS))
 
         # Кнопка слэш-команд: відкриває меню «/файл, /ціль, /план…»
         self.commands_btn = tk.Label(
             tools_row, text="/", bg=theme.BG_INPUT, fg=theme.FG_DIM,
-            font=("Segoe UI", 11, "bold"), padx=6, cursor="hand2",
+            font=theme.font(11, "bold"), padx=6, cursor="hand2",
         )
         self.commands_btn.grid(row=0, column=1, padx=(theme.SPACE_XS, theme.SPACE_SM))
         self.commands_btn.bind("<Button-1>", lambda _e: self.toggle_command_menu())
@@ -723,7 +814,7 @@ class ChatPanel(tk.Frame):
         # Перемикач режиму дозволів.
         self.permission_label = tk.Label(
             tools_row, text="", bg=theme.BG_INPUT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 8), padx=theme.SPACE_SM, pady=3, cursor="hand2",
+            font=theme.font(8), padx=theme.SPACE_SM, pady=3, cursor="hand2",
         )
         self.permission_label.grid(row=0, column=2, padx=(0, theme.SPACE_SM))
         self.permission_label.bind("<Button-1>", lambda _e: self.toggle_permission_menu())
@@ -733,24 +824,24 @@ class ChatPanel(tk.Frame):
         # Кнопка вибору моделі (праворуч, разом із рештою дій).
         self.model_button = tk.Label(
             tools_row, text="", bg=theme.BG_INPUT, fg=theme.FG_DIM,
-            font=("Segoe UI", 8), padx=theme.SPACE_SM, pady=3, cursor="hand2",
+            font=theme.font(8), padx=theme.SPACE_SM, pady=3, cursor="hand2",
         )
         self.model_button.grid(row=0, column=3, sticky="e", padx=(0, theme.SPACE_SM))
         self.model_button.bind("<Button-1>", lambda _e: self.toggle_model_menu())
         widgets.Tip(self.model_button, "Модель і зусилля для цієї розмови")
 
         self.mode_label = tk.Label(tools_row, text="Черга: 0", bg=theme.BG_INPUT, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8), cursor="hand2")
+                                   font=theme.font(8), cursor="hand2")
         self.mode_label.grid(row=0, column=4, sticky="e", padx=(0, theme.SPACE_SM))
         self.mode_label.bind("<Button-1>", lambda _e: self.on_open_queue and self.on_open_queue())
 
         self.queue_btn = widgets.IconButton(tools_row, "≡", self._queue_current, bg=theme.BG_INPUT,
-                                            fg=theme.FG_DIM, font=("Segoe UI", 11),
+                                            fg=theme.FG_DIM, font=theme.font(11),
                                             tooltip="Додати в чергу завдань")
         self.queue_btn.grid(row=0, column=5, padx=(0, theme.SPACE_XS))
 
         self.stop_btn = widgets.IconButton(tools_row, "■", self.stop, bg=theme.BG_INPUT,
-                                           fg=theme.FG_DIM, font=("Segoe UI", 9),
+                                           fg=theme.FG_DIM, font=theme.font(9),
                                            tooltip="Зупинити агента")
         self.stop_btn.grid(row=0, column=6, padx=(0, theme.SPACE_XS))
 
@@ -764,7 +855,7 @@ class ChatPanel(tk.Frame):
         self.voice_btn.grid(row=0, column=8, padx=(theme.SPACE_XS, 0))
 
         self.send_btn = widgets.IconButton(tools_row, "↑", self._send_from_box, bg=theme.ACCENT,
-                                           fg=theme.ON_ACCENT, font=("Segoe UI", 10),
+                                           fg=theme.ON_ACCENT, font=theme.font(10),
                                            tooltip="Надіслати (Enter)")
         self.send_btn.grid(row=0, column=7)
 
@@ -833,7 +924,7 @@ class ChatPanel(tk.Frame):
             text=("Готовий до роботи. Опиши задачу — я прочитаю файли, внесу зміни "
                   "й перевірю результат.\nБез запущеної моделі працює вбудований "
                   "роутер команд («покажи файли», «дерево проєкту»)."),
-            bg=theme.BG_CARD, fg=theme.FG_DIM, font=self.fonts.ui_small, justify="left",
+            bg=theme.BG, fg=theme.FG_DIM, font=self.fonts.ui_small, justify="left",
             wraplength=self._wrap_width(),
         )
         label.pack(anchor="w")
@@ -863,8 +954,19 @@ class ChatPanel(tk.Frame):
 
     def _new_card(self, role: str, accent: str = theme.FG_DIM,
                   bg: str = theme.BG_CARD) -> _MessageCard:
-        card = _MessageCard(self.feed, self.fonts, role, accent=accent, bg=bg)
-        card.pack(fill="x", padx=2, pady=(2, 6))
+        # Усе на одному полотні — жодних «коробок». Раніше картки малювались
+        # на BG_CARD (світліше за полотно), і розмова виглядала як стос сірих
+        # блоків: журнал роботи, diff і відповіді мали власні прямокутники.
+        # Тепер ієрархію тримають лише відступ, акцентна смужка в репліці
+        # людини й типографіка — як у сучасних агентних редакторах.
+        is_user = role == ROLE_USER
+        card = _MessageCard(self.feed, self.fonts, role, accent=accent, bg=theme.BG)
+        # Запит користувача дістає акцентну смужку ліворуч: око одразу
+        # відрізняє «що попросили» від «що зробив агент», не читаючи підписів.
+        side = theme.SPACE_SM if is_user else 2
+        card.pack(fill="x", padx=side, pady=(2, _MessageCard.GAP))
+        if is_user:
+            tk.Frame(card, bg=theme.CHAT_USER, width=2).place(x=0, y=2, relheight=0.96)
         self._cards.append(card)
         self._trim_cards()
         return card
@@ -939,7 +1041,8 @@ class ChatPanel(tk.Frame):
         widget = tk.Text(
             card.content, wrap="word", height=1, width=1, bd=0, highlightthickness=0,
             background=card._bg, foreground=tag_colour, insertbackground=theme.FG_BRIGHT,
-            font=font or self.fonts.chat, padx=0, pady=0, spacing1=2, spacing3=3,
+            font=font or getattr(self.fonts, "chat_body", self.fonts.chat),
+            padx=0, pady=0, spacing1=3, spacing3=4,
             state="disabled", cursor="arrow", selectbackground=theme.SELECTION,
         )
         widget.pack(fill="x")
@@ -1043,27 +1146,107 @@ class ChatPanel(tk.Frame):
 
         Раніше висота обрізалась на ``max_lines`` (12–70 залежно від екрана),
         і все, що не вміщалось, ховалось у **власній прокрутці** віджета —
-        саме та смуга й з'являлась між відповідями агента. Тепер текст
-        показується повністю: висота дорівнює всьому вмісту.
+        саме та смуга й з'являлась між відповідями агента.
 
         ``max_lines`` лишається параметром сумісності: якщо передано
         додатне число, воно діє як запобіжник від справді величезних
         текстів (сотні рядків), але типово не задається.
+
+        ── ЧОМУ ПОРАХУНКУ БУЛО ЗАМАЛО (20.11.2026) ─────────────────────────
+        ``_estimate_lines`` рахує перенос **наперед**, метриками шрифту. Це
+        необхідно, коли layout ще не відбувся (відтворення історії), але
+        оцінка періодично ЗАНИЖУЄ: відповідь «Привіт! Я в режимі «Чат» —
+        тому лише підказую…» отримувала ``height=4``, тоді як Tk справді
+        потребував 5 рядків. Власну прокрутку вимкнено (вона має бути в
+        усієї стрічки), тож п'ятий рядок просто ЗНИКАВ: користувач бачив
+        обірване речення («показати зелений результат. Далі ба…»).
+
+        Тепер після першого лічильника перевіряємо СПРАВЖНЮ кількість
+        ``displaylines`` — але лише коли віджет уже має ширину (інакше
+        ``count`` дає сміття по 1 px). Розбіжність — це завжди недобір:
+        краще на рядок більше, ніж втрачене слово.
         """
         try:
             text = widget.get("1.0", "end-1c")
         except tk.TclError:
             return
-        count = self._estimate_lines(text, self._measure_width(widget))
+        # Хвіст із порожніх рядків не рахуємо: рендерер лишає під кодом
+        # порожній рядок і роздільник, і ``count + 1`` перетворював їх на
+        # дві-три порожні смуги під кожною відповіддю — саме та «дірка»,
+        # яка розтягувала картку агента до половини екрана.
+        text = (text or "").rstrip("\n")
+        # ── Ширина для оцінки — ЦІЛЬОВА, а не поточна ─────────────────────
+        # Під час розкладки картка буває тимчасово вузькою (1 px, потім
+        # 413, 305, 217…). Оцінка на такій ширині давала 11–23 рядки, і
+        # саме ця висота лишалась на екрані: наступний перерахунок чекав
+        # зміни ``_wrap_width()``, а вона вже не змінювалась. Тому рахуємо
+        # за тією шириною, яку текст СПРАВДІ отримає (``_wrap_width``).
+        wrap = self._wrap_width()
+        count = self._estimate_lines(text, wrap)
         limit = int(max_lines or 0) or self._hard_line_limit
+        # ── Перевірка фактом, але лише на УСТАЛЕНІЙ ширині ────────────────
+        # Коли віджет уже має цільову ширину, ``displaylines`` — джерело
+        # істини: оцінка метриками періодично занижує (текст обрізався).
+        measured = self._display_lines(widget) if self._width_settled(widget, wrap) else 0
+        rows = max(count, measured)
         try:
-            widget.configure(height=max(1, min(count + 1, limit)))
+            widget.configure(height=max(1, min(rows, limit)))
             # Власна прокрутка віджета не потрібна: вся стрічка і так
             # прокручується цілком.
             if self._text_has_yscroll(widget):
                 widget.configure(yscrollcommand="")
         except tk.TclError:
             pass
+
+    @staticmethod
+    def _width_settled(widget: tk.Text, wrap: int) -> bool:
+        """Чи віджет уже має цільову ширину (розкладка встигла).
+
+        Текст у картці займає майже всю смугу; 12 px — запас на відступ і
+        смугу прокрутки, а не на «ще не виміряно».
+        """
+        try:
+            width = widget.winfo_width()
+        except tk.TclError:
+            return False
+        return width > 4 and width >= max(1, int(wrap)) - 12
+
+    @staticmethod
+    def _display_lines(widget: tk.Text) -> int:
+        """Скільки рядків віджет реально показує (0 — ширину ще не виміряно).
+
+        Чому НЕ ``count(..., "displaylines")``. ``Text`` завжди містить
+        неявний останній перевід рядка, тож ``count`` на ``"end"`` дає на
+        одиницю більше, ніж видно (перевірено: «Привіт!» → 2, а рядок
+        один). ``"end-1c"`` навпаки ЗАНИЖУЄ, коли рендерер лишив
+        наприкінці ``\\n``: останній перенесений рядок не потрапляв у лік,
+        і відповідь на 5 рядків давала 4 — саме той обрізаний текст, який
+        бачив користувач.
+
+        ``dlineinfo`` повертає геометрію рядка для конкретного індексу:
+        беремо ОСТАННІЙ НЕПОРОЖНІЙ символ (хвіст із ``\\n`` не рахуємо, як
+        і в оцінці метриками), і зсув цього символу дає точну кількість.
+        """
+        try:
+            if widget.winfo_width() <= 4:
+                return 0
+            content = widget.get("1.0", "end-1c").rstrip("\n")
+            if not content:
+                return 1
+            if widget.dlineinfo("1.0") is None:
+                return 0
+            # Індекс останнього видимого символу — без здогадів про ``end``.
+            last_index = widget.index(f"1.0 + {len(content) - 1} chars")
+            first = widget.dlineinfo("1.0")
+            last = widget.dlineinfo(last_index)
+        except (tk.TclError, ValueError):
+            return 0
+        if not first or not last:
+            return 0
+        line_height = int(first[3] or 0)
+        if line_height <= 0:
+            return 0
+        return max(1, int(last[1]) // line_height + 1)
 
     @staticmethod
     def _text_has_yscroll(widget: tk.Text) -> bool:
@@ -1250,14 +1433,32 @@ class ChatPanel(tk.Frame):
         except tk.TclError:
             pass
 
-    def set_mode(self, label: str, *, icon: str = "◈", accent: bool = True) -> None:
-        """Показати поточний режим роботи агента на пігулці."""
+    def set_mode(self, label: str, *, icon: str = "◈", accent: bool = True,
+                 hint: str = "") -> None:
+        """Показати режим, який агент обрав САМ (пігулка — лише індикатор).
+
+        ``set_command(None)`` — принципово: клік по пігулці нічого не
+        перемикає. Ручний вибір режиму прибрано; користувач пише завдання,
+        а режим визначається з його тексту.
+
+        ``hint`` — короткий опис простою мовою («править файли й перевіряє
+        результат»). Він ставиться в ``mode_caption`` поруч із пігулкою:
+        сама назва режиму не пояснює, ЩО агент зараз робитиме.
+        """
         button = getattr(self, "mode_btn", None)
         if button is None:
             return
         button.set_icon(icon)
         button.set_text(label or "Агент", accent=accent)
-        button.set_command(self._open_mode_menu)
+        button.set_command(None)
+        caption = getattr(self, "mode_caption", None)
+        if caption is None:
+            return
+        try:
+            caption.configure(text=hint or "",
+                              fg=theme.FG_DIM if hint else theme.FG_FAINT)
+        except tk.TclError:
+            pass
 
     def _open_workspace_menu(self) -> None:
         callback = self.on_workspace_menu
@@ -1382,6 +1583,11 @@ class ChatPanel(tk.Frame):
         """Очистити стрічку без повідомлень (для перемикання чатів)."""
         if self.runner:
             self.runner.reset()
+        # Черга зображень теж належить розмові: ``runner.reset()`` її вже
+        # очистив, але смуга прев'ю малювалась зі старого стану й лишалась
+        # на екрані — новий чат відкривався з «прикріпленими» картинками
+        # попереднього.
+        self._refresh_attachments()
         self._clear_work_log()
         self._pending_code.clear()
         self._tool_rows.clear()
@@ -2201,6 +2407,10 @@ class ChatPanel(tk.Frame):
             if self.on_split_task:
                 card = self._new_card(ROLE_USER, accent=theme.CHAT_USER, bg=theme.BG_CARD)
                 self._body_text(card, text, tag_colour=theme.FG_BRIGHT)
+                # Іконки прикріплень лишаються й тут: велике завдання теж
+                # може йти зі скриншотом, і саме цей шлях показує картку
+                # замість звичайного ``_send``.
+                self._show_card_thumbs(card, self._pending_image_paths())
                 self.transcript.add(f"\n{ROLE_USER}\n{text}\n")
                 self._remember("user", text)
                 self._last_user_text = text
@@ -2210,6 +2420,12 @@ class ChatPanel(tk.Frame):
                 return True
         card = self._new_card(ROLE_USER, accent=theme.CHAT_USER, bg=theme.BG_CARD)
         self._body_text(card, text, tag_colour=theme.FG_BRIGHT)
+        # ── Що саме пішло моделі разом із цим запитом ─────────────────────
+        # Знімки прикріплені й одразу зникають зі смуги композера: чергу
+        # очищає ``session.build()`` на першому ж кроці. Без цієї копії
+        # користувач не міг згадати, чи він справді прикріпив картинку —
+        # а модель тим часом могла її й не отримати (див. дефект зору).
+        self._show_card_thumbs(card, self._pending_image_paths())
         self._last_user_text = text
         # Дії над власним запитом: скопіювати, повторити, відредагувати.
         card.add_action("↺", lambda t=text: self.rerun(t), "Повторити запит")
@@ -2218,6 +2434,14 @@ class ChatPanel(tk.Frame):
         self.transcript.add(f"\n{ROLE_USER}\n{text}\n")
         self._remember("user", text)
         safe.call_quiet(self.on_case_start, text, where="відкриття справи")
+        # ── Режим обираємо З ТЕКСТУ, а не з перемикача ────────────────────
+        # Користувач пише завдання, а не «режим роботи». Раніше він мусив
+        # вручну вибрати «Чат / Агент / Код / План», і найчастіше лишався в
+        # «Чат» — тоді агент відповідав текстом замість того, щоб працювати
+        # з файлами. Тепер намір визначає наявний рушій
+        # (:func:`modes.auto_mode`), однаково для локальних і хмарних
+        # моделей: вибір не залежить від того, хто виконує запит.
+        safe.call_quiet(self.on_auto_mode, text, where="визначення режиму")
         self.set_busy(True)
         # Складна задача: спершу показати в чаті аналіз і план, і лише потім
         # почати роботу. План складає :meth:`_plan_deep` у фоні.
@@ -2505,6 +2729,21 @@ class ChatPanel(tk.Frame):
                 self.on_status(event.text)
             # «Працює…» — короткий стан у зоні мислення над формою.
             self._arrow_thought(event.text, show=bool(event.text))
+        elif event.kind == "llm_retry":
+            # Повторна спроба запиту до моделі: окремий рядок журналу, щоб
+            # людина бачила, що робота йде, а не «зависло».
+            try:
+                self._work_log().add_retry(
+                    int(event.data.get("attempt") or 1),
+                    int(event.data.get("total") or 1),
+                    float(event.data.get("wait") or 0.0),
+                    str(event.data.get("reason") or ""),
+                )
+            except (tk.TclError, AttributeError, ValueError):
+                pass
+            if self.on_status:
+                self.on_status(event.text)
+            self._scroll_to_end()
         elif event.kind == "plan_step":
             # Агент побудував план із кадру наміру (без моделі). Показуємо
             # його тією самою смугою етапів, що й розбиття задачі: людина
@@ -2610,7 +2849,7 @@ class ChatPanel(tk.Frame):
             self._stream_widget = widget
             self._stream_card = card
             self._stream_renderer = markdown_view.MarkdownRenderer(
-                widget, self.fonts, self._palette())
+                widget, self.fonts, self._palette(getattr(card, "_bg", "")))
             try:
                 self._stream_renderer.configure_tags()
             except tk.TclError:
@@ -2709,11 +2948,13 @@ class ChatPanel(tk.Frame):
         widget = tk.Text(
             card.content, wrap="word", height=1, width=1, bd=0, highlightthickness=0,
             background=card._bg, foreground=theme.FG, insertbackground=theme.FG_BRIGHT,
-            font=self.fonts.chat, padx=0, pady=0, spacing1=2, spacing3=3,
+            font=getattr(self.fonts, "chat_body", self.fonts.chat),
+            padx=0, pady=0, spacing1=3, spacing3=4,
             state="normal", cursor="arrow", selectbackground=theme.SELECTION,
         )
         widget.pack(fill="x")
-        renderer = markdown_view.MarkdownRenderer(widget, self.fonts, self._palette())
+        renderer = markdown_view.MarkdownRenderer(
+            widget, self.fonts, self._palette(getattr(card, "_bg", "")))
         renderer.configure_tags()
         blocks = renderer.render(text, clear=True)
         # Ті самі блоки коду, але вже як ЧАСТИНИ повідомлення: звідти їх
@@ -2740,12 +2981,19 @@ class ChatPanel(tk.Frame):
         self._fit_text(widget)
         widget.bind("<Button-3>", lambda e, r=renderer: self._code_menu(e, r, card))
 
-    def _palette(self) -> markdown_view.ChatPalette:
+    def _palette(self, bg: str = "") -> markdown_view.ChatPalette:
+        """Кольори markdown для картки з фоном ``bg``.
+
+        ``bg`` важливий: горизонтальна лінія та цитата малюються ПОВЕРХ
+        картки, і якщо взяти тут сталий ``BG_CARD``, на полотні зливається
+        з тлом смуга іншого відтінку.
+        """
+        surface = bg or theme.BG_CARD
         return markdown_view.ChatPalette(
             fg=theme.FG, fg_dim=theme.FG_DIM, fg_bright=theme.FG_BRIGHT, accent=theme.ACCENT,
             success=theme.SUCCESS, warn=theme.WARN, error=theme.ERROR,
             code_bg=theme.BG_EDITOR, code_fg=theme.ACCENT, border=theme.BORDER,
-            bg=theme.BG_CARD, bg_input=theme.BG_INPUT, selection=theme.SELECTION,
+            bg=surface, bg_input=theme.BG_INPUT, selection=theme.SELECTION,
         )
 
     # ── diff-перегляд змін ─────────────────────────────────────────────────
@@ -2765,16 +3013,16 @@ class ChatPanel(tk.Frame):
         removed = sum(1 for kind, _t in lines if kind == "del")
         name = Path(path).name if path else "зміни"
 
-        header = tk.Frame(card.content, bg=theme.BG_CARD, cursor="hand2")
+        header = tk.Frame(card.content, bg=theme.BG, cursor="hand2")
         header.pack(fill="x")
         header.columnconfigure(1, weight=1)
-        arrow = tk.Label(header, text="▾", bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                         font=("Segoe UI", 8))
+        arrow = tk.Label(header, text="▾", bg=theme.BG, fg=theme.FG_FAINT,
+                         font=theme.font(8))
         arrow.grid(row=0, column=0, padx=(0, 6))
-        tk.Label(header, text=f"diff · {name}", bg=theme.BG_CARD, fg=theme.FG,
-                 font=("Segoe UI", 9, "bold"), anchor="w").grid(row=0, column=1, sticky="w")
-        stats = tk.Label(header, text=f"+{added} −{removed}", bg=theme.BG_CARD,
-                         fg=theme.SUCCESS, font=("Segoe UI", 8))
+        tk.Label(header, text=f"diff · {name}", bg=theme.BG, fg=theme.FG,
+                 font=theme.font(9, "bold"), anchor="w").grid(row=0, column=1, sticky="w")
+        stats = tk.Label(header, text=f"+{added} −{removed}", bg=theme.BG,
+                         fg=theme.SUCCESS, font=theme.font(8))
         stats.grid(row=0, column=2, sticky="e")
 
         body = tk.Frame(card.content, bg=theme.BG_EDITOR, bd=0, highlightthickness=0)
@@ -2798,7 +3046,7 @@ class ChatPanel(tk.Frame):
                      justify="left").pack(side="left", fill="x", expand=True)
         if len(lines) > 400:
             tk.Label(inner, text=f"… і ще {len(lines) - 400} рядків", bg=theme.BG_EDITOR,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 8)).pack(anchor="w", padx=8, pady=4)
+                     fg=theme.FG_FAINT, font=theme.font(8)).pack(anchor="w", padx=8, pady=4)
 
         def toggle(_event=None) -> None:
             try:
@@ -2843,16 +3091,16 @@ class ChatPanel(tk.Frame):
         except (tk.TclError, AttributeError):
             pass
         tk.Label(card.content, text=f"⊠ {caption or Path(clean).name}",
-                 bg=theme.BG_CARD, fg=theme.FG_DIM,
-                 font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 4))
+                 bg=theme.BG, fg=theme.FG_DIM,
+                 font=theme.font(8)).pack(anchor="w", pady=(0, 4))
         if photo is None:
             # Не вдалось показати — даємо шлях і кнопку «відкрити».
-            row = tk.Frame(card.content, bg=theme.BG_CARD)
+            row = tk.Frame(card.content, bg=theme.BG)
             row.pack(anchor="w", pady=(0, 4))
             tk.Label(row, text="Знімок збережено, але показати не вдалось:",
-                     bg=theme.BG_CARD, fg=theme.WARN,
-                     font=("Segoe UI", 8)).pack(anchor="w")
-            tk.Label(row, text=str(clean), bg=theme.BG_CARD, fg=theme.FG_FAINT,
+                     bg=theme.BG, fg=theme.WARN,
+                     font=theme.font(8)).pack(anchor="w")
+            tk.Label(row, text=str(clean), bg=theme.BG, fg=theme.FG_FAINT,
                      font=self.fonts.mono_small, wraplength=max_width,
                      justify="left").pack(anchor="w")
             return
@@ -3312,7 +3560,7 @@ class ChatPanel(tk.Frame):
     def _note(self, text: str, *, kind: str = "info") -> None:
         colour = {"error": theme.ERROR, "info": theme.FG_FAINT}.get(kind, theme.FG_FAINT)
         row = tk.Label(self.feed, text=("✗ " if kind == "error" else "· ") + text,
-                       bg=theme.BG, fg=colour, font=("Segoe UI", 8), anchor="w",
+                       bg=theme.BG, fg=colour, font=theme.font(8), anchor="w",
                        justify="left", wraplength=self._wrap_width() - 10)
         row.pack(fill="x", padx=(8, 4), pady=(0, 3))
         self._cards.append(row)
@@ -3405,6 +3653,154 @@ class ChatPanel(tk.Frame):
             return
         self._insert_file(Path(path))
 
+    def _attach_image_dialog(self) -> None:
+        """Окрема кнопка «🖼»: діалог відкривається одразу на зображеннях."""
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Додати зображення — агент із зором його побачить",
+            filetypes=[("Зображення", "*.png *.jpg *.jpeg *.webp *.bmp")],
+        )
+        if not path:
+            return
+        self._attach_image(Path(path))
+
+    def _refresh_attachments(self) -> None:
+        """Перемалювати смугу прикріплених зображень — МАЛИМИ ІКОНКАМИ.
+
+        Навіщо іконки. Раніше чип показував лише «🖼 shot.png»: не було
+        видно, ЩО саме прикріплено, і прикріпити не той скріншот було
+        легко — помічалось це лише за відповіддю моделі. Тепер кожен
+        прикріплений файл має прев'ю (див. :mod:`thumbs`): PNG і GIF
+        малює сам Tk, JPEG/WebP/BMP — через Pillow, якщо він є.
+
+        Клік по іконці відкриває зображення на весь екран: так само, як
+        картки знімків у стрічці чату (``_open_screenshot``).
+        """
+        row = getattr(self, "attachments_row", None)
+        if row is None:
+            return
+        for chip in self._attachment_chips:
+            try:
+                chip.destroy()
+            except tk.TclError:
+                pass
+        self._attachment_chips.clear()
+
+        images = self._pending_image_paths()
+        if not images:
+            try:
+                row.grid_remove()
+            except tk.TclError:
+                pass
+            return
+        try:
+            row.grid()
+        except tk.TclError:
+            return
+
+        cache = getattr(self, "_thumb_cache", None)
+        if cache is None:
+            #: Кеш прев'ю належить панелі: ``PhotoImage`` прив'язаний до
+            #: інтерпретатора Tk, і після ``destroy()`` спільний кеш
+            #: віддавав би «мертві» картинки.
+            cache = {}
+            self._thumb_cache = cache
+
+        for raw in images:
+            name = Path(raw).name
+            shown = name if len(name) <= 24 else name[:21] + "…"
+            chip = tk.Frame(row, bg=theme.BG_CARD, bd=0, highlightthickness=1,
+                            highlightbackground=theme.BORDER)
+            chip.pack(side="left", padx=(0, theme.SPACE_SM), pady=(0, theme.SPACE_XS))
+            photo = None
+            try:
+                photo = thumbs.load(chip, raw, cache=cache)
+            except Exception:  # noqa: BLE001 - прев'ю не має ламати смугу
+                LOG.debug("Прев'ю не завантажено: %s", raw, exc_info=True)
+            if photo is not None:
+                icon = tk.Label(chip, image=photo, bg=theme.BG_EDITOR, bd=0,
+                                cursor="hand2")
+                icon.image = photo  # type: ignore[attr-defined] - тримаємо посилання
+                icon.pack(side="left", padx=(2, 2), pady=2)
+                icon.bind("<Button-1>",
+                          lambda _e, p=raw: self._open_screenshot(p))
+            else:
+                # Формат, який нічим не декодувати (немає Pillow) — чесно
+                # показуємо значок, а не порожній квадрат.
+                tk.Label(chip, text="🖼", bg=theme.BG_CARD, fg=theme.ACCENT,
+                         font=theme.font(9)).pack(side="left", padx=(6, 2), pady=2)
+            tk.Label(chip, text=shown, bg=theme.BG_CARD, fg=theme.FG,
+                     font=theme.font(8)).pack(side="left", pady=2)
+            remove = tk.Label(chip, text="×", bg=theme.BG_CARD, fg=theme.FG_FAINT,
+                              font=theme.font(9), padx=5, cursor="hand2")
+            remove.pack(side="left", pady=2)
+            remove.bind("<Button-1>",
+                        lambda _e, p=raw: self._remove_attachment(p))
+            tip = f"{raw} — натисни ×, щоб прибрати"
+            if photo is not None:
+                tip = f"{raw}\nКлік по іконці — відкрити на весь екран"
+            widgets.Tip(chip, tip)
+            self._attachment_chips.append(chip)
+
+    def _show_card_thumbs(self, card: tk.Widget, paths: list[str]) -> None:
+        """Показати іконки зображень усередині картки повідомлення.
+
+        Потрібно, щоб у СТРІЧЦІ лишалось видно, які картинки отримала
+        модель разом із запитом. Смуга композера цього не дає: черга
+        ``pending_images`` очищається на першому кроці агента
+        (``AgentSession.build``), і смуга одразу порожніє.
+        """
+        if not paths:
+            return
+        cache = getattr(self, "_thumb_cache", None)
+        if cache is None:
+            cache = {}
+            self._thumb_cache = cache
+        row = tk.Frame(card.content, bg=getattr(card, "_bg", theme.BG_CARD))
+        row.pack(anchor="w", pady=(4, 0))
+        for raw in paths:
+            photo = None
+            try:
+                photo = thumbs.load(row, raw, cache=cache)
+            except Exception:  # noqa: BLE001 - прев'ю не має ламати стрічку
+                LOG.debug("Прев'ю не завантажено: %s", raw, exc_info=True)
+            if photo is not None:
+                icon = tk.Label(row, image=photo, bg=theme.BG_EDITOR, bd=1,
+                                relief="solid", cursor="hand2")
+                icon.image = photo  # type: ignore[attr-defined]
+                icon.pack(side="left", padx=(0, 4))
+                icon.bind("<Button-1>", lambda _e, p=raw: self._open_screenshot(p))
+                widgets.Tip(icon, f"{raw} — натисни, щоб відкрити на весь екран")
+            else:
+                # Формат без декодувальника: підпис, а не порожній квадрат.
+                tk.Label(row, text=f"🖼 {Path(raw).name}", bg=theme.BG_CARD,
+                         fg=theme.FG_DIM, font=theme.font(8)).pack(side="left",
+                                                                  padx=(0, 4))
+
+    def _pending_image_paths(self) -> list[str]:
+        """Шляхи зображень, які агент отримає з наступним запитом."""
+        runner = getattr(self, "runner", None)
+        session = getattr(runner, "session", None)
+        queue = getattr(session, "pending_images", None)
+        try:
+            return [str(item) for item in (queue or [])]
+        except TypeError:
+            return []
+
+    def _remove_attachment(self, raw: str) -> None:
+        """Прибрати зображення з черги (користувач передумав)."""
+        runner = getattr(self, "runner", None)
+        session = getattr(runner, "session", None)
+        queue = getattr(session, "pending_images", None)
+        try:
+            if queue is not None and raw in queue:
+                queue.remove(raw)
+                if self.on_status:
+                    self.on_status(f"Зображення прибрано: {Path(raw).name}")
+        except (ValueError, AttributeError):
+            pass
+        self._refresh_attachments()
+
     def _insert_file(self, path: Path) -> None:
         """Додати файл за шляхом: зображення — у чергу, текст — у поле.
 
@@ -3459,6 +3855,7 @@ class ChatPanel(tk.Frame):
         text = str(path)
         if text not in queue:
             queue.append(text)
+        self._refresh_attachments()
         self._note(f"Зображення додано до запиту: {path.name}")
         if self.on_status:
             self.on_status(f"Зображення: {path.name} — модель побачить його в наступному запиті")
@@ -3491,7 +3888,7 @@ class ChatPanel(tk.Frame):
             card.configure(bg=body_bg)
             try:
                 if renderer is not None:
-                    renderer.palette = self._palette()
+                    renderer.palette = self._palette(body_bg)
                     renderer.configure_tags()
                     renderer.render(content, clear=True)
                     text.configure(background=body_bg)
@@ -3562,20 +3959,20 @@ class ModelBar(tk.Frame):
         self.columnconfigure(1, weight=1)
 
         self.status = tk.Label(self, text="●", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                               font=("Segoe UI", 8))
+                               font=theme.font(8))
         self.status.grid(row=0, column=0, padx=(12, 6))
 
         self._model_var = tk.StringVar(value=self._initial_text())
         self.combo = tk.OptionMenu(self, self._model_var, "—")
         self.combo.configure(bg=theme.BG_INPUT, fg=theme.FG, activebackground=theme.BG_HOVER,
                              activeforeground=theme.FG_BRIGHT, bd=0, highlightthickness=0,
-                             relief="flat", font=("Segoe UI", 8), anchor="w", padx=8)
+                             relief="flat", font=theme.font(8), anchor="w", padx=8)
         self.combo["menu"].configure(bg=theme.BG_INPUT, fg=theme.FG, activebackground=theme.BG_ACTIVE,
-                                     activeforeground=theme.FG_BRIGHT, font=("Segoe UI", 9), bd=0)
+                                     activeforeground=theme.FG_BRIGHT, font=theme.font(9), bd=0)
         self.combo.grid(row=0, column=1, sticky="ew", pady=6)
 
         widgets.IconButton(self, "⟳", self.refresh, bg=theme.BG_ALT, fg=theme.FG_DIM,
-                           font=("Segoe UI", 10), tooltip="Оновити список моделей").grid(
+                           font=theme.font(10), tooltip="Оновити список моделей").grid(
             row=0, column=2, padx=(4, 10))
 
     def _initial_text(self) -> str:

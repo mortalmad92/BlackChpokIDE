@@ -50,16 +50,16 @@ class SkillsPanel(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         tk.Label(head, text="СКІЛИ АГЕНТА", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w")
+                 font=theme.font(8, "bold")).grid(row=0, column=0, sticky="w")
         self.count_label = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), anchor="e")
+                                    font=theme.font(8), anchor="e")
         self.count_label.grid(row=0, column=1, sticky="e")
 
         actions = tk.Frame(self, bg=theme.BG_ALT)
         actions.grid(row=1, column=0, sticky="ew", padx=(8, 4), pady=(2, 6))
-        widgets.Chip(actions, "＋ Новий скіл", self.create, font=("Segoe UI", 8)).pack(
+        widgets.Chip(actions, "＋ Новий скіл", self.create, font=theme.font(8)).pack(
             side="left", padx=(0, 4))
-        widgets.Chip(actions, "⟳ Оновити", self.reload, font=("Segoe UI", 8)).pack(side="left")
+        widgets.Chip(actions, "⟳ Оновити", self.reload, font=theme.font(8)).pack(side="left")
 
         self.scroll = widgets.ScrollFrame(self, bg=theme.BG_ALT)
         self.scroll.grid(row=2, column=0, sticky="nsew", padx=(8, 4), pady=(0, 6))
@@ -67,7 +67,7 @@ class SkillsPanel(tk.Frame):
 
         self.hint = tk.Label(
             self, text="Скіл — це тека .agents/skills/<назва>/SKILL.md з інструкцією для агента.",
-            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8), justify="left",
+            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8), justify="left",
             wraplength=260,
         )
         self.hint.grid(row=3, column=0, sticky="ew", padx=(12, 8), pady=(0, 10))
@@ -137,7 +137,7 @@ class SkillsPanel(tk.Frame):
         self.count_label.configure(text=f"{len(skills)} · увімкнено {active}")
         if not skills:
             tk.Label(self.list_host, text="Скілів не знайдено.", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 9)).pack(anchor="w", padx=6, pady=10)
+                     font=theme.font(9)).pack(anchor="w", padx=6, pady=10)
             return
         for skill in skills:
             self._skill_card(skill)
@@ -150,25 +150,25 @@ class SkillsPanel(tk.Frame):
 
         mark = tk.Label(card, text="✓" if skill.enabled else "○", bg=theme.BG_CARD,
                         fg=theme.SUCCESS if skill.enabled else theme.FG_FAINT,
-                        font=("Segoe UI", 10), cursor="hand2")
+                        font=theme.font(10), cursor="hand2")
         mark.grid(row=0, column=0, padx=(8, 6), pady=(6, 0), sticky="n")
         mark.bind("<Button-1>", lambda _e: self._toggle(skill))
 
         title = tk.Label(card, text=skill.name, bg=theme.BG_CARD,
                          fg=theme.FG_BRIGHT if skill.enabled else theme.FG,
-                         font=("Segoe UI", 9, "bold"), anchor="w")
+                         font=theme.font(9, "bold"), anchor="w")
         title.grid(row=0, column=1, sticky="ew", pady=(6, 0))
 
         description = tk.Label(card, text=skill.preview(180), bg=theme.BG_CARD, fg=theme.FG_DIM,
-                               font=("Segoe UI", 8), justify="left", anchor="w", wraplength=250)
+                               font=theme.font(8), justify="left", anchor="w", wraplength=250)
         description.grid(row=1, column=1, sticky="ew", pady=(1, 2))
 
         buttons = tk.Frame(card, bg=theme.BG_CARD)
         buttons.grid(row=2, column=1, sticky="w", pady=(0, 6))
         widgets.Chip(buttons, "У чат", lambda: self.on_use and self.on_use(skill),
-                     font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
+                     font=theme.font(8)).pack(side="left", padx=(0, 4))
         widgets.Chip(buttons, "У чергу", lambda: self.on_queue and self.on_queue(skill),
-                     font=("Segoe UI", 8)).pack(side="left")
+                     font=theme.font(8)).pack(side="left")
 
         for widget in (card, title, description):
             widget.bind("<Button-3>", lambda e, s=skill: self._skill_menu(s, e))

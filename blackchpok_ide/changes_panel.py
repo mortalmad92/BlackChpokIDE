@@ -1,7 +1,15 @@
-"""Панель «Зміни»: файли зі статистикою ``+додано -видалено`` та підсвіткою.
+"""Панель «Зміни»: файли зі статистикою ``+додано -видалено`` і діями.
 
-Показує те саме, що сучасні агентні редактори: загальний підсумок і список
-змінених файлів. Клік по файлу відкриває його; контекстне меню дає diff.
+Показує те саме, що сучасні агентні редактори: загальний підсумок, список
+змінених файлів і — головне — дві реальні дії над кожною зміною:
+
+* **Відкотити** — повертає файл до резервної копії (``.bak``), яку
+  ``workspace.write_text_file`` створює перед кожним перезаписом;
+* **Прийняти** — прибирає копію, лишаючи поточний вміст назавжди.
+
+Обидві працюють із реальними файлами. Кнопки не «виглядають активними»:
+якщо копії немає (правка прийшла не від агента, а з git), дія недоступна й
+це видно з підпису.
 """
 
 from __future__ import annotations
@@ -11,13 +19,13 @@ import tkinter as tk
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import browser_panel, diff_stats, theme, widgets
+from . import browser_panel, diff_stats, theme, widgets, workspace
 
 MAX_ROWS = 200
 
 
 class ChangesPanel(tk.Frame):
-    """Список змінених файлів із підсумком."""
+    """Список змінених файлів із підсумком і діями над змінами."""
 
     def __init__(
         self,
@@ -28,6 +36,7 @@ class ChangesPanel(tk.Frame):
         on_open_path: Optional[Callable[[Path], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
         on_show_diff: Optional[Callable[[Path], None]] = None,
+        on_changed: Optional[Callable[[], None]] = None,
         synchronous: Optional[bool] = None,
     ) -> None:
         super().__init__(master, bg=theme.BG_ALT, bd=0, highlightthickness=0)
@@ -36,6 +45,8 @@ class ChangesPanel(tk.Frame):
         self.on_open_path = on_open_path
         self.on_status = on_status
         self.on_show_diff = on_show_diff
+        #: Повідомити вікно, що вміст файлів змінився (перемалювати вкладки).
+        self.on_changed = on_changed
         #: Синхронний перший скан. ``None`` = вирішити самому: у прихованому
         #: вікні (тести, скриншоти) фоновий скан не встигає до першого
         #: `update()`, тож панель показувала б «Обчислюю…» замість даних.
@@ -102,7 +113,7 @@ class ChangesPanel(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         tk.Label(head, text="ЗМІНИ", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w")
+                 font=theme.font(8, "bold")).grid(row=0, column=0, sticky="w")
 
         self.summary = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
                                 font=self.fonts.mono_small, anchor="e")
@@ -110,10 +121,16 @@ class ChangesPanel(tk.Frame):
 
         bar = tk.Frame(self, bg=theme.BG_ALT)
         bar.grid(row=1, column=0, sticky="ew", padx=(8, 4), pady=(2, 6))
-        widgets.Chip(bar, "⟳ Оновити", self.refresh, font=("Segoe UI", 8)).pack(
+        widgets.Chip(bar, "⟳ Оновити", self.refresh, font=theme.font(8)).pack(
             side="left", padx=(0, 4))
+        # «Прийняти все» показуємо завжди, але воно справді вимикається,
+        # коли приймати нічого: кнопка, що нічого не робить, — гірше за її
+        # відсутність.
+        self.accept_all_btn = widgets.Chip(bar, "✓ Прийняти все", self.accept_all,
+                                          font=theme.font(8))
+        self.accept_all_btn.pack(side="left", padx=(0, 4))
         self.source_label = tk.Label(bar, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                     font=("Segoe UI", 8))
+                                     font=theme.font(8))
         self.source_label.pack(side="left")
 
         self.scroll = widgets.ScrollFrame(self, bg=theme.BG_ALT)
@@ -135,6 +152,13 @@ class ChangesPanel(tk.Frame):
             self.summary.configure(text="")
             self.source_label.configure(text="")
             self._empty("Спочатку відкрий теку проєкту")
+            return
+        # Синхронний режим (тести, скрипти) обіцяє, що панель готова одразу
+        # після виклику. Раніше ця обіцянка діяла лише в конструкторі, а
+        # ``refresh()`` усе одно йшов у потік — і виклик одразу після дії
+        # повертав СТАРИЙ набір змін.
+        if self.synchronous:
+            self._scan_blocking()
             return
         if self._scanning:
             return          # попередній скан ще не завершився
@@ -190,6 +214,7 @@ class ChangesPanel(tk.Frame):
         if cs.is_empty:
             self.summary.configure(text="")
             self.source_label.configure(text="")
+            self._sync_accept_all()
             self._empty("Змін немає")
             return
 
@@ -199,13 +224,14 @@ class ChangesPanel(tk.Frame):
             "backup": "резервні копії",
         }.get(cs.source, cs.source)
         self.source_label.configure(text=f"· {source_text} · {len(cs.files)} файлів")
+        self._sync_accept_all()
 
         for change in cs.top(MAX_ROWS):
             self._row(change)
 
         if len(cs.files) > MAX_ROWS:
             tk.Label(self.host, text=f"… ще {len(cs.files) - MAX_ROWS}", bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w").pack(
+                     fg=theme.FG_FAINT, font=theme.font(8), anchor="w").pack(
                 fill="x", padx=(8, 0), pady=2)
 
     def _clear_rows(self) -> None:
@@ -215,7 +241,7 @@ class ChangesPanel(tk.Frame):
 
     def _empty(self, text: str) -> None:
         tk.Label(self.host, text=text, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 9), justify="left", anchor="w",
+                 font=theme.font(9), justify="left", anchor="w",
                  wraplength=230).pack(fill="x", padx=(6, 4), pady=8)
 
     def _git_hint(self) -> None:
@@ -231,21 +257,21 @@ class ChangesPanel(tk.Frame):
 
         tk.Label(card, text="git не встановлено",
                  bg=theme.BG_CARD, fg=theme.WARN,
-                 font=("Segoe UI", 8, "bold"), anchor="w").pack(
+                 font=theme.font(8, "bold"), anchor="w").pack(
             fill="x", padx=8, pady=(6, 0))
         tk.Label(card,
                  text="Історія комітів і точний diff недоступні. "
                       "Зміни показуються порівнянням резервних копій.",
-                 bg=theme.BG_CARD, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                 bg=theme.BG_CARD, fg=theme.FG_FAINT, font=theme.font(8),
                  anchor="w", justify="left", wraplength=210).pack(
             fill="x", padx=8, pady=(2, 4))
 
         actions = tk.Frame(card, bg=theme.BG_CARD)
         actions.pack(fill="x", padx=6, pady=(0, 6))
         widgets.Chip(actions, "↓ Встановити git", self._install_git,
-                     font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
+                     font=theme.font(8)).pack(side="left", padx=(0, 4))
         widgets.Chip(actions, "Перевірити", self.refresh,
-                     font=("Segoe UI", 8)).pack(side="left")
+                     font=theme.font(8)).pack(side="left")
 
     def _install_git(self) -> None:
         """Показати сторінку завантаження git у вбудованому браузері IDE.
@@ -271,7 +297,7 @@ class ChangesPanel(tk.Frame):
         row.columnconfigure(0, weight=1)
 
         path_label = tk.Label(row, text=change.path, bg=theme.BG_ALT, fg=theme.FG_DIM,
-                              font=("Segoe UI", 8), anchor="w", justify="left")
+                              font=theme.font(8), anchor="w", justify="left")
         path_label.grid(row=0, column=0, sticky="ew", padx=(6, 6), pady=2)
 
         stat = tk.Label(row, text=change.stat_text, bg=theme.BG_ALT, fg=theme.FG_FAINT,
@@ -287,6 +313,25 @@ class ChangesPanel(tk.Frame):
         }.get(change.status, theme.FG_FAINT)
         path_label.configure(fg=colour)
 
+        # ── Дії над зміною ────────────────────────────────────────────────
+        # Показуємо лише тоді, коли їх справді можна виконати: для змін із
+        # git резервної копії немає, і «відкотити» було б обманом.
+        target = self._target(change.path)
+        can_act = bool(target is not None and workspace.has_backup(target))
+        if can_act:
+            undo = widgets.HoverLabel(
+                row, text="↺", command=lambda t=target, c=change: self._revert(t, c),
+                bg=theme.BG_ALT, fg=theme.FG_FAINT, hover_fg=theme.WARN,
+                font=theme.font(9), padx=4, pady=1)
+            undo.grid(row=0, column=2, padx=(0, 2))
+            widgets.Tip(undo, "Відкотити зміну: повернути файл до резервної копії")
+            accept = widgets.HoverLabel(
+                row, text="✓", command=lambda t=target, c=change: self._accept(t, c),
+                bg=theme.BG_ALT, fg=theme.FG_FAINT, hover_fg=theme.SUCCESS,
+                font=theme.font(9), padx=4, pady=1)
+            accept.grid(row=0, column=3, padx=(0, 4))
+            widgets.Tip(accept, "Прийняти зміну: лишити поточний вміст, прибрати копію")
+
         def enter(_e=None):
             for widget in (row, path_label, stat):
                 widget.configure(bg=theme.BG_HOVER)
@@ -301,9 +346,9 @@ class ChangesPanel(tk.Frame):
             root = self.root_provider() if self.root_provider else None
             if not root or not self.on_open_path:
                 return
-            target = Path(root) / change.path
-            if target.exists():
-                self.on_open_path(target)
+            target_path = Path(root) / change.path
+            if target_path.exists():
+                self.on_open_path(target_path)
             elif self.on_status:
                 self.on_status(f"Файл не існує: {change.path}")
 
@@ -314,6 +359,84 @@ class ChangesPanel(tk.Frame):
             widget.bind("<Button-3>", lambda e, c=change: self._menu(c, e))
 
         self._rows.append(row)
+
+    # ── дії над змінами ────────────────────────────────────────────────────
+    def _target(self, relative: str) -> Optional[Path]:
+        """Повний шлях файла за відносним шляхом із панелі."""
+        root = self.root_provider() if self.root_provider else None
+        if not root:
+            return None
+        return Path(root) / relative
+
+    def _revert(self, target: Path, change: diff_stats.FileChange) -> None:
+        """Відкотити зміну файла до резервної копії."""
+        name = Path(target).name
+        if not workspace.restore_from_backup(target):
+            if self.on_status:
+                self.on_status(f"Немає резервної копії для {name} — відкотити не можна.")
+            return
+        if self.on_status:
+            self.on_status(f"Відкотив {name} до попереднього вмісту.")
+        self._after_change(target)
+
+    def _accept(self, target: Path, change: diff_stats.FileChange) -> None:
+        """Прийняти зміну файла: прибрати резервну копію."""
+        name = Path(target).name
+        if not workspace.accept_backup(target):
+            if self.on_status:
+                self.on_status(f"Немає резервної копії для {name} — приймати нічого.")
+            return
+        if self.on_status:
+            self.on_status(f"Зміну в {name} прийнято.")
+        self._after_change(target)
+
+    def accept_all(self) -> None:
+        """Прийняти всі зміни, для яких є резервні копії."""
+        root = self.root_provider() if self.root_provider else None
+        if not root:
+            return
+        accepted = 0
+        for change in self.changeset.files:
+            target = Path(root) / change.path
+            if workspace.accept_backup(target):
+                accepted += 1
+        if not accepted:
+            if self.on_status:
+                self.on_status("Приймати нічого: резервних копій немає.")
+            return
+        if self.on_status:
+            self.on_status(f"Прийнято змін: {accepted}.")
+        self._after_change(None)
+
+    def _after_change(self, target: Optional[Path]) -> None:
+        """Оновити панель і повідомити вікно, що вміст файлів змінився."""
+        callback = self.on_changed
+        if callback is not None:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - панель не має падати
+                pass
+        self.refresh()
+
+    def _sync_accept_all(self) -> None:
+        """Показати, чи є що приймати (без брехливих активних кнопок)."""
+        button = getattr(self, "accept_all_btn", None)
+        if button is None:
+            return
+        root = self.root_provider() if self.root_provider else None
+        available = 0
+        if root:
+            for change in self.changeset.files:
+                if workspace.has_backup(Path(root) / change.path):
+                    available += 1
+        try:
+            if available:
+                button.configure(fg=theme.FG_DIM, cursor="hand2",
+                                 text=f"✓ Прийняти все ({available})")
+            else:
+                button.configure(fg=theme.FG_FAINT, cursor="arrow", text="✓ Прийняти все")
+        except tk.TclError:
+            pass
 
     def _menu(self, change: diff_stats.FileChange, event) -> None:
         root = self.root_provider() if self.root_provider else None

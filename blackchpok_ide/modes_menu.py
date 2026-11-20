@@ -59,7 +59,7 @@ class ModeMenu(tk.Toplevel):
             self._row(host, mode)
 
         footer = tk.Label(body, text="режим змінює дозволи й ліміт кроків агента",
-                          bg=theme.BG_ELEVATED, fg=theme.FG_FAINT, font=("Segoe UI", 7),
+                          bg=theme.BG_ELEVATED, fg=theme.FG_FAINT, font=theme.font(7),
                           anchor="w")
         footer.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
 
@@ -72,22 +72,22 @@ class ModeMenu(tk.Toplevel):
 
         icon = tk.Label(row, text=mode.icon, bg=bg,
                         fg=theme.ACCENT if active else theme.FG_DIM,
-                        font=("Segoe UI", 12), width=2, anchor="center")
+                        font=theme.font(12), width=2, anchor="center")
         icon.grid(row=0, column=0, rowspan=2, padx=(8, 4), pady=6)
 
         title = tk.Label(row, text=mode.label, bg=bg,
                          fg=theme.FG_BRIGHT if active else theme.FG,
-                         font=("Segoe UI", 9, "bold"), anchor="w")
+                         font=theme.font(9, "bold"), anchor="w")
         title.grid(row=0, column=1, sticky="ew", pady=(6, 0))
 
         hint = tk.Label(row, text=mode.hint, bg=bg, fg=theme.FG_FAINT,
-                        font=("Segoe UI", 7), anchor="w", justify="left",
+                        font=theme.font(7), anchor="w", justify="left",
                         wraplength=330)
         hint.grid(row=1, column=1, sticky="ew", pady=(0, 6))
 
         if active:
             tk.Label(row, text="✓", bg=bg, fg=theme.ACCENT,
-                     font=("Segoe UI", 9)).grid(row=0, column=2, padx=(4, 10))
+                     font=theme.font(9)).grid(row=0, column=2, padx=(4, 10))
 
         labels = (icon, title, hint)
         for widget in (row, *labels):

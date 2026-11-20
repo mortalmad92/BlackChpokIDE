@@ -398,7 +398,7 @@ class LiveEdit:
             row = tk.Frame(holder, bg=theme.BG_ALT, bd=0, highlightthickness=0)
             label = tk.Label(
                 row, text=self._caption(), bg=theme.BG_ALT,
-                fg=theme.FG_DIM, font=("Segoe UI", 9), anchor="w")
+                fg=theme.FG_DIM, font=theme.font(9), anchor="w")
             label.pack(side="left", padx=(8, 6), pady=3)
             # ``Chip`` фарбує себе сам (fg у нього — не параметр), тому
             # підпис і кнопки розрізняємо текстом, а не кольором.

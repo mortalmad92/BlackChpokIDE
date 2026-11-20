@@ -49,27 +49,27 @@ class PreviewPanel(tk.Frame):
         bar.columnconfigure(3, weight=1)
 
         self.run_btn = tk.Label(bar, text="▶ Запустити сайт", bg=theme.ACCENT,
-                                fg=theme.ON_ACCENT, font=("Segoe UI", 9, "bold"),
+                                fg=theme.ON_ACCENT, font=theme.font(9, "bold"),
                                 padx=12, pady=4, cursor="hand2")
         self.run_btn.grid(row=0, column=0, padx=(10, 6), pady=6)
         self.run_btn.bind("<Button-1>", lambda _e: self.toggle_server())
         widgets.Tip(self.run_btn, "Запустити сервер проєкту (Ctrl+Alt+P)")
 
         self.stop_btn = widgets.IconButton(bar, "■", self.stop_all, bg=theme.BG_ALT,
-                                           fg=theme.ERROR, font=("Segoe UI", 9),
+                                           fg=theme.ERROR, font=theme.font(9),
                                            tooltip="Зупинити сервер і браузер")
         self.stop_btn.grid(row=0, column=1, padx=(0, 6))
 
         widgets.IconButton(bar, "⟳", self.reload_page, bg=theme.BG_ALT, fg=theme.FG_DIM,
-                           font=("Segoe UI", 9), tooltip="Перезавантажити сторінку").grid(
+                           font=theme.font(9), tooltip="Перезавантажити сторінку").grid(
             row=0, column=2, padx=(0, 8))
 
         self.kind_label = tk.Label(bar, text="Стек не визначено", bg=theme.BG_ALT,
-                                   fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w")
+                                   fg=theme.FG_FAINT, font=theme.font(8), anchor="w")
         self.kind_label.grid(row=0, column=3, sticky="ew")
 
         self.url_label = tk.Label(bar, text="—", bg=theme.BG_ALT, fg=theme.FG_DIM,
-                                  font=("Segoe UI", 8), cursor="hand2")
+                                  font=theme.font(8), cursor="hand2")
         self.url_label.grid(row=0, column=4, padx=(6, 10))
         # Клік по адресі копіює її, а не відкриває системний браузер: раніше
         # випадковий клік по підпису викидав користувача з IDE в Chrome.
@@ -79,7 +79,7 @@ class PreviewPanel(tk.Frame):
 
         # рядок підказки/помилки
         self.info_label = tk.Label(self, text="", bg=theme.BG, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8), anchor="w", justify="left")
+                                   font=theme.font(8), anchor="w", justify="left")
         self.info_label.grid(row=1, column=0, sticky="ew", padx=(10, 8), pady=(0, 4))
 
         self.view = browser_panel.BrowserView(self, self.fonts, on_status=self.set_status)

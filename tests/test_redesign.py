@@ -27,6 +27,26 @@ from blackchpok_ide.chat_store import (  # noqa: E402
 )
 
 
+def _luma(colour: str) -> float:
+    """Відносна яскравість кольору ``#rrggbb`` (0 = чорний, 1 = білий)."""
+    value = (colour or "").strip().lstrip("#")
+    if len(value) != 6:
+        return 0.0
+    red, green, blue = (int(value[index:index + 2], 16) / 255.0 for index in (0, 2, 4))
+
+    def channel(part: float) -> float:
+        return part / 12.92 if part <= 0.04045 else ((part + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+
+
+def _contrast(first: str, second: str) -> float:
+    """Коефіцієнт контрасту WCAG між двома кольорами (1…21)."""
+    one, two = _luma(first), _luma(second)
+    lighter, darker = max(one, two), min(one, two)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 class TestChatStatus(unittest.TestCase):
     """Статуси сесій агентів у сховищі чатів."""
 
@@ -135,16 +155,35 @@ class TestThemeModes(unittest.TestCase):
 
     def test_light_palette(self) -> None:
         theme.set_mode("light")
-        self.assertEqual(theme.BG, "#f7f6f2")
-        self.assertEqual(theme.FG, "#26251e")
+        self.assertEqual(theme.BG, theme.PALETTES["light"]["BG"])
+        self.assertEqual(theme.FG, theme.PALETTES["light"]["FG"])
         self.assertTrue(theme.DIFF_ADD_FG and theme.DIFF_DEL_FG)
         self.assertEqual(theme.current_mode(), "light")
 
     def test_dark_palette(self) -> None:
         theme.set_mode("dark")
-        self.assertEqual(theme.BG, "#17171a")
+        self.assertEqual(theme.BG, theme.PALETTES["dark"]["BG"])
         self.assertEqual(theme.current_mode(), "dark")
         theme.set_mode("light")
+
+    def test_dark_is_darker_than_panels(self) -> None:
+        """Робоча область темніша за панелі — це дає глибину без рамок.
+
+        Перевіряємо САМЕ ВІДНОШЕННЯ, а не конкретний hex: палітру можна
+        переглядати, не ламаючи тест, доки драбина контрасту зберігається.
+        """
+        dark = theme.PALETTES["dark"]
+        self.assertLess(_luma(dark["BG"]), _luma(dark["BG_ALT"]))
+        self.assertLess(_luma(dark["BG_ALT"]), _luma(dark["BG_CARD"]))
+        self.assertLess(_luma(dark["BG_EDITOR"]), _luma(dark["BG"]))
+
+    def test_dark_text_is_readable(self) -> None:
+        """Основний текст має достатній контраст до тла робочої області."""
+        dark = theme.PALETTES["dark"]
+        self.assertGreater(_contrast(dark["FG"], dark["BG"]), 7.0)
+        self.assertGreater(_contrast(dark["FG_DIM"], dark["BG"]), 4.5)
+        light = theme.PALETTES["light"]
+        self.assertGreater(_contrast(light["FG"], light["BG"]), 7.0)
 
     def test_palette_keys_complete(self) -> None:
         for mode, palette in theme.PALETTES.items():
@@ -155,12 +194,14 @@ class TestThemeModes(unittest.TestCase):
     def test_role_roundtrip(self) -> None:
         """role_of/value_of: колір → роль → колір нової теми."""
         theme.set_mode("light")
-        self.assertEqual(theme.role_of("#f7f6f2"), "BG")
-        self.assertEqual(theme.role_of("#ffffff"), "BG_INPUT")
+        self.assertEqual(theme.role_of(theme.PALETTES["light"]["BG"]), "BG")
+        self.assertEqual(theme.role_of(theme.PALETTES["light"]["BG_INPUT"]), "BG_INPUT")
         self.assertEqual(theme.role_of("#немає-такого"), "")
-        self.assertEqual(theme.value_of("BG_INPUT", "x"), "#ffffff")
+        self.assertEqual(theme.value_of("BG_INPUT", "x"),
+                         theme.PALETTES["light"]["BG_INPUT"])
         theme.set_mode("dark")
-        self.assertEqual(theme.value_of("BG_INPUT", "x"), "#1e1e22")
+        self.assertEqual(theme.value_of("BG_INPUT", "x"),
+                         theme.PALETTES["dark"]["BG_INPUT"])
         self.assertEqual(theme.value_of("", "запас"), "запас")
         theme.set_mode("light")
 

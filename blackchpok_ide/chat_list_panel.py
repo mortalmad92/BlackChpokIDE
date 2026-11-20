@@ -95,7 +95,7 @@ class _SessionRow(tk.Frame):
         self.title_label = tk.Label(
             self, text=title, bg=bg,
             fg=theme.FG_BRIGHT if active else theme.FG,
-            font=("Segoe UI", 9, "bold" if active else "normal"),
+            font=theme.font(9, "bold" if active else "normal"),
             anchor="w", justify="left",
         )
         self.title_label.grid(row=0, column=1, sticky="ew", padx=(0, 4), pady=(8, 0))
@@ -108,7 +108,7 @@ class _SessionRow(tk.Frame):
             preview = chat.preview(40) or folder_name or "Порожня сесія"
         self.preview_label = tk.Label(
             self, text=preview, bg=bg, fg=theme.FG_FAINT,
-            font=("Segoe UI", 8), anchor="w", justify="left",
+            font=theme.font(8), anchor="w", justify="left",
         )
         self.preview_label.grid(row=1, column=1, sticky="ew", padx=(0, 4), pady=(1, 8))
 
@@ -125,14 +125,14 @@ class _SessionRow(tk.Frame):
         show_meta = not narrow
         self.meta_label = tk.Label(
             self, text=caption, bg=bg, fg=theme.FG_FAINT,
-            font=("Segoe UI", 7), anchor="e", justify="right",
+            font=theme.font(7), anchor="e", justify="right",
         )
         if show_meta:
             self.meta_label.grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(9, 0))
 
         self.status_label = tk.Label(
             self, text="", bg=bg, fg=theme.FG_FAINT,
-            font=("Segoe UI", 7), anchor="e",
+            font=theme.font(7), anchor="e",
         )
         if status_text:
             colour = {
@@ -176,7 +176,7 @@ class _SessionRow(tk.Frame):
     def _make_icon(self, text: str, tip: str, command) -> tk.Label:
         """Іконка дії в рядку сесії (досить велика, щоб у неї влучити)."""
         label = tk.Label(self.actions_host, text=text, bg=self._bg, fg=theme.FG_FAINT,
-                         font=("Segoe UI", 12), padx=4, pady=1, cursor="hand2",
+                         font=theme.font(12), padx=4, pady=1, cursor="hand2",
                          bd=0, highlightthickness=0)
         label.bind("<Button-1>", lambda _e: self._run(command))
         label.bind("<Enter>", lambda _e: self._icon_hover(label, True))
@@ -341,11 +341,11 @@ class ChatListPanel(tk.Frame):
         search_host.grid(row=1, column=0, sticky="ew", padx=12, pady=(10, 8))
         search_host.columnconfigure(1, weight=1)
         icon = tk.Label(search_host, text="⌕", bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                        font=("Segoe UI", 10))
+                        font=theme.font(10))
         icon.grid(row=0, column=0, padx=(8, 2), pady=2)
         self.search_entry = tk.Entry(
             search_host, bg=theme.BG_CARD, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
-            relief="flat", font=("Segoe UI", 9), bd=0, highlightthickness=0,
+            relief="flat", font=theme.font(9), bd=0, highlightthickness=0,
         )
         self.search_entry.grid(row=0, column=1, sticky="ew", ipady=5, padx=(0, 6))
         self.search_entry.bind("<KeyRelease>", self._on_search)
@@ -359,14 +359,14 @@ class ChatListPanel(tk.Frame):
         head.grid(row=2, column=0, sticky="ew", padx=(16, 12), pady=(2, 4))
         head.columnconfigure(0, weight=1)
         self.section_label = tk.Label(head, text="ЧАТИ Й АГЕНТИ", bg=theme.BG_ALT,
-                                      fg=theme.FG_FAINT, font=("Segoe UI", 7, "bold"),
+                                      fg=theme.FG_FAINT, font=theme.font(7, "bold"),
                                       anchor="w")
         self.section_label.grid(row=0, column=0, sticky="w")
         widgets.Tip(self.section_label,
                     "Один список: кожна розмова — це сесія агента. "
                     "Іконки праворуч архівують або закривають чат.")
         self.count_label = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 7), anchor="e")
+                                    font=theme.font(7), anchor="e")
         self.count_label.grid(row=0, column=1, sticky="e")
 
         # ── список
@@ -380,18 +380,18 @@ class ChatListPanel(tk.Frame):
         self.active_tab = widgets.HoverLabel(
             tabs_row, "Активні", lambda: self._set_archived(False),
             bg=theme.BG_ACTIVE, fg=theme.FG_BRIGHT,
-            font=("Segoe UI", 8), padx=10, pady=3)
+            font=theme.font(8), padx=10, pady=3)
         self.active_tab.pack(side="left", padx=(0, 4))
         self.arch_tab = widgets.HoverLabel(
             tabs_row, "Архів", lambda: self._set_archived(True),
             bg=theme.BG_ALT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 8), padx=10, pady=3)
+            font=theme.font(8), padx=10, pady=3)
         self.arch_tab.pack(side="left")
 
         # ── видалити всі чати
         self.clear_btn = widgets.IconButton(
             tabs_row, "🗑", self._delete_all, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 9), tooltip="Видалити всі чати")
+            font=theme.font(9), tooltip="Видалити всі чати")
         self.clear_btn.pack(side="right")
 
     def _show_search_placeholder(self, on: bool) -> None:
@@ -452,7 +452,7 @@ class ChatListPanel(tk.Frame):
             text = "Архів порожній" if self.show_archived else (
                 "Нічого не знайдено" if self.query else "Чатів ще немає — створи перший.")
             tk.Label(self.host, text=text, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), justify="left", anchor="w",
+                     font=theme.font(8), justify="left", anchor="w",
                      wraplength=max(160, self.winfo_width() - 32)).pack(
                 anchor="w", fill="x", padx=14, pady=12)
             return

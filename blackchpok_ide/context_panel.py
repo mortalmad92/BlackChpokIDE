@@ -52,15 +52,15 @@ class _Row(tk.Frame):
         self._bg = bg
         self.columnconfigure(1, weight=1)
 
-        self.icon = tk.Label(self, text=icon, bg=bg, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+        self.icon = tk.Label(self, text=icon, bg=bg, fg=theme.FG_FAINT, font=theme.font(8),
                              width=2, anchor="w")
         self.icon.grid(row=0, column=0, sticky="w", padx=(6, 0), pady=2)
 
-        self.label = tk.Label(self, text=text, bg=bg, fg=fg, font=("Segoe UI", 8),
+        self.label = tk.Label(self, text=text, bg=bg, fg=fg, font=theme.font(8),
                               anchor="w", justify="left")
         self.label.grid(row=0, column=1, sticky="ew", pady=2)
 
-        self.hint = tk.Label(self, text=hint, bg=bg, fg=theme.FG_FAINT, font=("Segoe UI", 8))
+        self.hint = tk.Label(self, text=hint, bg=bg, fg=theme.FG_FAINT, font=theme.font(8))
         self.hint.grid(row=0, column=2, sticky="e", padx=(4, 8), pady=2)
 
         for widget in (self, self.icon, self.label, self.hint):
@@ -144,12 +144,12 @@ class ContextPanel(tk.Frame):
 
         self.head_label = tk.Label(head, text="КОНТЕКСТ", bg=theme.BG_ALT,
                                    fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8, "bold"), anchor="w")
+                                   font=theme.font(8, "bold"), anchor="w")
         self.head_label.grid(row=0, column=0, sticky="w",
                              padx=(theme.SPACE_LG, 0), pady=(theme.SPACE_MD, 0))
         self.collapse_btn = widgets.IconButton(
             head, "»", self._collapse, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 9), tooltip="Згорнути панель контексту")
+            font=theme.font(9), tooltip="Згорнути панель контексту")
         self.collapse_btn.grid(row=0, column=1, sticky="e",
                                padx=(0, theme.SPACE_SM))
 
@@ -255,10 +255,10 @@ class ContextPanel(tk.Frame):
         status_row.pack(fill="x", padx=(10, 6), pady=(2, 1))
         colour = theme.ACCENT if "роб" in str(status).lower() else theme.FG_FAINT
         tk.Label(status_row, text="●", bg=theme.BG_ALT, fg=colour,
-                 font=("Segoe UI", 9)).pack(side="left")
+                 font=theme.font(9)).pack(side="left")
         tk.Label(status_row, text=_short(str(status), 40), bg=theme.BG_ALT,
                  fg=theme.FG if colour == theme.ACCENT else theme.FG_DIM,
-                 font=("Segoe UI", 8), anchor="w").pack(side="left", padx=(4, 0))
+                 font=theme.font(8), anchor="w").pack(side="left", padx=(4, 0))
 
         # Модель — клік відкриває налаштування. Назву показуємо окремим
         # рядком, а вид підключення — підписом нижче: у вузькій колонці
@@ -287,7 +287,7 @@ class ContextPanel(tk.Frame):
             gauge.pack(fill="x", padx=(10, 8), pady=(3, 1))
             gauge.columnconfigure(1, weight=1)
             tk.Label(gauge, text="контекст", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), anchor="w").grid(row=0, column=0, sticky="w")
+                     font=theme.font(8), anchor="w").grid(row=0, column=0, sticky="w")
             bar = tk.Canvas(gauge, height=4, bg=theme.BG_INPUT, bd=0,
                             highlightthickness=0, takefocus=0)
             bar.grid(row=0, column=1, sticky="ew", padx=(6, 6))
@@ -296,7 +296,7 @@ class ContextPanel(tk.Frame):
                 fill=(theme.ERROR if percent >= 90
                       else theme.WARN if percent >= 70 else theme.ACCENT))
             tk.Label(gauge, text=f"{percent}%", bg=theme.BG_ALT,
-                     fg=theme.FG_DIM, font=("Segoe UI", 8)).grid(
+                     fg=theme.FG_DIM, font=theme.font(8)).grid(
                 row=0, column=2, sticky="e")
 
             def paint(_event=None, canvas=bar, rect=fill, value=fraction) -> None:
@@ -310,7 +310,7 @@ class ContextPanel(tk.Frame):
             body.after_idle(paint)
         else:
             tk.Label(body, text="контекст: немає даних від моделі", bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w").pack(
+                     fg=theme.FG_FAINT, font=theme.font(8), anchor="w").pack(
                 fill="x", padx=(10, 8), pady=(2, 2))
 
         self._paint_budget_detail(body, used, limit, budget, exact)
@@ -336,13 +336,13 @@ class ContextPanel(tk.Frame):
                 parts.append(f"{label} {value:,}".replace(",", " "))
         if parts:
             tk.Label(body, text=" · ".join(parts), bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 7), anchor="w",
+                     fg=theme.FG_FAINT, font=theme.font(7), anchor="w",
                      justify="left", wraplength=190).pack(
                 fill="x", padx=(26, 8))
         tk.Label(body, text=("токени: точно" if exact else "токени: оцінка"),
                  bg=theme.BG_ALT,
                  fg=theme.FG_FAINT if exact else theme.WARN,
-                 font=("Segoe UI", 7), anchor="w").pack(fill="x", padx=(26, 8))
+                 font=theme.font(7), anchor="w").pack(fill="x", padx=(26, 8))
 
     def _paint_registry(self, body: tk.Frame, registry: dict) -> None:
         """Стан реєстру інструментів: скільки існує й скільки схем у запиті.
@@ -366,7 +366,7 @@ class ContextPanel(tk.Frame):
             text = f"схем у запиті: усі {total}"
             colour = theme.FG_FAINT
         tk.Label(body, text=text, bg=theme.BG_ALT, fg=colour,
-                 font=("Segoe UI", 7), anchor="w").pack(fill="x", padx=(26, 8))
+                 font=theme.font(7), anchor="w").pack(fill="x", padx=(26, 8))
 
     def _collect_agent_state(self) -> tuple:
         """Зібрати стан агента з провайдерів (викликається рідко, з кешем)."""
@@ -406,7 +406,7 @@ class ContextPanel(tk.Frame):
         row.pack(fill="x")
         if stack:
             tk.Label(body, text=stack, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), anchor="w", justify="left",
+                     font=theme.font(8), anchor="w", justify="left",
                      wraplength=190).pack(fill="x", padx=(26, 8), pady=(0, 2))
 
     def _refresh_tools(self) -> None:
@@ -458,7 +458,7 @@ class ContextPanel(tk.Frame):
             row.pack(fill="x")
         if len(rows) > MAX_TABS:
             tk.Label(body, text=f"… ще {len(rows) - MAX_TABS}", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), anchor="w").pack(fill="x", padx=(18, 8))
+                     font=theme.font(8), anchor="w").pack(fill="x", padx=(18, 8))
 
     @staticmethod
     def _safe(provider, default):
@@ -478,7 +478,7 @@ class ContextPanel(tk.Frame):
         return body
 
     def _empty(self, body: tk.Frame, text: str) -> None:
-        tk.Label(body, text=text, bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+        tk.Label(body, text=text, bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8),
                  anchor="w", justify="left").pack(fill="x", padx=(18, 8), pady=2)
 
     def _tab_menu(self, frame_id: str, event) -> None:

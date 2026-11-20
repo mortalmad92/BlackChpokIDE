@@ -94,11 +94,11 @@ class NeuromeshPanel(tk.Frame):
                  fg=theme.FG_DIM, font=self.fonts.ui_tiny, anchor="w").grid(
             row=0, column=0, sticky="w")
         self.summary_label = tk.Label(header, text="", bg=theme.BG_ALT,
-                                      fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                                      fg=theme.FG_FAINT, font=theme.font(8),
                                       anchor="w", justify="left", wraplength=260)
         self.summary_label.grid(row=1, column=0, sticky="ew", pady=(2, 0))
         widgets.IconButton(header, "⟳", self.refresh, bg=theme.BG_ALT,
-                           fg=theme.FG_FAINT, font=("Segoe UI", 10),
+                           fg=theme.FG_FAINT, font=theme.font(10),
                            tooltip="Оновити стан пам'яті").grid(row=0, column=1, rowspan=2)
 
         # Пошук
@@ -108,11 +108,11 @@ class NeuromeshPanel(tk.Frame):
         self.query_var = tk.StringVar()
         entry = tk.Entry(search_row, textvariable=self.query_var, bg=theme.BG_INPUT,
                          fg=theme.FG, insertbackground=theme.FG, relief="flat",
-                         font=("Segoe UI", 9), bd=0)
+                         font=theme.font(9), bd=0)
         entry.grid(row=0, column=0, sticky="ew", ipady=4, padx=(0, 4))
         entry.bind("<Return>", lambda _e: self.run_search())
         widgets.IconButton(search_row, "⌕", self.run_search, bg=theme.BG_INPUT,
-                           fg=theme.FG_DIM, font=("Segoe UI", 10),
+                           fg=theme.FG_DIM, font=theme.font(10),
                            tooltip="Шукати в пам'яті").grid(row=0, column=1)
 
         # Дії
@@ -129,7 +129,7 @@ class NeuromeshPanel(tk.Frame):
             widgets.Tip(chip, tip)
 
         self.status_line = tk.Label(self, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), anchor="w", justify="left",
+                                    font=theme.font(8), anchor="w", justify="left",
                                     wraplength=270)
         self.status_line.grid(row=3, column=0, sticky="ew", padx=theme.SPACE_MD)
 
@@ -214,7 +214,7 @@ class NeuromeshPanel(tk.Frame):
             child.destroy()
         if not memories:
             tk.Label(self.list_host, text="Спогадів ще немає.", bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w").pack(
+                     fg=theme.FG_FAINT, font=theme.font(8), anchor="w").pack(
                 fill="x", padx=theme.SPACE_SM, pady=theme.SPACE_SM)
             return
         for memory in memories[:RECENT_LIMIT]:
@@ -226,12 +226,12 @@ class NeuromeshPanel(tk.Frame):
         title = (f"{memory.get('kind')} · {memory.get('confidence')} · "
                  f"{str(memory.get('id'))[-6:]}")
         tk.Label(card, text=title, bg=theme.BG_CARD, fg=theme.ACCENT,
-                 font=("Segoe UI", 7, "bold"), anchor="w").pack(
+                 font=theme.font(7, "bold"), anchor="w").pack(
             fill="x", padx=theme.SPACE_SM, pady=(3, 0))
         text = str(memory.get("content") or "")
         body = text if len(text) <= 220 else text[:220] + "…"
         label = tk.Label(card, text=body, bg=theme.BG_CARD, fg=theme.FG,
-                         font=("Segoe UI", 8), anchor="w", justify="left",
+                         font=theme.font(8), anchor="w", justify="left",
                          wraplength=250)
         label.pack(fill="x", padx=theme.SPACE_SM, pady=(0, 3))
         if self.on_open_memory is not None:
@@ -251,11 +251,11 @@ class NeuromeshPanel(tk.Frame):
             child.destroy()
         if not self._hits:
             tk.Label(self.list_host, text="Нічого не знайдено.", bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w").pack(
+                     fg=theme.FG_FAINT, font=theme.font(8), anchor="w").pack(
                 fill="x", padx=theme.SPACE_SM, pady=theme.SPACE_SM)
             return
         tk.Label(self.list_host, text=f"політика: {policy}", bg=theme.BG_ALT,
-                 fg=theme.FG_FAINT, font=("Segoe UI", 7), anchor="w").pack(
+                 fg=theme.FG_FAINT, font=theme.font(7), anchor="w").pack(
             fill="x", padx=theme.SPACE_SM)
         for hit in self._hits[:RECENT_LIMIT]:
             memory = dict(hit.get("memory") or {})
@@ -263,7 +263,7 @@ class NeuromeshPanel(tk.Frame):
             self._memory_card(memory)
             reason = tk.Label(self.list_host, text=f"↳ {hit.get('explanation')}",
                               bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 7), anchor="w", justify="left",
+                              font=theme.font(7), anchor="w", justify="left",
                               wraplength=250)
             reason.pack(fill="x", padx=theme.SPACE_SM)
 

@@ -116,6 +116,8 @@ KIND_REASONING = "reasoning"
 KIND_STATUS = "status"
 KIND_NOTE = "note"
 KIND_SUMMARY = "summary"
+#: Повторна спроба запиту до моделі (429, 5xx, обрив з'єднання).
+KIND_RETRY = "retry"
 
 
 def tool_view(name: str) -> tuple[str, str, str]:
@@ -169,7 +171,15 @@ class _Row:
 
 
 class WorkLog(tk.Frame):
-    """Згорнутий журнал кроків агента для однієї відповіді."""
+    """Згорнутий журнал кроків агента для однієї відповіді.
+
+    Плаский, без рамки й «коробки»: це частина тексту відповіді, а не
+    окремий віджет. Саме тому тло береться з ``theme.BG`` — журнал лежить
+    просто на полотні діалогу, як у сучасних агентних редакторах.
+    """
+
+    #: Тло журналу (полотно діалогу, не картка).
+    SURFACE = "BG"
 
     def __init__(
         self,
@@ -179,7 +189,7 @@ class WorkLog(tk.Frame):
         wrap_width: int = 420,
         on_open_result: Optional[Callable[[str], None]] = None,
     ) -> None:
-        super().__init__(master, bg=theme.BORDER, bd=0, highlightthickness=0)
+        super().__init__(master, bg=theme.BG, bd=0, highlightthickness=0)
         self.fonts = fonts
         self._wrap = max(220, int(wrap_width))
         self.on_open_result = on_open_result
@@ -195,33 +205,35 @@ class WorkLog(tk.Frame):
         #: Рядок роздумів, який зараз дописується стрімінгом.
         self._live_reasoning: Optional[_Row] = None
 
-        self.body = tk.Frame(self, bg=theme.BG_CARD, bd=0, highlightthickness=0)
-        self.body.pack(fill="both", expand=True, padx=1, pady=1)
+        self.body = tk.Frame(self, bg=theme.BG, bd=0, highlightthickness=0)
+        self.body.pack(fill="both", expand=True)
 
         self._build_header()
-        self.rows_host = tk.Frame(self.body, bg=theme.BG_CARD)
-        self.rows_host.pack(fill="x", padx=(0, 8), pady=(0, 8))
+        self.rows_host = tk.Frame(self.body, bg=theme.BG)
+        self.rows_host.pack(fill="x", padx=(18, 8), pady=(0, 4))
 
     # ── заголовок ──────────────────────────────────────────────────────────
     def _build_header(self) -> None:
-        self.header = tk.Frame(self.body, bg=theme.BG_CARD, cursor="hand2")
-        self.header.pack(fill="x", padx=(10, 8), pady=(7, 5))
+        self.header = tk.Frame(self.body, bg=theme.BG, cursor="hand2")
+        self.header.pack(fill="x", padx=(0, 8), pady=(2, 3))
         self.header.columnconfigure(2, weight=1)
 
-        self.arrow = tk.Label(self.header, text="▾", bg=theme.BG_CARD,
-                              fg=theme.FG_FAINT, font=("Segoe UI", 8))
+        # Тонкий шеврон замість великого трикутника: він позначає згортання,
+        # але не конкурує з текстом.
+        self.arrow = tk.Label(self.header, text="▾", bg=theme.BG,
+                              fg=theme.FG_FAINT, font=theme.font(8))
         self.arrow.grid(row=0, column=0, padx=(0, 6))
 
-        self.dot = pulse.PulseDot(self.header, size=12, bg=theme.BG_CARD,
+        self.dot = pulse.PulseDot(self.header, size=10, bg=theme.BG,
                                   state=pulse.PulseDot.RUNNING)
         self.dot.grid(row=0, column=1, padx=(0, 6))
 
-        self.title_label = tk.Label(self.header, text="Аналіз запиту", bg=theme.BG_CARD,
-                                    fg=theme.FG, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.title_label = tk.Label(self.header, text="Аналіз запиту", bg=theme.BG,
+                                    fg=theme.FG_DIM, font=theme.font(9), anchor="w")
         self.title_label.grid(row=0, column=2, sticky="w")
 
-        self.timer_label = tk.Label(self.header, text="", bg=theme.BG_CARD,
-                                    fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="e")
+        self.timer_label = tk.Label(self.header, text="", bg=theme.BG,
+                                    fg=theme.FG_FAINT, font=theme.font(8), anchor="e")
         self.timer_label.grid(row=0, column=3, sticky="e", padx=(8, 0))
 
         for widget in (self.header, self.arrow, self.title_label, self.timer_label):
@@ -251,7 +263,13 @@ class WorkLog(tk.Frame):
         self._paint_timer()
 
     def finish(self, *, ok: bool = True) -> None:
-        """Завершити журнал: зупинити таймер, поставити підсумок."""
+        """Завершити журнал: підсумок, таймер застигає, кроки згортаються.
+
+        Після завершення кроки згортаються самі: у сучасних агентних
+        редакторах готова відповідь показує лише рядок «Аналіз завершено»,
+        а повний перелік викликів лишається за шевроном. Розгорнутий журнал
+        після кожного запиту робив розмову вдвічі довшою за зміст.
+        """
         if not self._running:
             return
         self._running = False
@@ -263,10 +281,24 @@ class WorkLog(tk.Frame):
         self._stop_timer()
         self._paint_timer()
         steps = sum(1 for row in self._rows if row.kind == KIND_TOOL)
-        summary = f"{'Готово' if ok else 'Зупинено'} · {plural_steps(steps)} · " \
-                  f"{human_duration(self._finished - self._started)}"
-        self.add_row(KIND_SUMMARY, "✓" if ok else "✗", summary,
-                     colour=theme.SUCCESS if ok else theme.ERROR)
+        label = "Аналіз завершено" if ok else "Зупинено до завершення"
+        if steps:
+            label = f"{label} · {plural_steps(steps)}"
+        self.add_row(KIND_SUMMARY, "✓" if ok else "✗", label,
+                     colour=theme.FG_FAINT if ok else theme.ERROR)
+        # Підсумок мусить бути видно й у ЗГОРНУТОМУ стані, а рядок підсумку
+        # живе в ``rows_host``, який згортання ховає. Тому той самий текст
+        # ставимо в заголовок: користувач бачить «Аналіз завершено ·
+        # 3 кроки» одним рядком, а шеврон відкриває подробиці.
+        self.set_title(label)
+        if self._expanded and self._expanded_before_finish:
+            # Автоматичне згортання після завершення. Якщо користувач уже
+            # розгорнув журнал сам (``_expanded_before_finish`` знято в
+            # ``toggle``), його вибір не скасовуємо.
+            self._expanded = False
+        else:
+            self._expanded_before_finish = False
+        self._apply_expanded()
 
     @property
     def running(self) -> bool:
@@ -314,22 +346,23 @@ class WorkLog(tk.Frame):
             KIND_STATUS: theme.FG_FAINT,
             KIND_NOTE: theme.FG_FAINT,
             KIND_SUMMARY: theme.FG_DIM,
+            KIND_RETRY: theme.WARN,
         }.get(kind, theme.FG_DIM)
 
-        frame = tk.Frame(self.rows_host, bg=theme.BG_CARD)
-        frame.pack(fill="x", pady=(0, 2))
+        frame = tk.Frame(self.rows_host, bg=theme.BG)
+        frame.pack(fill="x", pady=(0, 3))
         frame.columnconfigure(2, weight=1)
 
-        icon_label = tk.Label(frame, text=icon, bg=theme.BG_CARD, fg=colour,
-                              font=("Segoe UI", 8), width=2, anchor="w")
+        icon_label = tk.Label(frame, text=icon, bg=theme.BG, fg=colour,
+                              font=theme.font(8), width=2, anchor="w")
         icon_label.grid(row=0, column=0, padx=(0, 2), sticky="nw")
 
-        label = tk.Label(frame, text=clean, bg=theme.BG_CARD, fg=colour,
-                         font=("Segoe UI", 8, "italic") if italic else ("Segoe UI", 8),
+        label = tk.Label(frame, text=clean, bg=theme.BG, fg=colour,
+                         font=theme.font(8, "italic") if italic else theme.font(8),
                          justify="left", anchor="w", wraplength=self._wrap - 90)
         label.grid(row=0, column=1, sticky="w")
 
-        target_label = tk.Label(frame, text=target, bg=theme.BG_CARD, fg=theme.FG_FAINT,
+        target_label = tk.Label(frame, text=target, bg=theme.BG, fg=theme.FG_FAINT,
                                 font=self.fonts.mono_small, justify="left", anchor="w")
         if target:
             target_label.grid(row=0, column=2, sticky="w", padx=(6, 0))
@@ -392,6 +425,34 @@ class WorkLog(tk.Frame):
         return self.add_row(KIND_NARRATION, "│", preview, colour=theme.FG,
                             clickable=text if len(text) > len(preview) else "")
 
+    def add_retry(self, attempt: int, total: int, wait: float = 0.0,
+                  reason: str = "") -> Optional[_Row]:
+        """Рядок повторної спроби запиту до моделі.
+
+        Показуємо саме те, що потрібно людині: яка це спроба зі скількох і
+        скільки чекати. Попередній рядок з тією самою спробою оновлюємо, а
+        не плодимо новий: двигун може повідомити про повтор двічі (лог і
+        подія), і зайвий рядок лише заплутав би.
+        """
+        parts = [f"Повторний запит моделі ({int(attempt)}/{int(total)})"]
+        if wait >= 0.5:
+            parts.append(f"{wait:.0f} с")
+        if reason:
+            parts.append(reason)
+        text = " · ".join(parts)
+
+        existing = next((row for row in reversed(self._rows)
+                         if row.kind == KIND_RETRY
+                         and str(row.label.cget("text")).startswith(
+                             f"Повторний запит моделі ({int(attempt)}/")), None)
+        if existing is not None:
+            try:
+                existing.label.configure(text=text)
+                return existing
+            except tk.TclError:
+                pass
+        return self.add_row(KIND_RETRY, "↻", text, colour=theme.WARN)
+
     def finish_tool(self, call_id: str, *, ok: bool = True) -> None:
         """Позначити інструмент завершеним: галочка й приглушений колір."""
         row = self._by_call.get(call_id) if call_id else None
@@ -427,19 +488,28 @@ class WorkLog(tk.Frame):
 
     # ── згортання ──────────────────────────────────────────────────────────
     def toggle(self) -> None:
+        """Перемкнути видимість кроків.
+
+        Клік запам'ятовується: якщо людина сама розгорнула журнал, після
+        завершення ми не згортаємо його назад.
+        """
         self._expanded = not self._expanded
+        if self._expanded:
+            self._expanded_before_finish = False
         self._apply_expanded()
 
     def set_expanded(self, expanded: bool) -> None:
         if bool(expanded) == self._expanded:
             return
         self._expanded = bool(expanded)
+        if self._expanded:
+            self._expanded_before_finish = False
         self._apply_expanded()
 
     def _apply_expanded(self) -> None:
         try:
             if self._expanded:
-                self.rows_host.pack(fill="x", padx=(0, 8), pady=(0, 8))
+                self.rows_host.pack(fill="x", padx=(18, 8), pady=(0, 4))
                 self.arrow.configure(text="▾")
             else:
                 self.rows_host.pack_forget()

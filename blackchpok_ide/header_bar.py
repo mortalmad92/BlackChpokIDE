@@ -110,10 +110,24 @@ class HeaderBar(tk.Frame):
 
         # ── бренд + проєкт
         brand = tk.Frame(self, bg=theme.BG_ALT)
-        brand.grid(row=0, column=0, sticky="w", padx=(theme.SPACE_LG, theme.SPACE_MD))
+        brand.grid(row=0, column=0, sticky="w", padx=(theme.SPACE_SM, theme.SPACE_MD))
+
+        #: Кнопка «☰» — РОЗГОРНУТИ згорнуту бічну панель.
+        #:
+        #: Показується лише тоді, коли панель прихована (керує вікно через
+        #: ``set_reveal_visible``). Раніше згорнуту панель можна було
+        #: повернути тільки через меню або ``Ctrl+B``, і користувач бачив
+        #: порожній лівий край без жодної підказки.
+        self.reveal_btn = widgets.HoverLabel(
+            brand, text="☰", command=lambda: self._command("view.sidebar"),
+            bg=theme.BG_ALT, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,
+            hover_fg=theme.FG_BRIGHT, font=(UI_FONT, ICON_SIZE), padx=8, pady=3)
+        widgets.Tip(self.reveal_btn, "Показати бічну панель (Ctrl+B)")
+        self._reveal_shown = False
 
         logo = tk.Label(brand, text="◈", bg=theme.BG_ALT, fg=theme.ACCENT,
                         font=(UI_FONT, ICON_SIZE, "bold"))
+        self.logo = logo
         logo.pack(side="left")
         tk.Label(brand, text="BLACKCHPOK", bg=theme.BG_ALT, fg=theme.FG_BRIGHT,
                  font=(UI_FONT, TEXT_SIZE, "bold")).pack(side="left", padx=(6, 0))
@@ -152,13 +166,19 @@ class HeaderBar(tk.Frame):
         agent = tk.Frame(self, bg=theme.BG_ALT)
         agent.grid(row=0, column=2, sticky="w", padx=(0, theme.SPACE_MD))
 
+        #: Індикатор режиму, який агент обрав САМ із запиту.
+        #:
+        #: Стрілки «▾» тут більше немає: пункт не відкриває меню вибору
+        #: режиму. Клік веде до панелі можливостей агента (скіли, черга,
+        #: автономний режим), а сам режим перемикається автоматично.
         self.agent_btn = widgets.HoverLabel(
-            agent, text="◈ Агент ▾", command=lambda: self._menu("agent"),
+            agent, text="◈ Агент", command=lambda: self._menu("agent"),
             bg=theme.BG_ALT, fg=theme.FG, hover_bg=theme.BG_HOVER,
             hover_fg=theme.FG_BRIGHT, font=(UI_FONT, TEXT_SIZE), padx=theme.SPACE_SM,
             pady=3)
         self.agent_btn.pack(side="left")
-        widgets.Tip(self.agent_btn, "Режим агента, автономний режим, скіли, черга")
+        widgets.Tip(self.agent_btn,
+                    "Режим обрано автоматично · скіли, черга, автономний режим")
         self._buttons["agent"] = self.agent_btn
 
         self.model_btn = widgets.HoverLabel(
@@ -272,6 +292,20 @@ class HeaderBar(tk.Frame):
         bottom.place(relx=0, rely=1.0, relwidth=1.0, anchor="sw")
 
     # ── дії ────────────────────────────────────────────────────────────────
+    def set_reveal_visible(self, visible: bool) -> None:
+        """Показати/сховати «☰» (панель згорнута/розгорнута)."""
+        if bool(visible) == self._reveal_shown:
+            return
+        self._reveal_shown = bool(visible)
+        try:
+            if visible:
+                # Першим у рядку бренду: ліворуч від логотипа.
+                self.reveal_btn.pack(side="left", padx=(0, 4), before=self.logo)
+            else:
+                self.reveal_btn.pack_forget()
+        except tk.TclError:
+            pass
+
     def _command(self, key: str) -> None:
         self._on_command(key)
 

@@ -144,8 +144,16 @@ class TestConstruction(NavTestBase):
         self.assertTrue(panel.winfo_exists())
 
     def test_brand_visible(self) -> None:
+        """Логотип є, а НАЗВИ немає: бренд живе лише в шапці вікна.
+
+        Раніше цей тест вимагав підпис «BlackChpok» у панелі, і саме через
+        це в лівому верхньому куті стояло два логотипи поспіль — у шапці й
+        у панелі. Тепер вимога протилежна.
+        """
         panel = self.make()
-        self.assertTrue(panel.brand_label.cget("text"))
+        self.assertTrue(panel.logo.winfo_exists())
+        self.assertIsNone(panel.brand_label,
+                          "назва не має дублюватись у бічній панелі")
 
     def test_new_session_button_present(self) -> None:
         panel = self.make()

@@ -63,13 +63,13 @@ class WelcomeScreen(tk.Frame):
             top,
             self._folder_text(),
             self.on_open_folder,
-            font=("Segoe UI", 9),
+            font=theme.font(9),
         )
         self.folder_chip.pack(side="left")
 
         self.model_chip = tk.Label(
             top, text=self.model_label or "модель: автоматично",
-            bg=theme.BG, fg=theme.FG_FAINT, font=("Segoe UI", 9),
+            bg=theme.BG, fg=theme.FG_FAINT, font=theme.font(9),
         )
         self.model_chip.pack(side="right")
 
@@ -87,7 +87,7 @@ class WelcomeScreen(tk.Frame):
         self.box = tk.Text(
             body, height=3, wrap="word", bd=0, highlightthickness=0,
             background=theme.BG_INPUT, foreground=theme.FG_BRIGHT,
-            insertbackground=theme.FG_BRIGHT, font=("Segoe UI", 12),
+            insertbackground=theme.FG_BRIGHT, font=theme.font(12),
             padx=14, pady=12, spacing1=2, spacing3=3,
         )
         self.box.grid(row=0, column=0, sticky="ew")
@@ -105,7 +105,7 @@ class WelcomeScreen(tk.Frame):
         footer.columnconfigure(1, weight=1)
 
         widgets.IconButton(footer, "＋", self._add_context, bg=theme.BG_INPUT,
-                           fg=theme.FG_DIM, font=("Segoe UI", 13),
+                           fg=theme.FG_DIM, font=theme.font(13),
                            tooltip="Додати файл до запиту").grid(row=0, column=0, sticky="w")
 
         right = tk.Frame(footer, bg=theme.BG_INPUT)
@@ -114,13 +114,13 @@ class WelcomeScreen(tk.Frame):
         self.hint_label = tk.Label(
             right, text=("Enter — надіслати · Shift+Enter — новий рядок"
                          if not self._has_box_text() else ""),
-            bg=theme.BG_INPUT, fg=theme.FG_FAINT, font=("Segoe UI", 9),
+            bg=theme.BG_INPUT, fg=theme.FG_FAINT, font=theme.font(9),
         )
         self.hint_label.pack(side="left", padx=(0, 10))
 
         self.send_btn = widgets.IconButton(
             right, "▲", self._submit, bg=theme.ACCENT, fg=theme.ON_ACCENT,
-            font=("Segoe UI", 11), tooltip="Надіслати (Enter)",
+            font=theme.font(11), tooltip="Надіслати (Enter)",
         )
         self.send_btn.pack(side="left")
 
@@ -146,16 +146,16 @@ class WelcomeScreen(tk.Frame):
         row.pack(fill="x", pady=1)
 
         icon_label = tk.Label(row, text=icon, bg=theme.BG, fg=theme.FG,
-                              font=("Segoe UI", 11), width=3, anchor="w")
+                              font=theme.font(11), width=3, anchor="w")
         icon_label.pack(side="left", padx=(4, 0))
 
         text = tk.Frame(row, bg=theme.BG)
         text.pack(side="left", fill="x", expand=True)
         title_label = tk.Label(text, text=title, bg=theme.BG, fg=theme.FG_BRIGHT,
-                               font=("Segoe UI", 10, "bold"), anchor="w")
+                               font=theme.font(10, "bold"), anchor="w")
         title_label.pack(side="left")
         sub_label = tk.Label(text, text="   " + subtitle, bg=theme.BG, fg=theme.FG_FAINT,
-                             font=("Segoe UI", 9), anchor="w")
+                             font=theme.font(9), anchor="w")
         sub_label.pack(side="left")
 
         def enter(_e=None):

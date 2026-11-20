@@ -82,7 +82,7 @@ class SessionHeader(tk.Frame):
         self.chat_mode_label = widgets.HoverLabel(
             top, text="◎ Чат ▾", command=self._pick_chat_mode, bg=theme.BG,
             fg=theme.FG_DIM, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT,
-            font=("Segoe UI", 8), padx=theme.SPACE_MD, pady=3, anchor="center",
+            font=theme.font(8), padx=theme.SPACE_MD, pady=3, anchor="center",
         )
         self.chat_mode_label.grid(row=0, column=3, padx=(0, theme.SPACE_SM))
         widgets.Tip(self.chat_mode_label,
@@ -100,7 +100,7 @@ class SessionHeader(tk.Frame):
         self.model_label = tk.Label(self, text="", bg=theme.BG)
 
         widgets.IconButton(top, "⋯", self._more_menu, bg=theme.BG, fg=theme.FG_FAINT,
-                           font=("Segoe UI", 11), tooltip="Більше дій").grid(row=0, column=5)
+                           font=theme.font(11), tooltip="Більше дій").grid(row=0, column=5)
 
         # Рядок 2: перемикач виду, завдання, метрики
         bottom = tk.Frame(self, bg=theme.BG)
@@ -115,13 +115,13 @@ class SessionHeader(tk.Frame):
         self.view_switch.select("chat")
 
         self.task_label = tk.Label(bottom, text="", bg=theme.BG, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8), anchor="w")
+                                   font=theme.font(8), anchor="w")
         self.task_label.pack(side="left", padx=(theme.SPACE_LG, 0))
 
         self.context_btn = widgets.HoverLabel(
             bottom, text="", command=self._toggle_context, bg=theme.BG,
             fg=theme.FG_FAINT, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT,
-            font=("Segoe UI", 8), padx=theme.SPACE_SM, pady=2, anchor="e",
+            font=theme.font(8), padx=theme.SPACE_SM, pady=2, anchor="e",
         )
         self.context_btn.pack(side="right")
         widgets.Tip(self.context_btn, "Колонка контексту: файли, вкладки, зміни")
@@ -129,7 +129,7 @@ class SessionHeader(tk.Frame):
         self.workspace_btn = widgets.HoverLabel(
             bottom, text="", command=self._workspace_action, bg=theme.BG,
             fg=theme.FG_FAINT, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT,
-            font=("Segoe UI", 8), padx=theme.SPACE_SM, pady=2, anchor="e",
+            font=theme.font(8), padx=theme.SPACE_SM, pady=2, anchor="e",
         )
         self.workspace_btn.pack(side="right")
         widgets.Tip(self.workspace_btn, "Файли робочого проєкту")

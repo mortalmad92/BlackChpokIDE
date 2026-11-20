@@ -54,19 +54,19 @@ class _ThoughtGroup(tk.Frame):
         self.head.columnconfigure(1, weight=1)
 
         self.arrow = tk.Label(self.head, text="▸", bg=bg, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 8))
+                              font=theme.font(8))
         self.arrow.grid(row=0, column=0, padx=(2, 4), pady=2, sticky="w")
 
         self.title_label = tk.Label(self.head, text=title, bg=bg, fg=theme.FG_DIM,
-                                    font=("Segoe UI", 8), anchor="w")
+                                    font=theme.font(8), anchor="w")
         self.title_label.grid(row=0, column=1, sticky="ew", pady=2)
 
         self.count_label = tk.Label(self.head, text="", bg=bg, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 7), anchor="e")
+                                    font=theme.font(7), anchor="e")
         self.count_label.grid(row=0, column=2, padx=(6, 6), pady=2, sticky="e")
 
         self.state_label = tk.Label(self.head, text="міркую…", bg=bg,
-                                    fg=theme.STATUS_WORKING, font=("Segoe UI", 7),
+                                    fg=theme.STATUS_WORKING, font=theme.font(7),
                                     anchor="e")
         self.state_label.grid(row=0, column=3, padx=(0, 2), pady=2, sticky="e")
 
@@ -115,7 +115,7 @@ class _ThoughtGroup(tk.Frame):
             theme.SUCCESS if ok else theme.ERROR)
         try:
             label = tk.Label(self.body, text=f"{mark} {text}", bg=self._bg, fg=colour,
-                             font=("Segoe UI", 8), anchor="w", justify="left",
+                             font=theme.font(8), anchor="w", justify="left",
                              wraplength=380)
             label.pack(fill="x", pady=0)
         except tk.TclError:
@@ -209,11 +209,11 @@ class DeepCard(tk.Frame):
         self.dot.grid(row=0, column=0, padx=(0, 6))
 
         self.title_label = tk.Label(head, text="Глибоке розмислення", bg=theme.BG_CARD,
-                                    fg=theme.FG, font=("Segoe UI", 9, "bold"), anchor="w")
+                                    fg=theme.FG, font=theme.font(9, "bold"), anchor="w")
         self.title_label.grid(row=0, column=2, sticky="w")
 
         self.timer_label = tk.Label(head, text="0с", bg=theme.BG_CARD,
-                                    fg=theme.STATUS_WORKING, font=("Segoe UI", 8),
+                                    fg=theme.STATUS_WORKING, font=theme.font(8),
                                     anchor="e")
         self.timer_label.grid(row=0, column=3, sticky="e", padx=(8, 0))
         self.header = head
@@ -233,14 +233,14 @@ class DeepCard(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         tk.Label(head, text="Діла", bg=theme.BG_CARD, fg=theme.FG,
-                 font=("Segoe UI", 9, "bold"), anchor="w").grid(
+                 font=theme.font(9, "bold"), anchor="w").grid(
             row=0, column=0, sticky="w", pady=(4, 0))
         self.tasks_count = tk.Label(head, text="", bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), anchor="w")
+                                    font=theme.font(8), anchor="w")
         self.tasks_count.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
 
         self.tasks_arrow = tk.Label(head, text="▾", bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8))
+                                    font=theme.font(8))
         self.tasks_arrow.grid(row=0, column=2, sticky="e", pady=(4, 0))
         for widget in (head, self.tasks_arrow):
             widget.bind("<Button-1>", lambda _e: self.toggle_tasks())
@@ -257,13 +257,13 @@ class DeepCard(tk.Frame):
         self.goal_box.columnconfigure(1, weight=1)
 
         self.goal_icon = tk.Label(self.goal_box, text="◎", bg=theme.BG_ALT,
-                                  fg=theme.ACCENT, font=("Segoe UI", 9))
+                                  fg=theme.ACCENT, font=theme.font(9))
         self.goal_icon.grid(row=0, column=0, padx=(8, 6), pady=5, sticky="n")
 
         self.goal_label = tk.Label(
             self.goal_box,
             text=f"Поточна ціль  {deep_mode.goals_text(self._goal_text, limit=180)}",
-            bg=theme.BG_ALT, fg=theme.FG_DIM, font=("Segoe UI", 8),
+            bg=theme.BG_ALT, fg=theme.FG_DIM, font=theme.font(8),
             anchor="w", justify="left", wraplength=self._wrap - 60)
         self.goal_label.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=5)
         widgets.Tip(self.goal_box, self._goal_text or "Ціль не задано")
@@ -346,10 +346,10 @@ class DeepCard(tk.Frame):
             row.columnconfigure(0, weight=0, minsize=18)
             row.columnconfigure(1, weight=1)
             mark = tk.Label(row, text=task.mark, bg=theme.BG_CARD,
-                            fg=theme.FG_FAINT, font=("Segoe UI", 9), anchor="nw")
+                            fg=theme.FG_FAINT, font=theme.font(9), anchor="nw")
             mark.grid(row=0, column=0, sticky="nw", pady=1)
             text = tk.Label(row, text=task.text, bg=theme.BG_CARD, fg=theme.FG_DIM,
-                            font=("Segoe UI", 8), anchor="w", justify="left",
+                            font=theme.font(8), anchor="w", justify="left",
                             wraplength=self._wrap - 50)
             text.grid(row=0, column=1, sticky="ew", pady=1)
             self._task_rows[task.index] = {"mark": mark, "text": text}

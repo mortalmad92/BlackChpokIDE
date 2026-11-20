@@ -66,11 +66,11 @@ class StageStrip(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         self.title = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_DIM,
-                              font=("Segoe UI", 9, "bold"), anchor="w")
+                              font=theme.font(9, "bold"), anchor="w")
         self.title.grid(row=0, column=0, sticky="w")
 
         self.goal_label = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8), anchor="e")
+                                   font=theme.font(8), anchor="e")
         self.goal_label.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
         self.list_host = tk.Frame(self, bg=theme.BG_ALT)
@@ -184,7 +184,7 @@ class StageStrip(tk.Frame):
         if hidden:
             more = tk.Label(self.list_host, text=f"і ще {hidden}",
                             bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                            font=("Segoe UI", 8), anchor="w")
+                            font=theme.font(8), anchor="w")
             more.pack(fill="x", padx=(18, 0), pady=(1, 0))
             self._rows.append(more)
 
@@ -211,7 +211,7 @@ class StageStrip(tk.Frame):
 
         colour = self._colour_for(stage.state)
         mark = tk.Label(row, text=stage.mark, bg=theme.BG_ALT, fg=colour,
-                        font=("Segoe UI", 10), width=2, anchor="w")
+                        font=theme.font(10), width=2, anchor="w")
         mark.grid(row=0, column=0, sticky="w", padx=(0, 2))
         self._marks[stage.index] = mark
 
@@ -220,14 +220,14 @@ class StageStrip(tk.Frame):
         label = tk.Label(row, text=shown, bg=theme.BG_ALT,
                          fg=theme.FG if stage.running else (
                              theme.FG_FAINT if stage.settled else theme.FG_DIM),
-                         font=("Segoe UI", 9), anchor="w", justify="left")
+                         font=theme.font(9), anchor="w", justify="left")
         label.grid(row=0, column=1, sticky="ew")
 
         # Підпис інструментів: лише в поточного етапу — інакше шум.
         tools = stage.tools_text()
         if stage.running and tools:
             hint = tk.Label(row, text=tools, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                            font=("Segoe UI", 7), anchor="w", justify="left")
+                            font=theme.font(7), anchor="w", justify="left")
             hint.grid(row=1, column=1, sticky="ew")
 
         if self.on_open is not None:

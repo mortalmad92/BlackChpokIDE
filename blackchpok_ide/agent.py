@@ -3464,6 +3464,24 @@ class AgentRunner:
                 LOG.debug("Мовне виправлення не вдалось", exc_info=True)
         self.events.put(AgentEvent(kind, text, data))
 
+    def _on_llm_retry(self, attempt: int, total: int, wait: float, reason: str) -> None:
+        """Повторна спроба запиту до моделі — окремою подією в чат.
+
+        Клієнт кличе це З ПОТОКУ агента перед паузою між спробами. Подія
+        ``llm_retry`` показує рядок «Повторний запит моделі (1/4) · 2 с»,
+        щоб людина бачила, що робота йде, а не «зависло». Раніше повтори
+        були лише в лозі.
+        """
+        wait_text = f"{wait:.0f} с" if wait >= 0.5 else "зараз"
+        self._emit(
+            "llm_retry",
+            f"Повторний запит моделі ({attempt}/{total}) · {wait_text}",
+            attempt=int(attempt),
+            total=int(total),
+            wait=float(wait),
+            reason=str(reason or ""),
+        )
+
     def _run(self, text: str) -> None:
         self.session.workspace = self.workspace
         self.session.add_user(text)
@@ -3490,6 +3508,9 @@ class AgentRunner:
             max_tokens=self.llm_settings.max_tokens,
             timeout=self.llm_settings.timeout,
             reasoning_effort=getattr(self.llm_settings, "reasoning_effort", ""),
+            # Повторні спроби показуємо в чаті: без цього людина бачила
+            # «агент працює», хоч запит іще жодного разу не дійшов до моделі.
+            on_retry=self._on_llm_retry,
         )
         ok = False
         try:

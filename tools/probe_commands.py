@@ -12,7 +12,7 @@
 команда виконується в окремому процесі з таймаутом: зависла — вбиваємо й
 їдемо далі.
 
-Запуск: ``python tools\probe_commands.py`` — код виходу 1, якщо є падіння.
+Запуск: ``python tools\\probe_commands.py`` — код виходу 1, якщо є падіння.
 """
 
 from __future__ import annotations
@@ -171,15 +171,27 @@ def main() -> int:
 
 
 def _list_keys() -> list[str]:
-    """Отримати ключі команд із живої реєстрації (без виконання)."""
+    """Отримати ключі команд із живої реєстрації (без виконання).
+
+    ── ЧОМУ ТУТ ІЗОЛЯЦІЯ ───────────────────────────────────────────────────
+    Цей «сухий» запуск теж створює вікно, а вікно кличе ``Settings.save()``.
+    Без ізоляції він писав у СПРАВЖНІЙ ``settings.json`` користувача: у
+    списку робочих просторів з'являлись ``probe-cmd-554bt5iv`` і подібні
+    теки з ``%TEMP%`` — саме їх користувач бачив у меню й не міг прибрати,
+    бо наступний прогін додавав нові. Тепер дочірній процес працює у
+    власній тимчасовій теці налаштувань і нічого не зберігає.
+    """
     script = (
         f"import sys; sys.path.insert(0, r'{ROOT}')\n"
-        "import tempfile\n"
+        "import os, tempfile\n"
         "from pathlib import Path\n"
+        "os.environ.setdefault('BLACKCHPOK_HOME',"
+        " tempfile.mkdtemp(prefix='probe-keys-'))\n"
+        "os.environ['BLACKCHPOK_NO_SAVE'] = '1'\n"
         "from blackchpok_ide import commands\n"
         "from blackchpok_ide.config import Settings\n"
         "from blackchpok_ide.main_window import BlackChpokIDE\n"
-        "ws = Path(tempfile.mkdtemp())\n"
+        "ws = Path(tempfile.mkdtemp(prefix='probe-keys-ws-'))\n"
         "s = Settings.load(); s.remember_workspace(str(ws))\n"
         "s.engine.auto_start = False; s.llm.auto_detect = False\n"
         "app = BlackChpokIDE(s); app.withdraw()\n"

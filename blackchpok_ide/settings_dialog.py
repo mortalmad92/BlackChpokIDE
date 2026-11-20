@@ -515,9 +515,18 @@ class SettingsDialog(tk.Toplevel):
 
         ttk.Label(frame, text="Розмір шрифту").grid(row=row, column=0, sticky="w", pady=4)
         self.size_var = tk.IntVar(value=self.settings.ui.font_size)
-        ttk.Spinbox(frame, from_=8, to=32, textvariable=self.size_var).grid(
+        ttk.Spinbox(frame, from_=9, to=32, textvariable=self.size_var).grid(
             row=row, column=1, sticky="w", padx=(10, 0))
         row += 1
+
+        ttk.Label(frame, text="Масштаб інтерфейсу").grid(row=row, column=0, sticky="w", pady=4)
+        self.scale_var = tk.DoubleVar(value=getattr(self.settings.ui, "ui_scale", 1.0))
+        ttk.Spinbox(frame, from_=0.85, to=1.75, increment=0.05,
+                    textvariable=self.scale_var).grid(
+            row=row, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(frame, text="1.0 — як є; більше — більші панелі й чат, код не змінюється",
+                  style="Dim.TLabel").grid(row=row + 1, column=1, sticky="w", padx=(10, 0))
+        row += 2
 
         ttk.Label(frame, text="Шрифт").grid(row=row, column=0, sticky="w", pady=4)
         from .theme import FONT_CANDIDATES
@@ -1507,7 +1516,8 @@ class SettingsDialog(tk.Toplevel):
             ("Температура", "temp_var", "float", "число від 0 до 2, напр. 0.3"),
             ("Максимум токенів", "tokens_var", "int", "ціле число, напр. 4096"),
             ("Тайм-аут", "timeout_var", "int", "ціле число секунд"),
-            ("Розмір шрифту", "size_var", "int", "ціле число, напр. 11"),
+            ("Розмір шрифту", "size_var", "int", "ціле число, напр. 13"),
+            ("Масштаб інтерфейсу", "scale_var", "float", "число від 0.85 до 1.75, напр. 1.15"),
             ("Ширина табуляції", "tab_var", "int", "ціле число, напр. 4"),
             ("Кроків агента", "steps_var", "int", "ціле число, напр. 12"),
             ("Хмарні токени", "cloud_tokens", "int", "ціле число, напр. 8192"),
@@ -1567,7 +1577,8 @@ class SettingsDialog(tk.Toplevel):
             s.llm.vision_override = _vision_value(self.vision_var.get())
         s.llm.normalise()
 
-        s.ui.font_size = int(self._number("size_var", "int", 11))
+        s.ui.font_size = int(self._number("size_var", "int", 13))
+        s.ui.ui_scale = float(self._number("scale_var", "float", 1.0))
         s.ui.font_family = self.font_combo.get()
         s.ui.tab_size = int(self._number("tab_var", "int", 4))
         s.ui.word_wrap = bool(self.wrap_var.get())

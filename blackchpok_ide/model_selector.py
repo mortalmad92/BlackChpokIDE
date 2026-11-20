@@ -92,13 +92,13 @@ class ModelSelector(tk.Toplevel):
                  font=self.fonts.ui_bold, anchor="w").grid(row=0, column=0, sticky="w")
 
         self.summary = tk.Label(head, text="", bg=theme.BG_ELEVATED, fg=theme.FG_FAINT,
-                                font=("Segoe UI", 8), anchor="e")
+                                font=theme.font(8), anchor="e")
         self.summary.grid(row=0, column=1, sticky="e", padx=(8, 6))
 
         widgets.IconButton(head, "⟳", self._refresh, bg=theme.BG_ELEVATED, fg=theme.FG_DIM,
-                           font=("Segoe UI", 10), tooltip="Перевірити сервери").grid(row=0, column=2)
+                           font=theme.font(10), tooltip="Перевірити сервери").grid(row=0, column=2)
         widgets.IconButton(head, "⚙", self._manage, bg=theme.BG_ELEVATED, fg=theme.FG_DIM,
-                           font=("Segoe UI", 10), tooltip="Провайдери й ключі").grid(
+                           font=theme.font(10), tooltip="Провайдери й ключі").grid(
             row=0, column=3, padx=(2, 0))
 
         # пошук
@@ -107,7 +107,7 @@ class ModelSelector(tk.Toplevel):
         search.columnconfigure(0, weight=1)
         self.search = tk.Entry(
             search, bg=theme.BG_INPUT, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
-            relief="flat", bd=0, highlightthickness=0, font=("Segoe UI", 9),
+            relief="flat", bd=0, highlightthickness=0, font=theme.font(9),
         )
         self.search.grid(row=0, column=0, sticky="ew", padx=(8, 4), pady=4)
         self.search.bind("<KeyRelease>", self._on_search)
@@ -129,7 +129,7 @@ class ModelSelector(tk.Toplevel):
         footer = tk.Frame(body, bg=theme.BG_ELEVATED)
         footer.grid(row=3, column=0, sticky="ew", padx=ROW_PAD_X, pady=(4, 8))
         tk.Label(footer, text="локальні моделі працюють без API-ключа",
-                 bg=theme.BG_ELEVATED, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                 bg=theme.BG_ELEVATED, fg=theme.FG_FAINT, font=theme.font(8),
                  anchor="w").pack(side="left")
 
     # ── дані ───────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ class ModelSelector(tk.Toplevel):
         if not visible:
             tk.Label(self.rows_host, text="Нічого не знайдено.\n"
                                           "Перевір сервери (⟳) або обери локальний GGUF у хабі.",
-                     bg=theme.BG_ELEVATED, fg=theme.FG_FAINT, font=("Segoe UI", 9),
+                     bg=theme.BG_ELEVATED, fg=theme.FG_FAINT, font=theme.font(9),
                      justify="left", anchor="w").pack(fill="x", padx=ROW_PAD_X, pady=12)
             self._resize()
             return

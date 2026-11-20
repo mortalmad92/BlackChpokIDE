@@ -45,11 +45,11 @@ class OutlinePanel(tk.Frame):
         head.columnconfigure(0, weight=1)
 
         self.title = tk.Label(head, text="СТРУКТУРА", bg=self.bg, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 8, "bold"), anchor="w")
+                              font=theme.font(8, "bold"), anchor="w")
         self.title.grid(row=0, column=0, sticky="w")
 
         self.count_label = tk.Label(head, text="", bg=self.bg, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8))
+                                    font=theme.font(8))
         self.count_label.grid(row=0, column=1, sticky="e")
 
         # пошук по символах
@@ -59,7 +59,7 @@ class OutlinePanel(tk.Frame):
 
         self.search_entry = tk.Entry(
             search_row, bg=theme.BG_INPUT, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
-            relief="flat", font=("Segoe UI", 8), bd=0, highlightthickness=1,
+            relief="flat", font=theme.font(8), bd=0, highlightthickness=1,
             highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT_SOFT,
         )
         self.search_entry.grid(row=0, column=0, sticky="ew", ipady=3)
@@ -68,10 +68,10 @@ class OutlinePanel(tk.Frame):
                                                        self._on_search(None)))
 
         widgets.IconButton(search_row, "⇢", self._toggle_imports, bg=theme.BG_INPUT,
-                           fg=theme.FG_DIM, font=("Segoe UI", 8),
+                           fg=theme.FG_DIM, font=theme.font(8),
                            tooltip="Показати/сховати імпорти").grid(row=0, column=1, padx=(3, 0))
         widgets.IconButton(search_row, "▪", self._toggle_variables, bg=theme.BG_INPUT,
-                           fg=theme.FG_DIM, font=("Segoe UI", 8),
+                           fg=theme.FG_DIM, font=theme.font(8),
                            tooltip="Показати/сховати змінні").grid(row=0, column=2, padx=(3, 0))
 
         self.scroll = widgets.ScrollFrame(self, bg=self.bg)
@@ -81,7 +81,7 @@ class OutlinePanel(tk.Frame):
         # смуга помилки
         self.problem_bar = tk.Frame(self, bg=self.bg)
         self.problem_label = tk.Label(self.problem_bar, text="", bg=self.bg, fg=theme.ERROR,
-                                      font=("Segoe UI", 8), anchor="w", justify="left",
+                                      font=theme.font(8), anchor="w", justify="left",
                                       wraplength=210)
         self.problem_label.pack(fill="x", padx=(12, 8), pady=(0, 6))
 
@@ -168,7 +168,7 @@ class OutlinePanel(tk.Frame):
             self._row(symbol)
         if len(symbols) > MAX_ROWS:
             tk.Label(self.list_host, text=f"… ще {len(symbols) - MAX_ROWS}",
-                     bg=self.bg, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                     bg=self.bg, fg=theme.FG_FAINT, font=theme.font(8),
                      anchor="w").pack(fill="x", padx=(12, 8))
 
     def highlight_line(self, line: int) -> None:
@@ -195,7 +195,7 @@ class OutlinePanel(tk.Frame):
         import tkinter as tk_local
 
         tk_local.Label(self.list_host, text=text, bg=self.bg, fg=theme.FG_FAINT,
-                       font=("Segoe UI", 8), justify="left", anchor="w",
+                       font=theme.font(8), justify="left", anchor="w",
                        wraplength=210).pack(fill="x", padx=(6, 4), pady=6)
 
     def _row(self, symbol) -> None:
@@ -207,12 +207,12 @@ class OutlinePanel(tk.Frame):
         row._symbol = symbol  # type: ignore[attr-defined]
 
         label = tk.Label(row, text=symbol.label, bg=self.bg,
-                         fg=theme.color_for(symbol.colour_key), font=("Segoe UI", 9),
+                         fg=theme.color_for(symbol.colour_key), font=theme.font(9),
                          anchor="w", justify="left")
         label.grid(row=0, column=0, sticky="ew", padx=(indent, 4), pady=1)
 
         line_label = tk.Label(row, text=str(symbol.line), bg=self.bg,
-                              fg=theme.FG_FAINT, font=("Segoe UI", 7))
+                              fg=theme.FG_FAINT, font=theme.font(7))
         line_label.grid(row=0, column=1, sticky="e", padx=(0, 6))
 
         tip_parts = [f"{symbol.kind} · рядок {symbol.line}"]

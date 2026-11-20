@@ -43,7 +43,7 @@ class HoverLabel(tk.Label):
         **kwargs,
     ) -> None:
         if font is None:
-            font = ("Segoe UI", 9)
+            font = theme.font(9)
         super().__init__(master, text=text, bg=bg, fg=fg, font=font, padx=padx, pady=pady,
                          anchor=anchor, bd=0, highlightthickness=0, cursor="hand2", **kwargs)
         # Кольори кешуються як РОЛІ палітри (ключі теми), а не лише значення:
@@ -141,7 +141,7 @@ class IconButton(HoverLabel):
                  fg: str = theme.FG_DIM, size: int = 22, font=None, tooltip: str = "") -> None:
         super().__init__(master, text=text, command=command, bg=bg, fg=fg,
                          hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT,
-                         font=font or ("Segoe UI", 12), padx=1, pady=1, anchor="center",
+                         font=font or theme.font(12), padx=1, pady=1, anchor="center",
                          width=3, height=1)
         self._size = size
         self._tip = tooltip
@@ -164,7 +164,7 @@ class Pill(tk.Frame):
         button = HoverLabel(self, text=text, command=command, bg=self._bg,
                             fg=theme.FG_FAINT, hover_bg=theme.BG_HOVER,
                             active_bg=theme.BG_ACTIVE, active_fg=theme.FG_BRIGHT,
-                            font=("Segoe UI", 9), padx=10, pady=4)
+                            font=theme.font(9), padx=10, pady=4)
         button.pack(side="left", padx=(0, 2))
         self._buttons[text] = button
         return button
@@ -214,7 +214,7 @@ class Tip:
         win.wm_overrideredirect(True)
         win.configure(bg=theme.BORDER_SOFT)
         label = tk.Label(win, text=self.text, bg=theme.BG_INPUT, fg=theme.FG,
-                         font=("Segoe UI", 8), padx=8, pady=3, justify="left")
+                         font=theme.font(8), padx=8, pady=3, justify="left")
         label.pack(padx=1, pady=1)
         win.wm_geometry(f"+{max(0, x)}+{max(0, y)}")
         self._win = win
@@ -254,14 +254,14 @@ class SectionHeader(tk.Frame):
     def __init__(self, master: tk.Misc, text: str, *, bg: str = theme.BG_ALT, font=None) -> None:
         super().__init__(master, bg=bg)
         self.label = tk.Label(self, text=text.upper(), bg=bg, fg=theme.FG_FAINT,
-                              font=font or ("Segoe UI", 8, "bold"), anchor="w")
+                              font=font or theme.font(8, "bold"), anchor="w")
         self.label.pack(side="left", padx=(12, 4), pady=(10, 4))
         self.actions = tk.Frame(self, bg=bg)
         self.actions.pack(side="right", padx=(0, 8), pady=(8, 2))
 
     def add_action(self, text: str, command: Callable[[], None], tooltip: str = "") -> IconButton:
         button = IconButton(self.actions, text, command, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                            font=("Segoe UI", 10), tooltip=tooltip)
+                            font=theme.font(10), tooltip=tooltip)
         button.pack(side="right")
         return button
 
@@ -360,7 +360,7 @@ class SectionTitle(tk.Frame):
                  fg: str = theme.FG_FAINT, font=None) -> None:
         super().__init__(master, bg=bg)
         self.label = tk.Label(self, text=text.upper(), bg=bg, fg=fg,
-                              font=font or ("Segoe UI", 8, "bold"), anchor="w")
+                              font=font or theme.font(8, "bold"), anchor="w")
         self.label.pack(side="left", padx=(10, 6), pady=(8, 4))
         self.actions = tk.Frame(self, bg=bg)
         self.actions.pack(side="right", padx=(0, 8), pady=(6, 2))
@@ -444,21 +444,42 @@ class ScrollFrame(ttk.Frame):
     def sync_scrollregion(self) -> None:
         """Перерахувати область прокрутки під поточний вміст.
 
-        Полотно тримає висоту вікна-елемента з моменту, коли вміст був
-        найдовшим: після ``destroy()`` дочірніх карток ``bbox("all")`` уже
-        менший, але сам елемент лишається високим. Якщо вірити лише
-        ``bbox``, область прокрутки лишається завеликою — і коротка
-        розмова, відкрита після довгої, показує порожній екран. Тому
-        висоту елемента вирівнюємо за ``winfo_reqheight()`` вмісту.
+        ── ЧОМУ ВИСОТА ЕЛЕМЕНТА БІЛЬШЕ НЕ ЗАДАЄТЬСЯ ВРУЧНУ ────────────────
+        Раніше тут стояло ``itemconfigure(height=winfo_reqheight())``: так
+        боролись із завеликою областю прокрутки після довгої розмови. Але
+        висота елемента, задана явно, перестає залежати від вмісту — і
+        вміст, доданий ПІСЛЯ цього, більше не змінює розмір ``inner``.
+        Наслідок виміряний на живому вікні:
+
+            canvas h=771  inner h=69  req=965  scrollregion=1518x69
+            card 0: h=63   card 1: h=1   card 2: h=1 … card 7: h=1
+
+        Тобто всі картки стискались до 1 px (повідомлення «злипались» в
+        одну смугу), а нижче лишалась величезна порожнеча: область
+        прокрутки (69 px) була менша за полотно (771 px).
+
+        Тепер висоту елемента дає сама Tk — за ``reqheight`` вмісту. Вона
+        росте разом із картками й зменшується після ``destroy()``, а
+        ``bbox("all")`` завжди дорівнює реальному вмісту.
         """
         try:
             self.inner.update_idletasks()
-            wanted = self.inner.winfo_reqheight()
-            if wanted > 0 and self.canvas.itemcget(self._window, "height") != str(wanted):
-                self.canvas.itemconfigure(self._window, height=wanted)
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            bbox = self.canvas.bbox("all")
+            if bbox is None:
+                self.canvas.configure(scrollregion=(0, 0, 0, 0))
+                return
+            self.canvas.configure(scrollregion=bbox)
         except tk.TclError:
             return
+
+    def sync_soon(self) -> None:
+        """Перерахувати область прокрутки, щойно Tk відпочине.
+
+        Публічний вхід для тих, хто додає вміст: ``<Configure>`` на
+        ``inner`` приходить не завжди (наприклад, коли вміст змінив лише
+        ВИМОГУ за висотою, а фактичний розмір віджета ще не змінився).
+        """
+        self._on_inner_configure()
 
     def content_width(self, available: int) -> int:
         """Ширина вмісту для заданої ширини полотна (з урахуванням межі)."""
@@ -518,7 +539,7 @@ def context_menu(master: tk.Misc, items: Iterable[tuple[str, Optional[Callable[[
     """Показати контекстне меню; пункт із command=None стає розділювачем."""
     menu = tk.Menu(master, tearoff=0, bg=theme.BG_ELEVATED, fg=theme.FG,
                    activebackground=theme.BG_ACTIVE, activeforeground=theme.FG_BRIGHT,
-                   bd=0, font=("Segoe UI", 9))
+                   bd=0, font=theme.font(9))
     for label, command in items:
         if command is None:
             menu.add_separator()
@@ -1065,10 +1086,10 @@ class IconRailButton(tk.Frame):
         self._command = command
         self._active = False
         self.icon_label = tk.Label(self, text=icon, bg=bg, fg=theme.FG_DIM,
-                                   font=("Segoe UI", 12), bd=0, highlightthickness=0)
+                                   font=theme.font(12), bd=0, highlightthickness=0)
         self.icon_label.pack(pady=(6, 0))
         self.text_label = tk.Label(self, text=label, bg=bg, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 7), bd=0, highlightthickness=0)
+                                   font=theme.font(7), bd=0, highlightthickness=0)
         self.text_label.pack(pady=(1, 6))
         for widget in (self, self.icon_label, self.text_label):
             widget.bind("<Enter>", self._on_enter)
@@ -1134,7 +1155,7 @@ class Segmented(tk.Frame):
         button = HoverLabel(self, text=label, command=command, bg=self._bg,
                             fg=theme.FG_FAINT, hover_bg=theme.BG_HOVER,
                             active_bg=theme.BG_ACTIVE, active_fg=theme.FG_BRIGHT,
-                            font=("Segoe UI", 9), padx=10, pady=3, anchor="center")
+                            font=theme.font(9), padx=10, pady=3, anchor="center")
         button.pack(side="left", padx=(0, 2))
         self._buttons[key] = button
         return button

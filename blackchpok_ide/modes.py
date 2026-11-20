@@ -118,6 +118,105 @@ def get(key: str) -> AgentMode:
     return _BY_KEY.get((key or "").strip().lower(), _BY_KEY[DEFAULT_MODE])
 
 
+# ── АВТОМАТИЧНИЙ ВИБІР РЕЖИМУ ─────────────────────────────────────────────
+#
+# Користувач не має обирати режим вручну: він пише завдання, а не «режим
+# роботи». Ручний перемикач змушував його вгадувати, чи це «Чат», «Код» чи
+# «План», і найчастіше він лишався в «Чат» — тоді агент відповідав текстом
+# замість того, щоб працювати з файлами.
+#
+# Тепер режим визначається з самого повідомлення наявним рушієм намірів
+# (:func:`intent_engine.classify_message`), а не з віджета. Це стосується
+# ОДНАКОВО локальних і хмарних моделей: вибір не залежить від того, хто
+# виконує запит.
+
+#: Який режим відповідає типу наміру.
+_INTENT_MODES: dict[str, str] = {
+    "converse": CHAT,     # балачка, подяка, питання-відповідь
+    "clarify": CHAT,      # відповідь на наше уточнення
+    "revise": AGENT,      # зміна вимог — далі працюємо
+    "create": AGENT,      # створити функціонал
+    "edit": CODE,         # правити наявний код
+    "debug": CODE,        # «не працює» → знайти й виправити
+    "run": AGENT,         # запустити команду
+    "test": AGENT,        # прогнати перевірки
+}
+
+#: Режим, коли намір визначити не вдалося (найбезпечніший «робочий»).
+_FALLBACK = AGENT
+
+
+def auto_mode(text: str, *, previous: list[str] | None = None,
+              learner: Any = None, veto: Any = None) -> str:
+    """Режим, що відповідає змісту повідомлення.
+
+    Порожнє або суто розмовне повідомлення → ``chat`` (агент не чіпає
+    файли). Будь-яке завдання → ``agent``/``code``. Помилка визначення не
+    має ламати хід: тоді беремо ``agent``.
+
+    ── САМОНАВЧАННЯ НА ВИБОРІ РЕЖИМУ ─────────────────────────────────────
+    ``learner`` — :class:`mode_learning.ModeLearner`. Сталі правила іноді
+    помиляються на живій фразі, і раніше помилка ніде не осідала: агент
+    робив не те, що просили, і наступного разу повторював те саме. Тепер
+    вивчене правило перекриває сталу класифікацію, а ``veto`` не дає
+    навчанню зробити агента небезпечнішим (напр. обрати «Чат» там, де
+    запит вимагає інструментів).
+    """
+    body = (text or "").strip()
+    if not body:
+        return CHAT
+    kind = _intent_of(body, previous=previous)
+    chosen = _INTENT_MODES.get(str(kind or ""), _FALLBACK)
+    if learner is None:
+        return chosen
+    try:
+        corrected, rule = learner.apply(body, chosen, veto=veto)
+    except Exception:  # noqa: BLE001 - навчання не має зривати запит
+        return chosen
+    if rule is None or corrected not in _BY_KEY:
+        return chosen
+    return corrected
+
+
+def _intent_of(body: str, *, previous: list[str] | None = None) -> str:
+    """Тип наміру з тексту; ``""`` — якщо визначити не вдалося."""
+    try:
+        from . import intent_engine
+
+        return str(intent_engine.classify_message(body, previous=previous) or "")
+    except Exception:  # noqa: BLE001 - визначення не має зривати запит
+        return ""
+
+
+
+def auto_apply(settings: Any, agent: Any, text: str,
+               *, previous: list[str] | None = None,
+               learner: Any = None, veto: Any = None) -> AgentMode:
+    """Визначити режим із повідомлення й застосувати його до агента."""
+    return apply(settings, agent,
+                 auto_mode(text, previous=previous, learner=learner, veto=veto))
+
+
+def safe_mode(mode: str, text: str) -> bool:
+    """Запобіжник навчання: чи БЕЗПЕЧНО цей режим для цього тексту.
+
+    Навчання виправляє помилки, але не має права зробити агента менш
+    здатним: якщо запит вимагає фактів про проєкт (правило доказів,
+    :func:`evidence.needs_tools_for`), режим «Чат» заборонений — інакше
+    вивчене правило «на цю фразу відповідай текстом» знову привело б до
+    вигаданої відповіді замість фактів.
+    """
+    if get(mode).use_tools:
+        return False
+    try:
+        from . import evidence
+
+        return bool(evidence.needs_tools_for(text))
+    except Exception:  # noqa: BLE001 - перевірка не має ламати вибір
+        return False
+
+
+
 def normalise(key: str) -> str:
     return get(key).key
 
@@ -194,6 +293,7 @@ def mode_prompt(settings: Any, key: str) -> str:
 
 __all__ = [
     "AGENT", "AgentMode", "CHAT", "CODE", "DEFAULT_MAX_STEPS", "DEFAULT_MODE", "MODES",
-    "PLAN", "TOOLS", "apply", "base_max_steps", "get", "hint_for", "keys",
-    "label_for", "mode_prompt", "normalise", "remember_base_steps",
+    "PLAN", "TOOLS", "apply", "auto_apply", "auto_mode", "base_max_steps", "get",
+    "hint_for", "keys", "label_for", "mode_prompt", "normalise",
+    "remember_base_steps", "safe_mode",
 ]

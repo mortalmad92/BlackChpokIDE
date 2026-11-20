@@ -30,22 +30,22 @@ class StatsBar(tk.Frame):
         self.columnconfigure(1, weight=1)
 
         self.steps_icon = tk.Label(self, text="⟳", bg=self._bg, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8))
+                                   font=theme.font(8))
         self.steps_icon.grid(row=0, column=0, padx=(12, 4), pady=3)
 
         self.steps_label = tk.Label(self, text="0 кроків", bg=self._bg, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), anchor="w")
+                                    font=theme.font(8), anchor="w")
         self.steps_label.grid(row=0, column=1, sticky="w", pady=3)
 
         right = tk.Frame(self, bg=self._bg)
         right.grid(row=0, column=2, sticky="e", padx=(6, 12), pady=3)
 
         self.tokens_label = tk.Label(right, text="", bg=self._bg, fg=theme.FG_FAINT,
-                                     font=("Segoe UI", 8))
+                                     font=theme.font(8))
         self.tokens_label.pack(side="left", padx=(0, 10))
 
         self.cache_label = tk.Label(right, text="", bg=self._bg, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8))
+                                    font=theme.font(8))
         self.cache_label.pack(side="left", padx=(0, 10))
 
         self.gauge = tk.Canvas(right, width=15, height=15, bg=self._bg, bd=0,
@@ -56,7 +56,7 @@ class StatsBar(tk.Frame):
         self.gauge.create_oval(5, 5, 10, 10, outline=theme.BORDER_SOFT, width=1)
 
         self.fill_label = tk.Label(right, text="0%", bg=self._bg, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8), cursor="hand2")
+                                   font=theme.font(8), cursor="hand2")
         self.fill_label.pack(side="left")
 
         # Клік або наведення на індикатор показує розбивку контексту.

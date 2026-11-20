@@ -489,7 +489,7 @@ class BrowserView(tk.Frame):
         name, path = find_browser()
         self.engine_label = tk.Label(
             bar, text=f"🌐 {name or 'немає браузера'}",
-            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8),
         )
         self.engine_label.grid(row=0, column=0, padx=(10, 8), pady=5)
 
@@ -498,7 +498,7 @@ class BrowserView(tk.Frame):
         #    показати сторінку завантаження git чи документацію.
         self.address = tk.Entry(
             bar, bg=theme.BG_INPUT, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
-            relief="flat", font=("Segoe UI", 10), bd=0, highlightthickness=1,
+            relief="flat", font=theme.font(10), bd=0, highlightthickness=1,
             highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT_SOFT,
         )
         self.address.grid(row=0, column=1, sticky="ew", ipady=4, padx=(0, 4))
@@ -512,32 +512,32 @@ class BrowserView(tk.Frame):
                     "сторінка, чи просто слова — тоді шукаю в Google")
 
         self.back_btn = widgets.IconButton(bar, "‹", self.go_back, bg=theme.BG_ALT,
-                                           fg=theme.FG, font=("Segoe UI", 13),
+                                           fg=theme.FG, font=theme.font(13),
                                            tooltip="Назад")
         self.back_btn.grid(row=0, column=2, padx=(0, 2))
 
         self.forward_btn = widgets.IconButton(
             bar, "›", self.go_forward, bg=theme.BG_ALT,
-            fg=theme.FG, font=("Segoe UI", 13), tooltip="Вперед")
+            fg=theme.FG, font=theme.font(13), tooltip="Вперед")
         self.forward_btn.grid(row=0, column=3, padx=(0, 2))
 
         self.go_btn = widgets.IconButton(bar, "→", self.go_from_address, bg=theme.BG_ALT,
-                                         fg=theme.FG, font=("Segoe UI", 11),
+                                         fg=theme.FG, font=theme.font(11),
                                          tooltip="Перейти за адресою")
         self.go_btn.grid(row=0, column=4, padx=(0, 2))
 
         self.reload_btn = widgets.IconButton(bar, "⟳", self.reload, bg=theme.BG_ALT,
-                                             fg=theme.FG, font=("Segoe UI", 12),
+                                             fg=theme.FG, font=theme.font(12),
                                              tooltip="Перезавантажити сторінку")
         self.reload_btn.grid(row=0, column=5, padx=(0, 2))
 
         self.live_btn = widgets.IconButton(bar, "◉", self.toggle_live, bg=theme.BG_ALT,
-                                           fg=theme.SUCCESS, font=("Segoe UI", 11),
+                                           fg=theme.SUCCESS, font=theme.font(11),
                                            tooltip="Живе оновлення при змінах")
         self.live_btn.grid(row=0, column=6, padx=(0, 2))
 
         self.open_btn = widgets.IconButton(bar, "↗", self.open_external, bg=theme.BG_ALT,
-                                           fg=theme.FG, font=("Segoe UI", 11),
+                                           fg=theme.FG, font=theme.font(11),
                                            tooltip="Відкрити в системному браузері (потрібно рідко)")
         self.open_btn.grid(row=0, column=7, padx=(0, 8))
 
@@ -562,7 +562,7 @@ class BrowserView(tk.Frame):
         self.placeholder = tk.Label(
             self.host,
             text="Тут буде сайт проєкту.\n\nНатисни «Запустити сайт» — IDE підніме сервер\nі покаже сторінку прямо у вікні.",
-            bg=theme.BG, fg=theme.FG_FAINT, font=("Segoe UI", 10), justify="center",
+            bg=theme.BG, fg=theme.FG_FAINT, font=theme.font(10), justify="center",
         )
         self.placeholder.place(relx=0.5, rely=0.45, anchor="center")
 

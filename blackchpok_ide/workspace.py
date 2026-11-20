@@ -145,6 +145,72 @@ def write_text_file(path: Path | str, content: str) -> None:
         raise WorkspaceError(f"Не вдалось записати {path.name}: {exc}") from exc
 
 
+# --------------------------------------------------------------------------- #
+# Прийняття та відкат змін
+# --------------------------------------------------------------------------- #
+#
+# ``write_text_file`` перед перезаписом кладе поруч ``<файл>.bak``. Саме ця
+# копія й дає дві дії, яких бракувало панелі «Зміни»:
+#
+# * **відкат** — повернути файл до вмісту копії (скасувати зміну агента);
+# * **прийняти** — прибрати копію, тобто лишити поточний вміст назавжди.
+#
+# Обидві працюють на реальних файлах, а не на «візуальних заглушках»: після
+# відкату панель справді показує інший diff, бо вміст файла вже інший.
+
+
+def backup_path(path: Path | str) -> Path:
+    """Шлях резервної копії для файла (``main.py`` → ``main.py.bak``)."""
+    path = Path(path)
+    return path.with_suffix(path.suffix + ".bak")
+
+
+def has_backup(path: Path | str) -> bool:
+    """Чи є для файла резервна копія попереднього вмісту."""
+    try:
+        return backup_path(path).is_file()
+    except OSError:
+        return False
+
+
+def restore_from_backup(path: Path | str) -> bool:
+    """Повернути файл до вмісту ``.bak``. ``True`` — відкат виконано.
+
+    Копію НЕ видаляємо: користувач може відкотити ще раз або порівняти.
+    Повертає ``False``, якщо копії немає (тоді відкочувати нічого) або
+    запис не вдався — мовчазного «ніби відкотили» тут немає.
+    """
+    path = Path(path)
+    backup = backup_path(path)
+    try:
+        if not backup.is_file():
+            return False
+        data = backup.read_bytes()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return True
+    except OSError as exc:
+        LOG.warning("Відкат %s не вдався: %s", path.name, exc)
+        return False
+
+
+def accept_backup(path: Path | str) -> bool:
+    """Прийняти зміну: прибрати ``.bak``. ``True`` — копію видалено.
+
+    Після цього файл виходить із переліку змін, бо порівнювати його вже
+    немає з чим. Сам вміст не чіпаємо.
+    """
+    backup = backup_path(path)
+    try:
+        if not backup.is_file():
+            return False
+        backup.unlink()
+        return True
+    except OSError as exc:
+        LOG.warning("Копію %s не прибрано: %s", backup.name, exc)
+        return False
+
+
 def walk_text_files(root: Path, *, limit: int = 20_000) -> Iterable[Path]:
     count = 0
     for current, dirs, files in os.walk(root):

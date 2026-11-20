@@ -53,7 +53,7 @@ class ContextPopover(tk.Toplevel):
         breakdown = stats.breakdown if real else context_stats.ContextBreakdown()
 
         tk.Label(body, text="ВИКОРИСТАННЯ КОНТЕКСТУ", bg=theme.BG_CARD,
-                 fg=theme.FG_FAINT, font=("Segoe UI", 8, "bold"),
+                 fg=theme.FG_FAINT, font=theme.font(8, "bold"),
                  anchor="w").grid(row=0, column=0, columnspan=3, sticky="ew",
                                   padx=16, pady=(14, 0))
 
@@ -64,13 +64,13 @@ class ContextPopover(tk.Toplevel):
         self.percent_label = tk.Label(
             head, text=(f"{fill:.0f}% заповнено" if real else "немає даних"),
             bg=theme.BG_CARD, fg=theme.FG_BRIGHT,
-            font=("Segoe UI", 16, "bold"),
+            font=theme.font(16, "bold"),
         )
         self.percent_label.grid(row=0, column=0, sticky="w")
 
         self.total_label = tk.Label(
             head, text=self._total_text() if real else "—",
-            bg=theme.BG_CARD, fg=theme.FG, font=("Segoe UI", 10), anchor="e",
+            bg=theme.BG_CARD, fg=theme.FG, font=theme.font(10), anchor="e",
         )
         self.total_label.grid(row=0, column=1, sticky="e")
 
@@ -98,7 +98,7 @@ class ContextPopover(tk.Toplevel):
             if self.limit:
                 note += " Смуга — частка її вікна."
             tk.Label(body, text=note, bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), anchor="w", wraplength=BAR_WIDTH,
+                     font=theme.font(8), anchor="w", wraplength=BAR_WIDTH,
                      justify="left").grid(
                 row=row_index, column=0, columnspan=3, sticky="ew",
                 padx=16, pady=(8, 14))
@@ -107,7 +107,7 @@ class ContextPopover(tk.Toplevel):
                 body,
                 text="Модель ще не відповіла. Тут з’являться токени з її "
                      "відповіді, а не оцінка навмання.",
-                bg=theme.BG_CARD, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                bg=theme.BG_CARD, fg=theme.FG_FAINT, font=theme.font(8),
                 anchor="w", justify="left", wraplength=BAR_WIDTH,
             ).grid(row=row_index, column=0, columnspan=3, sticky="ew",
                    padx=16, pady=(4, 14))
@@ -115,17 +115,17 @@ class ContextPopover(tk.Toplevel):
     def _part_row(self, body: tk.Frame, row: int, label: str, tokens: int,
                   colour: str) -> None:
         square = tk.Label(body, text="■", bg=theme.BG_CARD, fg=colour,
-                          font=("Segoe UI", 8))
+                          font=theme.font(8))
         square.grid(row=row, column=0, padx=(14, 6), pady=1, sticky="w")
 
         pair_label = tk.Label(
             body, text=label, bg=theme.BG_CARD, fg=theme.FG,
-            font=("Segoe UI", 9), anchor="w",
+            font=theme.font(9), anchor="w",
         )
         pair_label.grid(row=row, column=1, sticky="ew", pady=1)
 
         tk.Label(body, text=self._short_tokens(tokens), bg=theme.BG_CARD, fg=theme.FG_DIM,
-                 font=("Segoe UI", 9), anchor="e").grid(
+                 font=theme.font(9), anchor="e").grid(
             row=row, column=2, sticky="e", padx=(8, 14), pady=1)
 
     def _extra_rows(self, body: tk.Frame, row: int) -> None:
@@ -134,13 +134,13 @@ class ContextPopover(tk.Toplevel):
         if stats.prompt_tokens:
             text = f"Влучання в кеш: {stats.cache_hit_percent:.0f}%"
             tk.Label(body, text=text, bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), anchor="w").grid(
+                     font=theme.font(8), anchor="w").grid(
                 row=row, column=0, columnspan=2, sticky="w", padx=14, pady=(6, 0))
             row += 1
         if stats.step_count:
             text = f"Кроків: {stats.step_count} · {stats.speed_text()} · {stats.elapsed_text}"
             tk.Label(body, text=text, bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), anchor="w").grid(
+                     font=theme.font(8), anchor="w").grid(
                 row=row, column=0, columnspan=3, sticky="w", padx=14, pady=(2, 10))
         else:
             tk.Frame(body, bg=theme.BG_CARD, height=8).grid(row=row, column=0)

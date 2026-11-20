@@ -119,12 +119,12 @@ class TaskCenter(tk.Frame):
 
         self.title_label = tk.Label(
             title_row, text="ЧЕРГА ЗАВДАНЬ ЛОКАЛЬНОГО АГЕНТА",
-            bg=theme.BG_ALT, fg=theme.FG_DIM, font=("Segoe UI", 9, "bold"),
+            bg=theme.BG_ALT, fg=theme.FG_DIM, font=theme.font(9, "bold"),
             anchor="w")
         self.title_label.grid(row=0, column=0, sticky="w")
 
         self.stage_label = tk.Label(title_row, text="", bg=theme.BG_ALT,
-                                    fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                                    fg=theme.FG_FAINT, font=theme.font(8),
                                     anchor="e")
         self.stage_label.grid(row=0, column=1, sticky="e", padx=(theme.SPACE_MD, 0))
 
@@ -138,10 +138,10 @@ class TaskCenter(tk.Frame):
             cell = tk.Frame(counters, bg=theme.BG_ALT)
             cell.pack(side="left", padx=(0, theme.SPACE_XL))
             value = tk.Label(cell, text="0", bg=theme.BG_ALT, fg=theme.FG_BRIGHT,
-                             font=("Segoe UI", 12, "bold"), anchor="w")
+                             font=theme.font(12, "bold"), anchor="w")
             value.pack(side="left")
             tk.Label(cell, text=caption, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), anchor="w").pack(
+                     font=theme.font(8), anchor="w").pack(
                 side="left", padx=(theme.SPACE_XS, 0), pady=(4, 0))
             self.count_labels[key] = value
 
@@ -149,7 +149,7 @@ class TaskCenter(tk.Frame):
         self.add_btn = widgets.HoverLabel(
             counters, text="＋ крок", command=self._add_dialog, bg=theme.BG_ALT,
             fg=theme.FG_DIM, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT,
-            font=("Segoe UI", 8), padx=theme.SPACE_MD, pady=2, anchor="center")
+            font=theme.font(8), padx=theme.SPACE_MD, pady=2, anchor="center")
         self.add_btn.pack(side="right")
         widgets.Tip(self.add_btn, "Додати власний крок у чергу")
 
@@ -187,7 +187,7 @@ class TaskCenter(tk.Frame):
             text=("Черга порожня.\n\n"
                   "Напиши велике завдання в чаті — локальна модель сама\n"
                   "розкладе його на кроки й почне виконувати."),
-            bg=theme.BG, fg=theme.FG_FAINT, font=("Segoe UI", 9),
+            bg=theme.BG, fg=theme.FG_FAINT, font=theme.font(9),
             justify="left", anchor="w")
         self.empty_label.pack(anchor="w", padx=theme.SPACE_LG, pady=theme.SPACE_XL)
 
@@ -210,26 +210,26 @@ class TaskCenter(tk.Frame):
         foot.grid(row=3, column=0, sticky="ew")
         self.footer = foot
 
-        self.pause_btn = widgets.Chip(foot, "⏸ Пауза", self._pause, font=("Segoe UI", 9))
+        self.pause_btn = widgets.Chip(foot, "⏸ Пауза", self._pause, font=theme.font(9))
         self.pause_btn.pack(side="left", padx=(theme.SPACE_LG, theme.SPACE_SM),
                             pady=theme.SPACE_SM)
         self.resume_btn = widgets.Chip(foot, "▶ Продовжити", self._resume,
-                                       font=("Segoe UI", 9))
+                                       font=theme.font(9))
         self.resume_btn.pack(side="left", padx=(0, theme.SPACE_SM),
                              pady=theme.SPACE_SM)
-        self.stop_btn = widgets.Chip(foot, "■ Зупинити", self._stop, font=("Segoe UI", 9))
+        self.stop_btn = widgets.Chip(foot, "■ Зупинити", self._stop, font=theme.font(9))
         self.stop_btn.pack(side="left", padx=(0, theme.SPACE_SM), pady=theme.SPACE_SM)
         self.retry_btn = widgets.Chip(foot, "↻ Повторити", self._retry_selected,
-                                      font=("Segoe UI", 9))
+                                      font=theme.font(9))
         self.retry_btn.pack(side="left", padx=(0, theme.SPACE_SM), pady=theme.SPACE_SM)
-        self.clear_btn = widgets.Chip(foot, "⌫ Очистити", self._clear, font=("Segoe UI", 9))
+        self.clear_btn = widgets.Chip(foot, "⌫ Очистити", self._clear, font=theme.font(9))
         self.clear_btn.pack(side="left", padx=(0, theme.SPACE_SM), pady=theme.SPACE_SM)
-        self.log_btn = widgets.Chip(foot, "☰ Журнал", self._open_log, font=("Segoe UI", 9))
+        self.log_btn = widgets.Chip(foot, "☰ Журнал", self._open_log, font=theme.font(9))
         self.log_btn.pack(side="left", padx=(0, theme.SPACE_SM), pady=theme.SPACE_SM)
 
         self.hint_label = tk.Label(
             foot, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-            font=("Segoe UI", 8), anchor="e")
+            font=theme.font(8), anchor="e")
         self.hint_label.pack(side="right", padx=(theme.SPACE_SM, theme.SPACE_LG))
 
     def _build_details(self) -> None:
@@ -240,7 +240,7 @@ class TaskCenter(tk.Frame):
         head.columnconfigure(0, weight=1)
 
         self.detail_title = tk.Label(head, text="ВИБЕРИ КРОК", bg=theme.BG_ALT,
-                                     fg=theme.FG_FAINT, font=("Segoe UI", 8, "bold"),
+                                     fg=theme.FG_FAINT, font=theme.font(8, "bold"),
                                      anchor="w")
         self.detail_title.grid(row=0, column=0, sticky="w")
 
@@ -336,7 +336,7 @@ class TaskCenter(tk.Frame):
         window.columnconfigure(0, weight=1)
 
         tk.Label(window, text="Що зробити?", bg=theme.BG, fg=theme.FG_DIM,
-                 font=("Segoe UI", 9), anchor="w").grid(
+                 font=theme.font(9), anchor="w").grid(
             row=0, column=0, sticky="ew", padx=theme.SPACE_MD,
             pady=(theme.SPACE_MD, 2))
         entry = tk.Entry(window, bg=theme.BG_INPUT, fg=theme.FG,
@@ -561,14 +561,14 @@ class TaskCenter(tk.Frame):
                         else theme.FG)
         wrap = max(160, min(520, self.list_host.winfo_width() - 120 or 320))
         title = tk.Label(row, text=task.title or task.text[:80], bg=bg,
-                         fg=title_colour, font=("Segoe UI", 9),
+                         fg=title_colour, font=theme.font(9),
                          justify="left", anchor="w", wraplength=wrap)
         title.grid(row=0, column=2, sticky="ew", pady=(theme.SPACE_SM, 0),
                    padx=(0, theme.SPACE_SM))
 
         # Статус — коротким бейджем праворуч.
         badge = tk.Label(row, text=STATUS_BADGES.get(status, status.upper()),
-                         bg=bg, fg=colour, font=("Segoe UI", 7, "bold"), anchor="e")
+                         bg=bg, fg=colour, font=theme.font(7, "bold"), anchor="e")
         badge.grid(row=0, column=3, sticky="ne",
                    padx=(0, theme.SPACE_SM), pady=(theme.SPACE_SM + 2, 0))
 
@@ -578,7 +578,7 @@ class TaskCenter(tk.Frame):
             sub = tk.Label(row, text=subtitle, bg=bg,
                            fg=(theme.ERROR if status == queue_engine.FAILED
                                else theme.FG_FAINT),
-                           font=("Segoe UI", 8), justify="left", anchor="w",
+                           font=theme.font(8), justify="left", anchor="w",
                            wraplength=wrap)
             sub.grid(row=1, column=2, columnspan=2, sticky="ew",
                      padx=(0, theme.SPACE_SM), pady=(1, theme.SPACE_SM))
@@ -651,7 +651,7 @@ class TaskCenter(tk.Frame):
             tk.Label(self.detail_body,
                      text="Клікни крок ліворуч, щоб побачити, що саме\n"
                           "мало бути зроблено і що зробила модель.",
-                     bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                     bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8),
                      justify="left", anchor="w").pack(
                 anchor="w", padx=theme.SPACE_SM, pady=theme.SPACE_SM)
             return
@@ -664,7 +664,7 @@ class TaskCenter(tk.Frame):
 
         def section(text: str) -> None:
             tk.Label(self.detail_body, text=text, bg=theme.BG_ALT,
-                     fg=theme.FG_FAINT, font=("Segoe UI", 7, "bold"),
+                     fg=theme.FG_FAINT, font=theme.font(7, "bold"),
                      anchor="w").pack(fill="x", padx=theme.SPACE_SM,
                                       pady=(theme.SPACE_SM, 1))
 
@@ -672,7 +672,7 @@ class TaskCenter(tk.Frame):
             if not text:
                 return
             tk.Label(self.detail_body, text=text, bg=theme.BG_ALT, fg=colour,
-                     font=("Segoe UI", 8), justify="left", anchor="w",
+                     font=theme.font(8), justify="left", anchor="w",
                      wraplength=wrap).pack(fill="x", padx=theme.SPACE_SM, pady=(0, 2))
 
         section("ЩО ПОТРІБНО БУЛО ЗРОБИТИ")
@@ -742,7 +742,7 @@ class TaskCenter(tk.Frame):
                 row = tk.Frame(self.detail_body, bg=theme.BG_ALT, cursor="hand2")
                 row.pack(fill="x", padx=theme.SPACE_SM)
                 label = tk.Label(row, text=f"› {name}", bg=theme.BG_ALT,
-                                 fg=theme.ACCENT, font=("Segoe UI", 8), anchor="w")
+                                 fg=theme.ACCENT, font=theme.font(8), anchor="w")
                 label.pack(side="left")
                 for widget in (row, label):
                     widget.bind("<Button-1>",

@@ -296,19 +296,19 @@ class CasesPanel(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         tk.Label(head, text="СПРАВИ", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w")
+                 font=theme.font(8, "bold")).grid(row=0, column=0, sticky="w")
         self.count_label = tk.Label(head, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 8), anchor="e")
+                                    font=theme.font(8), anchor="e")
         self.count_label.grid(row=0, column=1, sticky="e")
 
         clear = widgets.IconButton(head, "⌫", self._clear_done, bg=theme.BG_ALT,
-                                   fg=theme.FG_FAINT, font=("Segoe UI", 9),
+                                   fg=theme.FG_FAINT, font=theme.font(9),
                                    tooltip="Прибрати завершені справи")
         clear.grid(row=0, column=2, padx=(6, 0))
 
         self.hint = tk.Label(
             self, text="Тут видно, що агент робить просто зараз — крок за кроком.",
-            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8),
             justify="left", wraplength=210,
         )
         self.hint.grid(row=1, column=0, sticky="ew", padx=(12, 8), pady=(0, 6))
@@ -319,7 +319,7 @@ class CasesPanel(tk.Frame):
 
         self.empty = tk.Label(
             self.host, text="Справ ще немає.\nНапиши задачу в чаті — вона з'явиться тут.",
-            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 9), justify="left",
+            bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(9), justify="left",
         )
         self.empty.pack(anchor="w", padx=6, pady=10)
 
@@ -406,7 +406,7 @@ class CasesPanel(tk.Frame):
 
         expanded = case.id in self._expanded
         head_text = case.short_title()
-        header = tk.Label(row, text=head_text, bg=bg, fg=colour, font=("Segoe UI", 9),
+        header = tk.Label(row, text=head_text, bg=bg, fg=colour, font=theme.font(9),
                           justify="left", anchor="w", wraplength=210)
         header.grid(row=0, column=1, sticky="ew", pady=(6, 0), padx=(0, 4))
 
@@ -416,11 +416,11 @@ class CasesPanel(tk.Frame):
         if case.steps:
             meta_bits.append(plural_steps(len(case.steps)))
         meta = tk.Label(row, text=" · ".join(meta_bits), bg=bg, fg=theme.FG_FAINT,
-                        font=("Segoe UI", 8), anchor="w")
+                        font=theme.font(8), anchor="w")
         meta.grid(row=1, column=1, sticky="ew", padx=(0, 4), pady=(0, 6))
 
         arrow = tk.Label(row, text="▾" if expanded else "▸", bg=bg, fg=theme.FG_FAINT,
-                         font=("Segoe UI", 8), cursor="hand2")
+                         font=theme.font(8), cursor="hand2")
         arrow.grid(row=0, column=2, padx=(0, 8), pady=(7, 0), sticky="ne")
 
         for widget in (header, meta, arrow, row):
@@ -458,7 +458,7 @@ class CasesPanel(tk.Frame):
         text = step.text
         if step.status in {DONE, FAILED} and step.elapsed_text:
             text = f"{text}  ·  {step.elapsed_text}"
-        label = tk.Label(host, text=text, bg=bg, fg=colour, font=("Segoe UI", 8),
+        label = tk.Label(host, text=text, bg=bg, fg=colour, font=theme.font(8),
                          justify="left", anchor="w", wraplength=190)
         label.grid(row=index, column=1, sticky="ew", pady=2)
 

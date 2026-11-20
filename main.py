@@ -253,6 +253,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.selftest:
         return run_selftest()
 
+    # DPI-обізнаність МУСИТЬ бути оголошена до створення tk.Tk(): інакше
+    # Windows розтягує намальоване вікно як картинку і при 125/150 %
+    # весь текст стає розмитим.
+    from blackchpok_ide import hidpi
+
+    hidpi.enable()
+
     from blackchpok_ide import run
 
     return run(args.workspace)

@@ -49,7 +49,7 @@ class CommandMenu(tk.Toplevel):
         self.rows_host.grid(row=0, column=0, columnspan=3, sticky="nsew")
         self.rows_host.columnconfigure(0, weight=1)
         self.header = tk.Label(self.body, text="", bg=theme.BG_INPUT, fg=theme.FG_FAINT,
-                               font=("Segoe UI", 8), anchor="w")
+                               font=theme.font(8), anchor="w")
         self.header.grid(row=1, column=0, columnspan=3, sticky="ew", padx=10, pady=(2, 6))
 
     # ── наповнення ─────────────────────────────────────────────────────────
@@ -96,15 +96,15 @@ class CommandMenu(tk.Toplevel):
         row.columnconfigure(1, weight=1)
 
         icon_label = tk.Label(row, text=icon, bg=theme.BG_INPUT, fg=theme.FG_DIM,
-                              font=("Segoe UI", 9), width=2)
+                              font=theme.font(9), width=2)
         icon_label.grid(row=0, column=0, padx=(6, 4), pady=3)
 
         name_label = tk.Label(row, text=label, bg=theme.BG_INPUT, fg=theme.FG,
-                              font=("Segoe UI", 9), anchor="w")
+                              font=theme.font(9), anchor="w")
         name_label.grid(row=0, column=1, sticky="ew", pady=3)
 
         hint_label = tk.Label(row, text=hint, bg=theme.BG_INPUT, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 8), anchor="e")
+                              font=theme.font(8), anchor="e")
         hint_label.grid(row=0, column=2, sticky="e", padx=(8, 8), pady=3)
 
         for widget in (row, icon_label, name_label, hint_label):

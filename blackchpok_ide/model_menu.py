@@ -48,7 +48,7 @@ class ModelMenu(tk.Toplevel):
         self.rows_host.grid(row=0, column=0, sticky="nsew")
         self.rows_host.columnconfigure(0, weight=1)
         self.header = tk.Label(self.body, text="", bg=theme.BG_CARD,
-                               fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w")
+                               fg=theme.FG_FAINT, font=theme.font(8), anchor="w")
         self.header.grid(row=1, column=0, sticky="ew", padx=12, pady=(4, 8))
         self._tip_rows: list[tuple[tk.Label, str, str]] = []
         self._anchor: Optional[tk.Misc] = None
@@ -136,15 +136,15 @@ class ModelMenu(tk.Toplevel):
         row.columnconfigure(0, weight=1)
 
         name = tk.Label(row, text=title, bg=theme.BG_CARD, fg=theme.FG,
-                        font=("Segoe UI", 9, "bold"), anchor="w")
+                        font=theme.font(9, "bold"), anchor="w")
         name.grid(row=0, column=0, sticky="w", padx=(8, 6), pady=6)
 
         value_label = tk.Label(row, text=value, bg=theme.BG_CARD, fg=theme.FG_DIM,
-                               font=("Segoe UI", 9), anchor="e")
+                               font=theme.font(9), anchor="e")
         value_label.grid(row=0, column=1, sticky="e", padx=(0, 6))
 
         mark_label = tk.Label(row, text=mark, bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 9), width=2)
+                              font=theme.font(9), width=2)
         mark_label.grid(row=0, column=2, sticky="e", padx=(0, 6))
 
         labels = (name, value_label, mark_label)

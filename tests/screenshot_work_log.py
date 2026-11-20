@@ -98,7 +98,14 @@ def main() -> int:
                                    "arguments": "query=tmpw6_"}))
     chat._handle_event(AgentEvent("tool_result", "2 збіги у tests/test_model_hub.py",
                                   {"call_id": "s3", "name": "search_text", "ok": True}))
-    pump(app, 2.2)
+    pump(app, 1.2)
+
+    # ── Готовий вигляд: журнал має згорнутись у рядок-підсумок ────────────
+    chat._handle_event(AgentEvent("assistant",
+                                  "Готово: підняв прогін, знайшов причину й виправив падіння.",
+                                  {"final": True}))
+    chat._handle_event(AgentEvent("done", "", {"ok": True}))
+    pump(app, 1.6)
 
     app.deiconify()
     app.lift()

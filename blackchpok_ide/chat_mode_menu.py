@@ -100,15 +100,15 @@ class ChatModeMenu(tk.Toplevel):
         context.columnconfigure(1, weight=1)
 
         tk.Label(context, text="◎", bg=theme.BG_ELEVATED, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+                 font=theme.font(9)).grid(row=0, column=0, sticky="w")
         tk.Label(context, text=self.chat_title or "Новий чат",
-                 bg=theme.BG_ELEVATED, fg=theme.FG_DIM, font=("Segoe UI", 8),
+                 bg=theme.BG_ELEVATED, fg=theme.FG_DIM, font=theme.font(8),
                  anchor="w").grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         self.project_label = widgets.HoverLabel(
             context, text=self._project_text(), command=self._pick_project,
             bg=theme.BG_ELEVATED, fg=theme.FG_FAINT, hover_bg=theme.BG_HOVER,
-            hover_fg=theme.FG_BRIGHT, font=("Segoe UI", 8), padx=0, pady=0,
+            hover_fg=theme.FG_BRIGHT, font=theme.font(8), padx=0, pady=0,
             anchor="w")
         self.project_label.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(2, 0))
         widgets.Tip(self.project_label, "Тека проєкту: режим і черга працюють лише в ній")
@@ -137,20 +137,20 @@ class ChatModeMenu(tk.Toplevel):
 
         icon_label = tk.Label(row, text=icon, bg=bg,
                               fg=theme.SUCCESS if accent else theme.FG_DIM,
-                              font=("Segoe UI", 12), width=2, anchor="center")
+                              font=theme.font(12), width=2, anchor="center")
         icon_label.grid(row=0, column=0, rowspan=2, padx=(8, 4), pady=6)
 
         title_label = tk.Label(row, text=title, bg=bg,
                                fg=theme.FG_BRIGHT if accent else theme.FG,
-                               font=("Segoe UI", 9, "bold"), anchor="w")
+                               font=theme.font(9, "bold"), anchor="w")
         title_label.grid(row=0, column=1, sticky="ew", pady=(6, 0))
 
         note_label = tk.Label(row, text=note, bg=bg, fg=theme.FG_FAINT,
-                              font=("Segoe UI", 8), anchor="w")
+                              font=theme.font(8), anchor="w")
         note_label.grid(row=1, column=1, sticky="ew", pady=(0, 6))
 
         arrow = tk.Label(row, text="›", bg=bg, fg=theme.FG_FAINT,
-                         font=("Segoe UI", 11))
+                         font=theme.font(11))
         arrow.grid(row=0, column=2, rowspan=2, padx=(4, 10))
 
         self._rows.append(row)

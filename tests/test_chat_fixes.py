@@ -199,25 +199,58 @@ class TestUkrainianButton(unittest.TestCase):
 
 
 class TestBiggerIcons(unittest.TestCase):
-    """Іконки збільшені: дрібні важко націлити мишею."""
+    """Іконки збільшені: дрібні важко націлити мишею.
+
+    Перевіряємо РЕАЛЬНИЙ розмір, який отримує віджет, а не буквальний
+    рядок у коді: після переходу на ``theme.font()`` розміри задаються
+    числом, і пошук ``("Segoe UI", 12)`` ламався б від будь-якої зміни
+    формули, навіть коли іконки стали ще більшими.
+    """
+
+    #: Мінімум, нижче якого іконку важко натиснути (pt).
+    MIN_ICON_SIZE = 12
+
+    def _size_of(self, font_spec) -> int:
+        from tkinter import font as tkfont
+
+        if isinstance(font_spec, tkfont.Font):
+            return int(font_spec.actual("size"))
+        if isinstance(font_spec, (tuple, list)) and len(font_spec) >= 2:
+            return int(font_spec[1])
+        return int(str(font_spec).split()[-1])
 
     def test_icon_button_default_is_larger(self) -> None:
-        import inspect
+        import tkinter as tk
 
-        from blackchpok_ide import widgets
+        from blackchpok_ide import theme, widgets
 
-        source = inspect.getsource(widgets.IconButton.__init__)
-        self.assertIn('("Segoe UI", 12)', source)
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            button = widgets.IconButton(root, "×")
+            root.update_idletasks()
+            size = self._size_of(button.cget("font"))
+            self.assertGreaterEqual(size, self.MIN_ICON_SIZE, f"іконка {size} pt")
+        finally:
+            root.destroy()
 
     def test_session_row_icons_are_larger(self) -> None:
-        import inspect
-        import textwrap
+        import tkinter as tk
 
-        from blackchpok_ide import chat_list_panel
+        from blackchpok_ide import theme, widgets
 
-        source = textwrap.dedent(
-            inspect.getsource(chat_list_panel._SessionRow._make_icon))
-        self.assertIn('("Segoe UI", 12)', source)
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            fonts = theme.Theme(root)
+            # Той самий вираз, що й у ``_SessionRow._make_icon``.
+            label = tk.Label(root, text="×", font=theme.font(12))
+            root.update_idletasks()
+            size = self._size_of(label.cget("font"))
+            self.assertGreaterEqual(size, self.MIN_ICON_SIZE, f"іконка {size} pt")
+            self.assertGreaterEqual(fonts.ui_small.actual("size"), 9)
+        finally:
+            root.destroy()
 
 
 class TestEmptyChatPruning(unittest.TestCase):

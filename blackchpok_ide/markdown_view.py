@@ -466,12 +466,16 @@ class MarkdownRenderer:
         """Створює/оновлює всі теги на віджеті. Безпечно викликати повторно."""
         palette = self.palette
         widget = self.text
-        chat = getattr(self.fonts, "chat", None)
+        # Тіло відповіді — ``chat_body`` (на пункт більше за інтерфейс): це
+        # головний текст, який читають годинами. Раніше тут стояв ``chat``,
+        # і ``chat_body`` ніде не використовувався — тобто намір «зробити
+        # відповідь більшою» існував лише в назві змінної.
+        chat = getattr(self.fonts, "chat_body", None) or getattr(self.fonts, "chat", None)
         chat_code = getattr(self.fonts, "chat_code", None)
         ui_bold = getattr(self.fonts, "ui_bold", None)
         ui_small = getattr(self.fonts, "ui_small", None)
 
-        widget.tag_configure("md_text", foreground=palette.fg, font=chat, spacing1=2, spacing3=2)
+        widget.tag_configure("md_text", foreground=palette.fg, font=chat, spacing1=3, spacing3=3)
         widget.tag_configure("md_bold", foreground=palette.fg_bright, font=ui_bold)
         widget.tag_configure("md_italic", foreground=palette.fg, font=self._font(chat, slant="italic"))
         widget.tag_configure(

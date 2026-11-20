@@ -100,7 +100,7 @@ class FirstRunWizard(tk.Toplevel):
         self._step_labels: dict[str, tk.Label] = {}
         for index, (key, label) in enumerate(STEPS):
             chip = tk.Label(self.step_bar, text=f"{index + 1}. {label}", bg=theme.BG_ALT,
-                            fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                            fg=theme.FG_FAINT, font=theme.font(8),
                             padx=10, pady=4, cursor="hand2")
             chip.pack(side="left", padx=(0, 4))
             chip.bind("<Button-1>", lambda _e, k=key: self.show_step(k))
@@ -498,7 +498,7 @@ class FirstRunWizard(tk.Toplevel):
             child.destroy()
         if not rows:
             tk.Label(host, text="Перевіряю…", bg=theme.BG, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 9), anchor="w").pack(fill="x", padx=6, pady=6)
+                     font=theme.font(9), anchor="w").pack(fill="x", padx=6, pady=6)
             return
         for item in rows:
             row = tk.Frame(host, bg=theme.BG_CARD, highlightthickness=1,
@@ -513,21 +513,21 @@ class FirstRunWizard(tk.Toplevel):
             else:
                 mark, colour = "○", theme.WARN
             tk.Label(row, text=mark, bg=theme.BG_CARD, fg=colour,
-                     font=("Segoe UI", 10)).grid(row=0, column=0, rowspan=2,
+                     font=theme.font(10)).grid(row=0, column=0, rowspan=2,
                                                  padx=(8, 6), pady=4, sticky="n")
             tk.Label(row, text=item.label, bg=theme.BG_CARD, fg=theme.FG,
-                     font=("Segoe UI", 9, "bold"), anchor="w").grid(
+                     font=theme.font(9, "bold"), anchor="w").grid(
                 row=0, column=1, sticky="w", pady=(6, 0))
             detail = item.purpose
             if item.detail:
                 detail += f" · {item.detail}"
             tk.Label(row, text=detail, bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                     font=("Segoe UI", 8), anchor="w", justify="left",
+                     font=theme.font(8), anchor="w", justify="left",
                      wraplength=380).grid(row=1, column=1, sticky="w", pady=(0, 6))
             if item.actionable:
                 widgets.Chip(row, "Встановити" if item.install_kind else "Сторінка",
                              lambda i=item: self._install_one(i),
-                             font=("Segoe UI", 8)).grid(row=0, column=2, rowspan=2,
+                             font=theme.font(8)).grid(row=0, column=2, rowspan=2,
                                                         padx=(0, 6))
 
     def _install_one(self, item: env.ItemState) -> None:

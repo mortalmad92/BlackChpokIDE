@@ -82,21 +82,21 @@ class McpPanel(tk.Frame):
         head.columnconfigure(1, weight=1)
 
         tk.Label(head, text="MCP-СЕРВЕРИ", bg=theme.BG, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w")
+                 font=theme.font(8, "bold")).grid(row=0, column=0, sticky="w")
         self.summary = tk.Label(head, text="не підключено", bg=theme.BG, fg=theme.FG_FAINT,
-                                font=("Segoe UI", 8), anchor="e")
+                                font=theme.font(8), anchor="e")
         self.summary.grid(row=0, column=1, sticky="e", padx=(6, 0))
 
         actions = tk.Frame(self, bg=theme.BG)
         actions.grid(row=1, column=0, sticky="ew", padx=(8, 4), pady=(2, 4))
-        widgets.Chip(actions, "⟳ Перезапустити", self.restart, font=("Segoe UI", 8)).pack(
+        widgets.Chip(actions, "⟳ Перезапустити", self.restart, font=theme.font(8)).pack(
             side="left", padx=(0, 4))
         widgets.Chip(actions, "＋ З конфігурації", self.load_from_workspace,
-                     font=("Segoe UI", 8)).pack(side="left", padx=(0, 4))
+                     font=theme.font(8)).pack(side="left", padx=(0, 4))
         # Діагностика наглядача: до цього ``Watcher.diagnostics()`` був
         # недосяжний із інтерфейсу — код існував, а побачити його було ніде.
         widgets.Chip(actions, "🩺 Діагностика", self.show_diagnostics,
-                     font=("Segoe UI", 8)).pack(side="left")
+                     font=theme.font(8)).pack(side="left")
 
         self.scroll = widgets.ScrollFrame(self, bg=theme.BG)
         self.scroll.grid(row=2, column=0, sticky="nsew", padx=(8, 4), pady=(0, 8))
@@ -164,13 +164,13 @@ class McpPanel(tk.Frame):
         for child in self.host.winfo_children():
             child.destroy()
         tk.Label(self.host, text="ДІАГНОСТИКА НАГЛЯДАЧА", bg=theme.BG,
-                 fg=theme.FG_BRIGHT, font=("Segoe UI", 9, "bold"),
+                 fg=theme.FG_BRIGHT, font=theme.font(9, "bold"),
                  anchor="w").pack(fill="x", padx=6, pady=(8, 4))
         tk.Label(self.host, text=text, bg=theme.BG, fg=theme.FG_DIM,
                  font=self.fonts.mono_small, anchor="w", justify="left",
                  wraplength=430).pack(fill="x", padx=6, pady=(0, 10))
         widgets.Chip(self.host, "← Назад до серверів", self.refresh,
-                     font=("Segoe UI", 8)).pack(anchor="w", padx=6, pady=(0, 10))
+                     font=theme.font(8)).pack(anchor="w", padx=6, pady=(0, 10))
 
     def _schedule_drain(self) -> None:
         """Головний потік: перевірити чергу результатів."""
@@ -225,7 +225,7 @@ class McpPanel(tk.Frame):
             tk.Label(self.host, text="MCP-сервери не підключені.\n"
                                      "Додай .mcp.json у теку проєкту або натисни "
                                      "«З конфігурації».",
-                     bg=theme.BG, fg=theme.FG_FAINT, font=("Segoe UI", 9), justify="left",
+                     bg=theme.BG, fg=theme.FG_FAINT, font=theme.font(9), justify="left",
                      anchor="w").pack(fill="x", padx=6, pady=10)
             return
 
@@ -240,14 +240,14 @@ class McpPanel(tk.Frame):
         card.columnconfigure(1, weight=1)
 
         dot = tk.Label(card, text="●", bg=theme.BG_CARD, fg=theme.SUCCESS if ok else theme.ERROR,
-                       font=("Segoe UI", 9))
+                       font=theme.font(9))
         dot.grid(row=0, column=0, padx=(8, 6), pady=(6, 0), sticky="n")
 
         tk.Label(card, text=name, bg=theme.BG_CARD, fg=theme.FG_BRIGHT,
-                 font=("Segoe UI", 9, "bold"), anchor="w").grid(
+                 font=theme.font(9, "bold"), anchor="w").grid(
             row=0, column=1, sticky="ew", pady=(6, 0))
 
-        tk.Label(card, text=state, bg=theme.BG_CARD, fg=theme.FG_DIM, font=("Segoe UI", 8),
+        tk.Label(card, text=state, bg=theme.BG_CARD, fg=theme.FG_DIM, font=theme.font(8),
                  anchor="w", justify="left", wraplength=420).grid(
             row=1, column=1, sticky="ew", pady=(0, 6), padx=(0, 6))
 

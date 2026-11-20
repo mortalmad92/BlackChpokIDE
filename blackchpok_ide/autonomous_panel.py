@@ -109,9 +109,9 @@ class AutonomousPanel(tk.Frame):
         head.grid(row=0, column=0, sticky="ew", padx=(12, 10), pady=(10, 2))
         head.columnconfigure(0, weight=1)
         tk.Label(head, text="АВТОНОМНИЙ РЕЖИМ", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 8, "bold"), anchor="w").grid(row=0, column=0, sticky="w")
+                 font=theme.font(8, "bold"), anchor="w").grid(row=0, column=0, sticky="w")
         self.state_label = tk.Label(head, text=STATE_OFF, bg=theme.BG_ALT,
-                                    fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="e")
+                                    fg=theme.FG_FAINT, font=theme.font(8), anchor="e")
         self.state_label.grid(row=0, column=1, sticky="e")
 
         # ── картка стану: проєкт, «зараз», кнопки
@@ -125,24 +125,24 @@ class AutonomousPanel(tk.Frame):
         project_row.columnconfigure(0, weight=1)
         self.project_label = tk.Label(project_row, text="проєкт не обрано",
                                       bg=theme.BG_CARD, fg=theme.FG_DIM,
-                                      font=("Segoe UI", 9), anchor="w")
+                                      font=theme.font(9), anchor="w")
         self.project_label.grid(row=0, column=0, sticky="w")
         self.pick_btn = widgets.IconButton(project_row, "🗂", self._pick_project,
                                            bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                                           font=("Segoe UI", 9),
+                                           font=theme.font(9),
                                            tooltip="Обрати теку проєкту для автономного режиму")
         self.pick_btn.grid(row=0, column=1, sticky="e")
 
         self.focus_label = tk.Label(body, text="Режим вимкнено", bg=theme.BG_CARD,
-                                    fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                                    fg=theme.FG_FAINT, font=theme.font(8),
                                     anchor="w", justify="left", wraplength=self._wrap())
         self.focus_label.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
 
         buttons = tk.Frame(body, bg=theme.BG_CARD)
         buttons.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-        self.start_btn = widgets.Chip(buttons, "▶ Старт", self._start, font=("Segoe UI", 9))
+        self.start_btn = widgets.Chip(buttons, "▶ Старт", self._start, font=theme.font(9))
         self.start_btn.pack(side="left", padx=(0, 4))
-        self.stop_btn = widgets.Chip(buttons, "■ Зупинити", self._stop, font=("Segoe UI", 9))
+        self.stop_btn = widgets.Chip(buttons, "■ Зупинити", self._stop, font=theme.font(9))
         self.stop_btn.pack(side="left")
 
         # ── прокручувана стрічка секцій
@@ -154,7 +154,7 @@ class AutonomousPanel(tk.Frame):
         # План
         self._section_head(host, 0, "ПЛАН")
         self.plan_count = tk.Label(host, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 7), anchor="e")
+                                   font=theme.font(7), anchor="e")
         self.plan_count.grid(row=0, column=1, sticky="e", padx=(0, 8))
         self.plan_host = tk.Frame(host, bg=theme.BG_ALT)
         self.plan_host.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(4, 4), pady=(0, 6))
@@ -162,7 +162,7 @@ class AutonomousPanel(tk.Frame):
         # Черга задач
         self._section_head(host, 2, "ЧЕРГА ЗАВДАЧ")
         self.queue_count = tk.Label(host, text="", bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                                    font=("Segoe UI", 7), anchor="e")
+                                    font=theme.font(7), anchor="e")
         self.queue_count.grid(row=2, column=1, sticky="e", padx=(0, 8))
         self.queue_host = tk.Frame(host, bg=theme.BG_ALT)
         self.queue_host.grid(row=3, column=0, columnspan=2, sticky="ew", padx=(2, 2), pady=(0, 6))
@@ -170,7 +170,7 @@ class AutonomousPanel(tk.Frame):
         # Журнал дій
         log_head = self._section_head(host, 4, "ЖУРНАЛ ДІЙ")
         widgets.IconButton(log_head, "✕", self._clear_log, bg=theme.BG_ALT,
-                           fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                           fg=theme.FG_FAINT, font=theme.font(8),
                            tooltip="Очистити журнал").grid(row=0, column=2, sticky="e",
                                                           padx=(0, 6))
         self.log_host = tk.Frame(host, bg=theme.BG_ALT)
@@ -182,7 +182,7 @@ class AutonomousPanel(tk.Frame):
         add_row.columnconfigure(0, weight=1)
         self.task_entry = tk.Entry(
             add_row, bg=theme.BG_INPUT, fg=theme.FG, insertbackground=theme.FG_BRIGHT,
-            relief="flat", font=("Segoe UI", 9), bd=0, highlightthickness=1,
+            relief="flat", font=theme.font(9), bd=0, highlightthickness=1,
             highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT_SOFT,
         )
         self.task_entry.grid(row=0, column=0, sticky="ew", ipady=5)
@@ -190,7 +190,7 @@ class AutonomousPanel(tk.Frame):
         widgets.Tip(self.task_entry,
                     "Своя задача в автономну чергу. Пріоритет вищий за задачі агента.")
         widgets.IconButton(add_row, "＋", self._add_task, bg=theme.BG_INPUT,
-                           fg=theme.FG_DIM, font=("Segoe UI", 10),
+                           fg=theme.FG_DIM, font=theme.font(10),
                            tooltip="Додати задачу (Enter)").grid(row=0, column=1, padx=(4, 0))
 
     def _wrap(self) -> int:
@@ -208,7 +208,7 @@ class AutonomousPanel(tk.Frame):
         head.grid(row=row, column=0, columnspan=2, sticky="ew", padx=(12, 4), pady=(4, 2))
         head.columnconfigure(0, weight=1)
         tk.Label(head, text=text, bg=theme.BG_ALT, fg=theme.FG_FAINT,
-                 font=("Segoe UI", 7, "bold"), anchor="w").grid(row=0, column=0, sticky="w")
+                 font=theme.font(7, "bold"), anchor="w").grid(row=0, column=0, sticky="w")
         return head
 
     # ── дії ────────────────────────────────────────────────────────────────
@@ -324,7 +324,7 @@ class AutonomousPanel(tk.Frame):
             pass
         if not rows:
             label = tk.Label(self.plan_host, text="Плану ще немає — він з'явиться після старту.",
-                             bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                             bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8),
                              justify="left", anchor="w", wraplength=self._wrap())
             label.pack(anchor="w", fill="x", padx=6, pady=4)
             self._plan_widgets.append(label)
@@ -340,9 +340,9 @@ class AutonomousPanel(tk.Frame):
             row = tk.Frame(self.plan_host, bg=theme.BG_ALT)
             row.pack(fill="x", padx=2, pady=(0, 2))
             tk.Label(row, text=mark, bg=theme.BG_ALT, fg=colour,
-                     font=("Segoe UI", 8)).pack(side="left", padx=(2, 4), anchor="n")
+                     font=theme.font(8)).pack(side="left", padx=(2, 4), anchor="n")
             tk.Label(row, text=f"{icon} {text}", bg=theme.BG_ALT, fg=colour,
-                     font=("Segoe UI", 8), justify="left", anchor="w",
+                     font=theme.font(8), justify="left", anchor="w",
                      wraplength=max(110, self._wrap() - 24)).pack(side="left", fill="x",
                                                                  expand=True)
             self._plan_widgets.append(row)
@@ -363,7 +363,7 @@ class AutonomousPanel(tk.Frame):
         if not tasks:
             label = tk.Label(self.queue_host,
                              text="Черга порожня. Агент сам додасть задачі, коли знайде покращення.",
-                             bg=theme.BG_ALT, fg=theme.FG_FAINT, font=("Segoe UI", 8),
+                             bg=theme.BG_ALT, fg=theme.FG_FAINT, font=theme.font(8),
                              justify="left", anchor="w", wraplength=self._wrap())
             label.pack(anchor="w", fill="x", padx=6, pady=4)
             self._task_widgets.append(label)
@@ -377,10 +377,10 @@ class AutonomousPanel(tk.Frame):
             mark = "●" if user else "○"
             colour = theme.ACCENT if user else theme.FG_DIM
             tk.Label(row, text=mark, bg=theme.BG_CARD, fg=colour,
-                     font=("Segoe UI", 9)).grid(row=0, column=0, padx=(6, 4),
+                     font=theme.font(9)).grid(row=0, column=0, padx=(6, 4),
                                                 pady=(4, 0), sticky="n")
             text = task.text if len(task.text) <= 110 else task.text[:107] + "…"
-            tk.Label(row, text=text, bg=theme.BG_CARD, fg=theme.FG, font=("Segoe UI", 8),
+            tk.Label(row, text=text, bg=theme.BG_CARD, fg=theme.FG, font=theme.font(8),
                      justify="left", anchor="w",
                      wraplength=max(110, self._wrap() - 40)).grid(
                 row=0, column=1, sticky="ew", pady=(4, 0), padx=(0, 4))
@@ -389,14 +389,14 @@ class AutonomousPanel(tk.Frame):
                 badge += f" · {task.file_hint}"
             tk.Label(row, text=badge, bg=theme.BG_CARD,
                      fg=theme.ACCENT if user else theme.FG_FAINT,
-                     font=("Segoe UI", 7), anchor="w",
+                     font=theme.font(7), anchor="w",
                      wraplength=max(110, self._wrap() - 40), justify="left").grid(
                 row=1, column=1, sticky="w", pady=(0, 4), padx=(0, 4))
             # Зняти задачу з черги (не для активної — її можна лише зупинити).
             if task.status == "очікує":
                 widgets.IconButton(row, "×", lambda t=task: self._drop_task(t),
                                    bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                                   font=("Segoe UI", 8),
+                                   font=theme.font(8),
                                    tooltip="Прибрати задачу з черги").grid(
                     row=0, column=2, rowspan=2, padx=(0, 2))
             self._task_widgets.append(row)
@@ -414,7 +414,7 @@ class AutonomousPanel(tk.Frame):
         entries = self.engine.recent_log(limit=80)
         if not entries:
             label = tk.Label(self.log_host, text="Журнал порожній.", bg=theme.BG_ALT,
-                             fg=theme.FG_FAINT, font=("Segoe UI", 8), anchor="w")
+                             fg=theme.FG_FAINT, font=theme.font(8), anchor="w")
             label.pack(anchor="w", fill="x", padx=6, pady=4)
             self._log_widgets.append(label)
             return
@@ -429,7 +429,7 @@ class AutonomousPanel(tk.Frame):
             row.pack(fill="x", padx=2, pady=(0, 1))
             tk.Label(row, text=entry.clock, bg=theme.BG_ALT, fg=theme.FG_FAINT,
                      font=("Consolas", 7)).pack(side="left", padx=(2, 6), anchor="n")
-            tk.Label(row, text=entry.text, bg=theme.BG_ALT, fg=colour, font=("Segoe UI", 8),
+            tk.Label(row, text=entry.text, bg=theme.BG_ALT, fg=colour, font=theme.font(8),
                      justify="left", anchor="w",
                      wraplength=max(100, self._wrap() - 34)).pack(side="left", fill="x",
                                                                  expand=True)

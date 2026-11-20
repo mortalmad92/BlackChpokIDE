@@ -493,6 +493,30 @@ def _as_tool_calls(candidate: Any, names: set[str]) -> list[dict[str, Any]]:
     }]
 
 
+def image_mime(path: Path) -> str:
+    """MIME-тип зображення за розширенням.
+
+    Навіщо окрема функція. Раніше тут стояло одне правило:
+
+        ``"image/png" if path.suffix.lower() == ".png" else "image/jpeg"``
+
+    Тобто ``.webp``, ``.bmp`` і ``.gif`` оголошувались як JPEG. Сервер
+    отримував заголовок ``data:image/jpeg;base64,`` з байтами WebP — і
+    відповідав помилкою 400 «invalid image» або, гірше, мовчки не бачив
+    зображення. Прикріпити скриншот у WebP було неможливо, хоч інтерфейс
+    його приймав (``ChatPanel.IMAGE_SUFFIXES``).
+    """
+    suffix = path.suffix.lower()
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".gif": "image/gif",
+    }.get(suffix, "image/png")
+
+
 def image_message(text: str, images: Iterable[str | Path],
                   *, limit_mb: float = 8.0) -> dict[str, Any]:
     """Повідомлення з текстом і ЗОБРАЖЕННЯМИ (формат OpenAI vision).
@@ -522,7 +546,7 @@ def image_message(text: str, images: Iterable[str | Path],
         if not raw:
             continue
         payload = raw
-        mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        mime = image_mime(path)
         size_mb = len(raw) / (1024 ** 2)
         if size_mb > limit_mb:
             seen_png = _shrink_png(path, raw, limit_mb)
@@ -841,6 +865,7 @@ class LLMClient:
         max_tokens: int = 2048,
         timeout: int = 300,
         reasoning_effort: str = "",
+        on_retry: Callable[[int, int, float, str], None] | None = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.model = model
@@ -849,10 +874,26 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.reasoning_effort = (reasoning_effort or "").strip().lower()
+        #: Зворотний виклик на КОЖНУ повторну спробу: ``(спроба, всього,
+        #: пауза, причина)``. Потрібен, щоб інтерфейс показав «Повторний
+        #: запит моделі (1/5) · 2 с» замість мовчазного очікування: без
+        #: цього людина бачила «агент працює» і не знала, що запит узагалі
+        #: не дійшов до моделі.
+        self.on_retry = on_retry
         # Протокол визначаємо ЗА АДРЕСОЮ: Anthropic має інший шлях і інші
         # заголовки, Gemini-нативний — ключ у рядку запиту. Раніше все йшло
         # як OpenAI, і «підтримка Anthropic» насправді давала 404.
         self.adapter = provider_adapters.for_url(self.base_url)
+
+    def _notify_retry(self, attempt: int, wait: float, reason: str) -> None:
+        """Повідомити інтерфейс про повтор (помилка не має ламати запит)."""
+        callback = self.on_retry
+        if callback is None:
+            return
+        try:
+            callback(attempt, RETRY_ATTEMPTS, max(0.0, float(wait)), reason)
+        except Exception:  # noqa: BLE001 - зворотний виклик не має зривати запит
+            LOG.debug("on_retry упав", exc_info=True)
 
     @property
     def style(self) -> str:
@@ -906,21 +947,26 @@ class LLMClient:
                                RETRY_BASE_DELAY * (2 ** (attempt - 1)))
                 LOG.info("HTTP %s від %s — повтор %s/%s через %.1f с",
                          exc.code, url, attempt, RETRY_ATTEMPTS, wait)
+                self._notify_retry(attempt, wait, f"HTTP {exc.code}")
                 time.sleep(wait)
                 continue
             except urllib.error.URLError as exc:
                 last = LLMError(self._connection_error(url, exc.reason))
                 if attempt >= RETRY_ATTEMPTS:
                     raise last from exc
-                time.sleep(min(RETRY_MAX_DELAY,
-                               RETRY_BASE_DELAY * (2 ** (attempt - 1))))
+                wait = min(RETRY_MAX_DELAY,
+                           RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                self._notify_retry(attempt, wait, "немає з'єднання")
+                time.sleep(wait)
                 continue
             except TimeoutError as exc:
                 last = LLMError(f"Таймаут {self.timeout} с під час запиту до {url}")
                 if attempt >= RETRY_ATTEMPTS:
                     raise last from exc
-                time.sleep(min(RETRY_MAX_DELAY,
-                               RETRY_BASE_DELAY * (2 ** (attempt - 1))))
+                wait = min(RETRY_MAX_DELAY,
+                           RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                self._notify_retry(attempt, wait, "таймаут")
+                time.sleep(wait)
                 continue
         raise last if last is not None else LLMError(f"Запит до {url} не вдався")
 

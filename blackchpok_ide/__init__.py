@@ -18,8 +18,12 @@ def run(workspace: str = "") -> int:
     Другий запуск не піднімає другий рушій: файл-замок
     (:mod:`blackchpok_ide.lockfile`) не дає двом копіям ділити VRAM.
     """
+    from . import hidpi
     from .main_window import launch
 
+    # Ідемпотентно: main.py уже міг викликати, але шлях через ``.exe``
+    # і прямі виклики ``run()`` теж мають отримати чіткий рендер.
+    hidpi.enable()
     setup_logging()
 
     from . import lockfile

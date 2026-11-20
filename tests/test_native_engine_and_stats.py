@@ -136,14 +136,24 @@ class TestNativeModelSwitchesThread(unittest.TestCase):
                       "агент має одразу бачити нову адресу")
 
     def test_engine_choice_applies_settings(self) -> None:
-        """Після збереження налаштувань рушій справді вмикається."""
+        """Після збереження налаштувань рушій справді вмикається.
+
+        Перевіряємо ВЕСЬ ланцюжок, а не лише ``_after_settings``. Метод
+        розділено навмисно: ``_after_settings`` ловить будь-який збій і не
+        закриває діалог, а справжні кроки живуть у ``_apply_settings_steps``.
+        Попередня перевірка шукала виклик у першому методі — і падала, хоч
+        поведінка правильна: рушій усе одно застосовується.
+        """
         from blackchpok_ide.main_window import BlackChpokIDE
 
         self.assertTrue(callable(getattr(BlackChpokIDE, "_apply_engine_choice", None)),
                         "має бути метод, який приводить рушій до стану налаштувань")
-        source = inspect.getsource(BlackChpokIDE._after_settings)
-        self.assertIn("_apply_engine_choice", source,
-                      "_after_settings має викликати застосування рушія")
+        after = inspect.getsource(BlackChpokIDE._after_settings)
+        steps = inspect.getsource(BlackChpokIDE._apply_settings_steps)
+        self.assertIn("_apply_settings_steps", after,
+                      "_after_settings має виконувати кроки застосування")
+        self.assertIn("_apply_engine_choice", steps,
+                      "кроки застосування мають вмикати рушій")
 
 
 class TestStatsAreReal(unittest.TestCase):

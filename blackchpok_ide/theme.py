@@ -36,7 +36,9 @@ PALETTES: dict[str, dict[str, str]] = {
         # текст
         "FG": "#26251e",
         "FG_DIM": "#6f6d5e",
-        "FG_FAINT": "#9d9a89",
+        # 3.6 було замало для 9–10 pt підписів на кремовому тлі: #6f6d5a
+        # дає 4.8 на BG і 4.5 на BG_ALT — поріг WCAG AA для дрібного тексту.
+        "FG_FAINT": "#6f6d5a",
         "FG_BRIGHT": "#14130e",
         # акцент: тепла терракота + темна primary-кнопка
         "ACCENT": "#b4532b",
@@ -76,47 +78,55 @@ PALETTES: dict[str, dict[str, str]] = {
         "ON_ACCENT": "#f7f6f2",
     },
     "dark": {
-        "BG": "#17171a",
-        "BG_ALT": "#141416",
-        "BG_EDITOR": "#121214",
-        "BG_INPUT": "#1e1e22",
-        "BG_HOVER": "#232328",
-        "BG_ACTIVE": "#2b2b31",
-        "BG_CARD": "#1b1b1f",
-        "BG_ELEVATED": "#222227",
-        "FG": "#dcdce1",
-        "FG_DIM": "#94949e",
-        "FG_FAINT": "#68686f",
-        "FG_BRIGHT": "#f5f5f7",
-        "ACCENT": "#7c93f5",
-        "ACCENT_HOVER": "#93a6ff",
-        "ACCENT_SOFT": "#2a3352",
-        "BTN_BG": "#e9e7de",
-        "BTN_FG": "#17171a",
+        # Глибокий графіт із ледь помітним синім підтоном: робоча область
+        # найтемніша, панелі трохи світліші, картки ще світліші. Така
+        # драбина дає глибину без рамок — як у сучасних AI-IDE зі скриншотів.
+        "BG": "#0d0d11",            # робоча область (полотно)
+        "BG_ALT": "#111116",        # бічні панелі, шапка
+        "BG_EDITOR": "#0a0a0e",     # полотно редактора (найтемніше)
+        "BG_INPUT": "#17171d",      # поля вводу, композер
+        "BG_HOVER": "#1e1e26",      # наведення
+        "BG_ACTIVE": "#26262f",     # активний елемент
+        "BG_CARD": "#141419",       # картка повідомлення
+        "BG_ELEVATED": "#1b1b22",   # спливні картки, меню
+        "FG": "#e4e4ea",
+        "FG_DIM": "#9c9caa",
+        # Другорядний текст мусить читатись: раніше тут стояв #6e6e7c із
+        # контрастом 3.9 — нижче порогу WCAG AA (4.5) для дрібних підписів,
+        # якими й були лічильники токенів, розміри файлів і назви кнопок.
+        "FG_FAINT": "#8a8a99",
+        "FG_BRIGHT": "#ffffff",
+        # Акцент — холодна бірюза: позначає лише головну дію й живий стан.
+        "ACCENT": "#2dd4bf",
+        "ACCENT_HOVER": "#5eead4",
+        "ACCENT_SOFT": "#10322f",
+        "BTN_BG": "#e8eaf0",
+        "BTN_FG": "#0b0b0f",
         "BTN_HOVER": "#ffffff",
-        "SUCCESS": "#5ec98a",
-        "WARN": "#e0b25a",
-        "ERROR": "#e2706b",
-        "PURPLE": "#b68ee0",
-        "STATUS_WORKING": "#5ec98a",
-        "STATUS_DONE": "#68686f",
-        "STATUS_QUEUED": "#e0b25a",
-        "LINE_HL": "#1c1c21",
-        "SELECTION": "#2c3a63",
-        "GUTTER_FG": "#4f4f57",
-        "RAIL_BG": "#101012",
-        "SCROLL": "#3a3a42",
-        "BORDER": "#26262b",
-        "BORDER_SOFT": "#34343b",
-        "DIFF_ADD_BG": "#16321f",
-        "DIFF_ADD_FG": "#5ec98a",
-        "DIFF_DEL_BG": "#381a1a",
-        "DIFF_DEL_FG": "#e2706b",
-        "CHAT_USER": "#9db4f0",
-        "CHAT_TOOL": "#e5c07b",
-        "CHAT_ERR": "#e2706b",
-        "CHAT_OK": "#5ec98a",
-        "ON_ACCENT": "#0d1120",
+        "SUCCESS": "#3ecf8e",
+        "WARN": "#f5b544",
+        "ERROR": "#ff6b6b",
+        "PURPLE": "#a78bfa",
+        "STATUS_WORKING": "#2dd4bf",
+        "STATUS_DONE": "#6e6e7c",
+        "STATUS_QUEUED": "#f5b544",
+        "LINE_HL": "#15151b",
+        "SELECTION": "#123b38",
+        "GUTTER_FG": "#4a4a56",
+        "RAIL_BG": "#0a0a0e",
+        "SCROLL": "#33333d",
+        "BORDER": "#1e1e26",
+        "BORDER_SOFT": "#2a2a34",
+        "DIFF_ADD_BG": "#0f2b21",
+        "DIFF_ADD_FG": "#3ecf8e",
+        "DIFF_DEL_BG": "#2e1618",
+        "DIFF_DEL_FG": "#ff6b6b",
+        "CHAT_USER": "#8ab4ff",
+        "CHAT_TOOL": "#f5b544",
+        "CHAT_ERR": "#ff6b6b",
+        "CHAT_OK": "#3ecf8e",
+        # Текст на бірюзовому акценті — майже чорний, інакше контраст падає.
+        "ON_ACCENT": "#04120f",
     },
 }
 
@@ -170,13 +180,15 @@ def role_of(colour: str) -> str:
     Віджети запам'ятовують кольори ролями, а не значеннями: тоді після
     перемикання теми наведення бере свіжий колір тієї ж ролі, і світлі
     плашки не спливають у темному режимі. Невідомий колір → ``""``.
+
+    Шукаємо в УСІХ палітрах, а не лише в активній. Це принципово: типові
+    значення аргументів на кшталк ``bg: str = theme.BG_ALT`` обчислюються
+    при ІМПОРТІ модуля, тобто фіксують колір стартової теми (типово
+    темної). Якщо шукати лише в активній палітрі, після перемикання на
+    світлу такий віджет отримував ``""`` і лишався темним — саме ті чорні
+    плашки над полем вводу й темні кнопки в бічній панелі.
     """
-    clean = (colour or "").strip().lower()
-    palette = PALETTES[_MODE]
-    for key in _COLOUR_KEYS:
-        if palette[key].lower() == clean:
-            return key
-    return ""
+    return role_any(colour)
 
 
 def value_of(role: str, fallback: str = "") -> str:
@@ -184,6 +196,43 @@ def value_of(role: str, fallback: str = "") -> str:
     if not role:
         return fallback
     return PALETTES[_MODE].get(role, fallback)
+
+
+def role_any(colour: str) -> str:
+    """Роль кольору в БУДЬ-ЯКІЙ палітрі (а не лише в активній).
+
+    Навіщо окремо від :func:`role_of`. Типові значення аргументів на
+    кшталк ``bg: str = theme.BG_ALT`` обчислюються ПРИ ІМПОРТІ модуля,
+    тобто фіксують колір тієї теми, що була активною на старті (типово
+    темної). Коли користувач перемикається на світлу, ці віджети
+    лишались темними — саме ті чорні плашки над полем вводу.
+
+    Ця функція знаходить роль за кольором у будь-якій палітрі, тож
+    застаріле значення можна перекласти в актуальне.
+    """
+    clean = (colour or "").strip().lower()
+    if not clean:
+        return ""
+    for palette in PALETTES.values():
+        for key in _COLOUR_KEYS:
+            if palette[key].lower() == clean:
+                return key
+    return ""
+
+
+def resolve(colour: str, fallback_role: str = "BG") -> str:
+    """Перекласти колір у значення АКТИВНОЇ теми.
+
+    Якщо колір належить якійсь палітрі — повертає його роль у поточній.
+    Якщо це невідомий колір (наприклад, акцент користувача) — лишає як є.
+    Порожній рядок → колір ролі ``fallback_role``.
+    """
+    if not colour:
+        return PALETTES[_MODE].get(fallback_role, BG)
+    role = role_any(colour)
+    if not role:
+        return colour
+    return PALETTES[_MODE].get(role, colour)
 
 
 def set_mode(mode: str) -> None:
@@ -361,22 +410,22 @@ SYNTAX_LIGHT = {
     "error": "#c0392b",
 }
 SYNTAX_DARK = {
-    "keyword": "#c678dd",
-    "control": "#c678dd",
-    "type": "#e5c07b",
-    "function": "#61afef",
-    "string": "#98c379",
-    "number": "#d19a66",
-    "comment": "#5c6370",
-    "decorator": "#e5c07b",
-    "constant": "#56b6c2",
-    "operator": "#abb2bf",
-    "builtin": "#56b6c2",
-    "self": "#e06c75",
-    "tag": "#e06c75",
-    "attribute": "#d19a66",
-    "key": "#61afef",
-    "error": "#e2706b",
+    "keyword": "#c792ea",
+    "control": "#c792ea",
+    "type": "#ffcb6b",
+    "function": "#82aaff",
+    "string": "#c3e88d",
+    "number": "#f78c6c",
+    "comment": "#5a5a68",
+    "decorator": "#ffcb6b",
+    "constant": "#89ddff",
+    "operator": "#a6adc8",
+    "builtin": "#89ddff",
+    "self": "#ff6b6b",
+    "tag": "#f07178",
+    "attribute": "#ffcb6b",
+    "key": "#82aaff",
+    "error": "#ff6b6b",
 }
 
 SYNTAX_COLORS = dict(SYNTAX_LIGHT)
@@ -391,6 +440,74 @@ _refresh_syntax()
 
 FONT_CANDIDATES = ("Cascadia Code", "Cascadia Mono", "JetBrains Mono", "Consolas", "Courier New")
 UI_FONT_CANDIDATES = ("Segoe UI Variable Text", "Segoe UI", "Inter", "Tahoma", "DejaVu Sans")
+
+#: Межі окремого масштабу інтерфейсу (≠ масштаб коду).
+MIN_UI_SCALE = 0.85
+MAX_UI_SCALE = 1.75
+
+
+def _clean_scale(value: float) -> float:
+    """Привести масштаб інтерфейсу до безпечного діапазону."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if number <= 0:
+        return 1.0
+    return max(MIN_UI_SCALE, min(MAX_UI_SCALE, round(number, 2)))
+
+
+#: Масштаб, який застосовується до ``font()`` (виставляє :class:`Theme`).
+_FONT_SCALE = 1.0
+
+#: Поправка до дрібних розмірів, зашитих у панелях.
+#:
+#: Історично панелі писали ``("Segoe UI", 8)`` вручну, і саме ці вісімки з
+#: сімками й були причиною «все надто дрібне»: при базовому 12 pt основний
+#: текст панелей виходив на 2 pt меншим за код. Поправка повертає ці розміри
+#: в читабельний діапазон, не чіпаючи великі заголовки (16+).
+_SMALL_FONT_BUMP = 2
+#: Розмір, починаючи з якого поправка не застосовується (заголовки, hero).
+_BUMP_CEILING = 15
+#: Найменший дозволений розмір тексту в інтерфейсі.
+MIN_FONT_SIZE = 9
+
+
+def font(size: int, weight: str = "") -> tuple:
+    """Шрифт інтерфейсу за бажаним розміром: поправка + масштаб.
+
+    Замість ``("Segoe UI", 8)`` у панелях слід писати
+    ``theme.font(8)`` — тоді дрібні підписи автоматично стають читабельними
+    і реагують на налаштування «Масштаб інтерфейсу».
+
+    Порядок: спершу поправка до дрібного розміру, потім множення на
+    масштаб, потім межа знизу. Великі розміри (16+) масштабуються, але
+    поправку не отримують — інакше hero-заголовки розповзались.
+    """
+    try:
+        base = int(size)
+    except (TypeError, ValueError):
+        base = 12
+    if base < _BUMP_CEILING:
+        base += _SMALL_FONT_BUMP
+    scaled = int(round(base * _FONT_SCALE))
+    scaled = max(MIN_FONT_SIZE, scaled)
+    parts = [UI_FONT_CANDIDATES[0]]
+    parts.append(scaled)
+    if weight:
+        parts.append(weight)
+    return tuple(parts)
+
+
+def set_font_scale(scale: float) -> None:
+    """Задати масштаб для :func:`font` (кличе :class:`Theme`)."""
+    global _FONT_SCALE
+    _FONT_SCALE = _clean_scale(scale)
+
+
+def font_scale() -> float:
+    """Поточний масштаб шрифтів інтерфейсу."""
+    return _FONT_SCALE
 
 
 def color_for(key: str, default: str = "") -> str:
@@ -411,38 +528,63 @@ def pick_font(root: tk.Misc, candidates: tuple[str, ...], fallback: str = "Conso
 
 
 class Theme:
-    """Набір шрифтів + застосування ttk-стилів до застосунку."""
+    """Набір шрифтів + застосування ttk-стилів до застосунку.
 
-    def __init__(self, root: tk.Tk, family: str = "", size: int = 12) -> None:
+    Розміри рахуються від :attr:`size` — це розмір **основного UI-тексту**
+    в пунктах, а не «розмір коду мінус два». Раніше базовий текст діалогу
+    й панелей виходив на 2 pt меншим за код (10 pt при типовому 12), через
+    що назви файлів, лічильники токенів і підписи кнопок читались як сірі
+    плями. Тепер ``size`` — це те, що бачить користувач у налаштуваннях,
+    а все інше масштабується від нього зрозумілою драбиною.
+    """
+
+    def __init__(self, root: tk.Tk, family: str = "", size: int = 12,
+                 *, scale: float = 1.0) -> None:
         self.root = root
         self.mono_family = family or pick_font(root, FONT_CANDIDATES)
         self.ui_family = pick_font(root, UI_FONT_CANDIDATES, "TkDefaultFont")
         self.size = size
+        #: Окремий масштаб інтерфейсу (≠ масштаб коду). 1.0 — без змін.
+        self.scale = _clean_scale(scale)
         self._build_fonts()
 
     # ── шрифти ─────────────────────────────────────────────────────────────
     def _build_fonts(self) -> None:
-        s = max(9, min(28, int(self.size)))
-        ui_base = max(9, s - 2)
-        self.mono = tkfont.Font(family=self.mono_family, size=s)
-        self.mono_small = tkfont.Font(family=self.mono_family, size=max(8, s - 1))
-        self.mono_bold = tkfont.Font(family=self.mono_family, size=s, weight="bold")
-        self.ui = tkfont.Font(family=self.ui_family, size=ui_base)
-        self.ui_small = tkfont.Font(family=self.ui_family, size=max(8, ui_base - 1))
-        self.ui_tiny = tkfont.Font(family=self.ui_family, size=max(7, ui_base - 2))
-        self.ui_bold = tkfont.Font(family=self.ui_family, size=ui_base, weight="bold")
-        self.ui_title = tkfont.Font(family=self.ui_family, size=ui_base + 4, weight="bold")
-        self.ui_h1 = tkfont.Font(family=self.ui_family, size=ui_base + 3, weight="bold")
-        self.ui_h2 = tkfont.Font(family=self.ui_family, size=ui_base + 1, weight="bold")
-        self.ui_hero = tkfont.Font(family=self.ui_family, size=ui_base + 9, weight="bold")
-        self.chat = tkfont.Font(family=self.ui_family, size=ui_base)
-        self.chat_body = tkfont.Font(family=self.ui_family, size=ui_base + 1)
-        self.chat_code = tkfont.Font(family=self.mono_family, size=max(8, s - 1))
+        # ``size`` — основний текст. Розміри тримаються в межах 8…32, щоб
+        # збільшення не ламало високі панелі й шапку.
+        s = max(8, min(32, int(round(self.size * self.scale))))
+        mono = max(8, min(34, int(round(s * 1.0))))
+        ui = s
 
-    def set_family(self, family: str, size: int) -> None:
+        # Ті самі числа потрібні й панелям, які досі кличуть ``theme.font()``
+        # замість готових об'єктів ``tkfont.Font``.
+        set_font_scale(self.scale * (s / max(1, int(self.size or s))))
+
+        self.mono = tkfont.Font(family=self.mono_family, size=mono)
+        self.mono_small = tkfont.Font(family=self.mono_family, size=max(8, mono - 1))
+        self.mono_bold = tkfont.Font(family=self.mono_family, size=mono, weight="bold")
+        self.ui = tkfont.Font(family=self.ui_family, size=ui)
+        # Другорядне — на 1 pt менше, але ніколи не нижче 9 pt: 8 pt у
+        # Windows розсипається на пікселі при 125 % і нижче за поріг читаності.
+        self.ui_small = tkfont.Font(family=self.ui_family, size=max(9, ui - 1))
+        self.ui_tiny = tkfont.Font(family=self.ui_family, size=max(9, ui - 2))
+        self.ui_bold = tkfont.Font(family=self.ui_family, size=ui, weight="bold")
+        self.ui_title = tkfont.Font(family=self.ui_family, size=ui + 5, weight="bold")
+        self.ui_h1 = tkfont.Font(family=self.ui_family, size=ui + 4, weight="bold")
+        self.ui_h2 = tkfont.Font(family=self.ui_family, size=ui + 2, weight="bold")
+        self.ui_hero = tkfont.Font(family=self.ui_family, size=ui + 10, weight="bold")
+        self.chat = tkfont.Font(family=self.ui_family, size=ui)
+        # Тіло відповіді агента — на пункт більше за інтерфейс: це головний
+        # текст, який читають годинами, і він не має конкурувати з підписами.
+        self.chat_body = tkfont.Font(family=self.ui_family, size=ui + 1)
+        self.chat_code = tkfont.Font(family=self.mono_family, size=max(8, mono - 1))
+
+    def set_family(self, family: str, size: int, *, scale: float | None = None) -> None:
         if family:
             self.mono_family = family
         self.size = size
+        if scale is not None:
+            self.scale = _clean_scale(scale)
         self._build_fonts()
         self.apply()
 
@@ -622,12 +764,13 @@ __all__ = [
     "BTN_BG", "BTN_FG", "BTN_HOVER", "CHAT_MAX_WIDTH", "COMPOSER_HEIGHT", "CHAT_ERR", "CHAT_OK", "CHAT_TOOL",
     "CHAT_USER", "COMPOSER_MAX_WIDTH", "DIFF_ADD_BG", "DIFF_ADD_FG", "DIFF_DEL_BG",
     "DIFF_DEL_FG", "ERROR", "FG", "FG_BRIGHT", "FG_DIM", "FG_FAINT", "GUTTER_FG",
-    "LINE_HL", "MODES", "ON_ACCENT", "PALETTES", "PREVIEW_MIN_WIDTH", "PREVIEW_WIDTH",
+    "LINE_HL", "MAX_UI_SCALE", "MIN_UI_SCALE", "MODES", "ON_ACCENT", "PALETTES", "PREVIEW_MIN_WIDTH", "PREVIEW_WIDTH",
     "PREVIEW_MAX_WIDTH", "CONTEXT_MIN_WIDTH", "CONTEXT_MAX_WIDTH",
     "PURPLE", "RAIL_BG",
     "RAIL_COLLAPSED_WIDTH", "RAIL_WIDTH", "SCROLL", "SELECTION", "SIDEBAR_WIDTH",
     "SPACE_2XL", "SPACE_3XL", "SPACE_LG", "SPACE_MD", "SPACE_SM", "SPACE_XL", "SPACE_XS",
     "STATUS_DONE", "STATUS_QUEUED", "STATUS_WORKING", "SUCCESS", "SYNTAX_COLORS",
-    "Theme", "WARN", "color_for", "current_mode", "pick_font", "retheme", "role_of",
+    "Theme", "WARN", "color_for", "current_mode", "pick_font", "resolve",
+    "retheme", "role_any", "role_of",
     "set_mode", "switch_mode", "value_of",
 ]

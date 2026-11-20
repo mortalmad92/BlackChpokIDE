@@ -517,7 +517,13 @@ class LLMSettings:
 @dataclass
 class UISettings:
     font_family: str = ""
-    font_size: int = 12
+    font_size: int = 13
+    #: Окремий масштаб ІНТЕРФЕЙСУ (панелі, підписи, чат), не коду.
+    #:
+    #: ``font_size`` задає базовий розмір, а ``ui_scale`` дозволяє збільшити
+    #: весь інтерфейс, не чіпаючи редактор: на 4K-моніторі або при поганому
+    #: зорі зручніше масштабувати все, а код лишити як є.
+    ui_scale: float = 1.0
     tab_size: int = 4
     word_wrap: bool = False
     show_line_numbers: bool = True
@@ -551,6 +557,21 @@ class UISettings:
         """Привести значення до відомих і сумісних із поточною версією."""
         clean = str(self.theme or "").strip().lower()
         self.theme = clean if clean in ("light", "dark") else "dark"
+        # Масштаб інтерфейсу: чуже або безглузде значення не має ламати
+        # вікно — повертаємось до 1.0, а крайні значення підрізаємо.
+        try:
+            scale = float(self.ui_scale)
+        except (TypeError, ValueError):
+            scale = 1.0
+        if scale <= 0:
+            scale = 1.0
+        self.ui_scale = round(max(0.85, min(1.75, scale)), 2)
+        # Розмір шрифту — теж у межах, інакше шапка й панелі розсипаються.
+        try:
+            size = int(self.font_size)
+        except (TypeError, ValueError):
+            size = 13
+        self.font_size = max(9, min(32, size))
         # ── застаріла ширина діалогу ──────────────────────────────────────
         # До версії 1.7.2 чат стискався до 920 px і центрувався. Тепер він
         # має займати всю ширину, а 920 у збереженому settings.json — це
@@ -634,6 +655,14 @@ class AgentSettings:
     #: (див. :mod:`selflearning`). Вимкнений — агент не пише уроків і не
     #: підкладає їх у контекст.
     self_learning: bool = True
+    #: Самонавчання на ВИБОРІ РЕЖИМУ (див. :mod:`mode_learning`).
+    #:
+    #: Режим агент обирає сам із тексту запиту, і правила там іноді
+    #: помиляються: «Чат» на запиті, що вимагає інструментів, або повний
+    #: цикл на просте вітання. Увімкнений — кожна така помилка стає
+    #: правилом, і наступного разу фраза одразу отримує правильний режим.
+    #: Вимкнений — режим визначається лише сталими правилами.
+    mode_learning: bool = True
 
 
 @dataclass
@@ -1057,6 +1086,14 @@ class Settings:
                 })
         return cls(
             workspace=str(data.get("workspace") or ""),
+            # ── Історія робочих просторів ЧИСТИТЬСЯ ПРИ ЧИТАННІ ─────────
+            # У ній уже накопичились тимчасові теки проб (``probe-cmd-…``)
+            # з ``%TEMP%``: їх додавали прогони інструментів, і користувач
+            # бачив у меню незрозумілі пункти, від яких «×» не помагав —
+            # наступний прогін додавав нові. Прибираємо їх одразу, щоб
+            # меню було чистим без ручних дій.
+            recent=[item for item in recent if
+                    not cls._is_temporary_folder(item)][:12],
             llm=llm.normalise(),
             ui=ui,
             agent=agent,
@@ -1067,7 +1104,6 @@ class Settings:
             voice=voice,
             git=git,
             shell=str(data.get("shell") or "cmd.exe /d /s /c"),
-            recent=recent[:12],
             first_run_done=_as_bool(data.get("first_run_done"), False),
             project_chosen=_as_bool(data.get("project_chosen"), False),
             preferences=preferences,
@@ -1152,8 +1188,47 @@ class Settings:
         self.project_chosen = True
         if folder in self.recent:
             self.recent.remove(folder)
-        self.recent.insert(0, folder)
-        del self.recent[12:]
+        # ── ТИМЧАСОВІ ТЕКИ НЕ ПОПАДАЮТЬ У СПИСОК ──────────────────────────
+        # Проби й тести створюють теку в ``%TEMP%`` і теж звуть цей метод —
+        # і в меню робочих просторів з'являлись «probe-cmd-554bt5iv». Сама
+        # тека слушна, але це не проєкт користувача: вона зникає після
+        # перезапуску, і «×» від неї не позбавляв (наступний прогін додавав
+        # нову). Тепер така тека стає робочою, але історію не засмічує.
+        if not self._is_temporary_folder(folder):
+            self.recent.insert(0, folder)
+            del self.recent[12:]
+        self._drop_temporary_recent()
+
+    @staticmethod
+    def _is_temporary_folder(folder: str) -> bool:
+        """Чи це згенерована тека в системному ``%TEMP%``."""
+        text = str(folder or "").strip()
+        if not text:
+            return False
+        name = Path(text).name.lower()
+        markers = ("probe-", "probe_", "bchk_", "bchk-", "modelearn-",
+                   "blackchpok-tmp", "tmp")
+        if not any(marker in name for marker in markers):
+            return False
+        try:
+            temp_root = str(Path(tempfile.gettempdir()).resolve()).lower()
+            return str(Path(text).resolve()).lower().startswith(temp_root)
+        except (OSError, ValueError):
+            return False
+
+    def _drop_temporary_recent(self) -> int:
+        """Прибрати з історії вже накопичені тимчасові теки.
+
+        Потрібно для тих, хто вже бачив у меню ``probe-cmd-…``: без цього
+        стара історія лишалась би назавжди, бо нові записи її не чіпають.
+        """
+        kept = [item for item in self.recent
+                if not self._is_temporary_folder(item)]
+        removed = len(self.recent) - len(kept)
+        if removed:
+            self.recent = kept
+        return removed
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

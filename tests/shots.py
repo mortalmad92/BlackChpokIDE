@@ -28,32 +28,45 @@ def grab(app, name: str, extra: tuple = ()) -> None:
 
     # Вікно має бути справді зверху: інакше в кадр потрапляє чуже вікно,
     # яке випадково опинилось поверх (браузер, термінал тощо).
-    try:
-        app.lift()
-        app.focus_force()
-        app.attributes("-topmost", True)
-        app.update()
-        time.sleep(0.35)
-        app.update()
-        # Спливні картки (селектор, меню) — окремі Toplevel: піднімаємо їх
-        # ПІСЛЯ головного вікна, інакше main window їх перекриває.
-        for window in extra:
-            if window is None:
-                continue
-            try:
-                window.lift()
-                window.attributes("-topmost", True)
-                window.update()
-            except Exception:  # noqa: BLE001
-                pass
-        time.sleep(0.25)
-        app.update()
-    except Exception:  # noqa: BLE001
-        pass
+    for _attempt in range(3):
+        try:
+            # Windows інколи згортає вікно, коли фокус перехоплює інший
+            # застосунок: тоді winfo_rootx() дорівнює -32000 і кадр виходить
+            # чорним. Повертаємо вікно й пробуємо ще раз.
+            if app.state() == "iconic":
+                app.deiconify()
+                time.sleep(0.2)
+            app.lift()
+            app.focus_force()
+            app.attributes("-topmost", True)
+            app.update()
+            time.sleep(0.35)
+            app.update()
+            # Спливні картки (селектор, меню) — окремі Toplevel: піднімаємо їх
+            # ПІСЛЯ головного вікна, інакше main window їх перекриває.
+            for window in extra:
+                if window is None:
+                    continue
+                try:
+                    window.lift()
+                    window.attributes("-topmost", True)
+                    window.update()
+                except Exception:  # noqa: BLE001
+                    pass
+            time.sleep(0.25)
+            app.update()
+        except Exception:  # noqa: BLE001
+            pass
+        if app.state() != "iconic" and app.winfo_rootx() > -1000:
+            break
+        time.sleep(0.3)
     x = app.winfo_rootx()
     y = app.winfo_rooty()
     w = app.winfo_width()
     h = app.winfo_height()
+    if x <= -1000 or y <= -1000:
+        print("skip", name, "— вікно згорнуте, кадр неможливий")
+        return
     menu = app.nametowidget(app.cget("menu")) if app.cget("menu") else None
     menu_h = menu.winfo_height() if menu is not None else 0
     if menu_h <= 1:

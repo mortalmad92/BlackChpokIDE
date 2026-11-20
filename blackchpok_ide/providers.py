@@ -213,6 +213,32 @@ def _local_entry(path: Path) -> ModelEntry:
     )
 
 
+def _cloud_caps(name: str, provider: "cloud_agents.CloudProvider | None") -> tuple[str, ...]:
+    """Позначки можливостей для хмарної моделі з каталогу.
+
+    Раніше тут завжди стояв лише 🔨 (інструменти): вікно знало, що хмара
+    вміє викликати інструменти, і НЕ знало нічого про зір. Через це в
+    списку моделей мультимодальна хмарна модель виглядала як текстова, а
+    користувач не бачив, що картинку взагалі можна прикріпити.
+
+    Тепер 🖼 ставиться тоді й лише тоді, коли :mod:`vision` справді
+    вважає модель мультимодальною — тобто рішення про зір ухвалює ОДНЕ
+    місце, а не другий список назв.
+    """
+    icons: list[str] = []
+    if provider is not None and provider.supports_tools:
+        icons.append("🔨")
+    try:
+        from . import vision
+
+        if vision.model_sees_images(
+                name, provider.base_url if provider is not None else ""):
+            icons.append("🖼")
+    except Exception:                                # noqa: BLE001
+        LOG.debug("Позначку зору не визначено для %s", name, exc_info=True)
+    return tuple(icons)
+
+
 def cloud_models(only_configured: bool = False) -> list[ModelEntry]:
     """Моделі хмарних провайдерів із каталогу :mod:`cloud_agents`."""
     entries: list[ModelEntry] = []
@@ -228,7 +254,7 @@ def cloud_models(only_configured: bool = False) -> list[ModelEntry]:
                 online=False,
                 context=int(provider.context or 0),
                 params=params_from_name(name),
-                caps=("🔨",) if provider.supports_tools else (),
+                caps=_cloud_caps(name, provider),
                 note=provider.note,
             ))
     return entries
@@ -540,8 +566,7 @@ def catalogue(settings: Any, *, probed: Optional[dict[str, ProbeOutcome]] = None
                          else fallback_context),
                 params=params_from_name(name),
                 quant=quant_from_name(name),
-                caps=("🔨",) if (cloud_provider is not None
-                                 and cloud_provider.supports_tools) else (),
+                caps=_cloud_caps(name, cloud_provider),
                 note=fallback_note,
             ))
 
