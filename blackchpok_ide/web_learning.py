@@ -85,11 +85,24 @@ _KNOWN_MARKERS: tuple[str, ...] = (
 )
 
 #: Рядки результату, які не є знанням (навігація, кнопки, реклама).
+#:
+#: Обидві мови: більшість сторінок і результатів пошуку приходять
+#: англійською, і без англійських маркерів «Read more here» потрапляв у
+#: пам'ять як факт (перевірено на реальному результаті).
 _NOISE = (
     "cookie", "підписатися", "підписатись", "читати далі", "перейти до",
     "головна", "меню", "вхід", "реєстрація", "усі права захищені",
     "©", "copyright", "javascript", "увімкніть",
+    "read more", "learn more", "click here", "sign in", "sign up",
+    "subscribe", "privacy policy", "terms of service", "all rights reserved",
+    "skip to content", "advertisement", "sponsored", "share this",
 )
+
+
+def _is_url_only(sentence: str) -> bool:
+    """Чи речення — сама лише адреса (можливо, з парою слів навколо)."""
+    stripped = re.sub(r"https?://\S+", "", sentence).strip(" .,:;-—|")
+    return len(stripped.split()) < 4
 
 
 @dataclass
@@ -152,9 +165,15 @@ def _is_noise(sentence: str) -> bool:
     # Сама лише адреса — не твердження.
     if re.fullmatch(r"https?://\S+", low):
         return True
-    # Заголовок без дієслова: надто короткий або весь у великих літерах.
-    letters = [ch for ch in sentence if ch.isalpha()]
-    if letters and sum(1 for ch in letters if ch.isupper()) / len(letters) > 0.7:
+    if _is_url_only(sentence):
+        return True
+    # Заголовок без дієслова: весь у великих літерах.
+    #
+    # Перевіряємо ЛИШЕ літери всередині, без першої: «Bitcoin price today is
+    # 67,432 USD» починається з великої літери звичайно, і сувора перевірка
+    # викидала найцінніше речення (перевірено на реальному результаті).
+    letters = [ch for ch in sentence[1:] if ch.isalpha()]
+    if letters and sum(1 for ch in letters if ch.isupper()) / len(letters) > 0.6:
         return True
     return False
 
@@ -181,7 +200,12 @@ def extract(text: str, *, source: str = "", query: str = "",
     seen: set[str] = set()
     for sentence in _sentences(body):
         clean = " ".join(sentence.split())
-        if len(clean) < MIN_FACT_CHARS:
+        # Поріг довжини — знижений для речень із ЧИСЛАМИ: «Bitcoin price is
+        # 67,432 USD» — це 33 символи, але саме те, за чим прийшли. Суворий
+        # поріг 40 відсіював найцінніше (перевірено на реальному результаті).
+        has_digits = any(ch.isdigit() for ch in clean)
+        floor = 24 if has_digits else MIN_FACT_CHARS
+        if len(clean) < floor:
             continue
         if _is_noise(clean):
             continue

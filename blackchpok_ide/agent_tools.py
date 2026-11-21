@@ -332,6 +332,7 @@ class ToolRegistry:
             "web_responsive": self.web_responsive,
             "web_click": self.web_click,
             "web_type": self.web_type,
+            "ask_free_ai": self.ask_free_ai,
             # ── DOM-міст Live Preview (структура сторінки як дані)
             "dom_tree": self.dom_tree,
             "dom_find_text": self.dom_find_text,
@@ -1602,6 +1603,102 @@ class ToolRegistry:
         return f"Введено текст ({len(text or '')} символів)" + (
             " і натиснуто Enter." if press_enter else ".")
 
+    def ask_free_ai(self, prompt: str, providers: str = "",
+                    timeout: int = 90) -> str:
+        """Спитати безкоштовні вебчати у вбудованому браузері й об'єднати.
+
+        Навіщо. Локальна модель слабка там, де потрібні широкі знання або
+        акуратне міркування, а платне API скорочується. Вебверсії
+        безкоштовних чатів уже відкриваються в цьому браузері, і їхню
+        відповідь можна прочитати без ключа.
+
+        Важливо, що саме повертається: НЕ «перша відповідь», а об'єднання —
+        спільне підкреслюється, розбіжність у числах позначається явно.
+        Одна модель помиляється впевнено; дві різні — рідше однаково.
+
+        ``providers`` — ключі через кому (``duckduckgo,perplexity``).
+        Порожньо — беремо перший, який не потребує входу.
+        """
+        from . import web_ai
+
+        question = " ".join(str(prompt or "").split())
+        if not question:
+            raise ToolError("Порожнє питання для безкоштовного ШІ.")
+        session = self._session()
+        # Сторінки безкоштовних чатів — ЗОВНІШНІ. Читати їхній DOM дозволено
+        # лише з явним дозволом (той самий механізм, що й для web_inspect):
+        # це чужі сайти, і правило не має винятків «для зручності».
+        self._require_page_permission("https://duckduckgo.com/")
+
+        wanted = [part.strip().lower()
+                  for part in str(providers or "").replace(";", ",").split(",")
+                  if part.strip()]
+        if wanted:
+            chosen = [web_ai.provider(key) for key in wanted]
+            missing = [key for key, spec in zip(wanted, chosen) if spec is None]
+            if missing:
+                raise ToolError(
+                    "Невідомий провайдер: " + ", ".join(missing)
+                    + ". Доступні: " + ", ".join(web_ai.provider_names()))
+            specs = [spec for spec in chosen if spec is not None]
+        else:
+            # Типово — той, що працює без входу: решта вимагає акаунта, і
+            # без нього ми отримали б «потрібен вхід» замість відповіді.
+            specs = [spec for spec in web_ai.PROVIDERS if not spec.needs_login]
+        if not specs:
+            raise ToolError("Немає доступних провайдерів безкоштовного ШІ.")
+
+        answers = []
+        for spec in specs[:3]:
+            answer = web_ai.ask(
+                session, spec, question, timeout=max(10, int(timeout or 90)),
+                navigate=self._open_for_ai)
+            answers.append(answer)
+            if not answer.ok:
+                LOG.info("Безкоштовний ШІ %s: %s", spec.key, answer.error)
+
+        consensus = web_ai.combine(answers)
+        if not consensus.text.strip():
+            raise ToolError(
+                "Безкоштовні ШІ не дали відповіді: "
+                + ("; ".join(consensus.failed) or "невідома причина")
+                + ". Перевір, чи відкритий браузер і чи ввійшов ти в акаунт.")
+        # Залізне правило: отримане знання — у довгострокову пам'ять.
+        self._remember_web_ai(consensus)
+        lines = [consensus.text]
+        if consensus.failed:
+            lines.append("Не вдалось: " + "; ".join(consensus.failed[:3]))
+        return "\n\n".join(lines)
+
+    def _open_for_ai(self, url: str) -> bool:
+        """Відкрити адресу у вбудованому браузері (через вікно IDE)."""
+        opener = getattr(self, "page_opener", None)
+        if opener is None:
+            # Без відкривача сесія вже може бути на потрібній сторінці —
+            # вважаємо це прийнятним: ``web_ai`` далі перевірить наявність
+            # поля вводу й чесно скаже, якщо його немає.
+            return True
+        try:
+            return bool(opener(url))
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Сторінку для безкоштовного ШІ не відкрито", exc_info=True)
+            return False
+
+    def _remember_web_ai(self, consensus) -> None:
+        """Записати відповідь безкоштовного ШІ в пам'ять проєкту."""
+        from . import web_ai
+
+        service = getattr(getattr(self, "memory_tools", None), "service", None)
+        if service is None:
+            return
+        for item in web_ai.memories_for(consensus):
+            try:
+                service.remember(item, kind="fact", source="безкоштовний ШІ",
+                                 provenance="web_ai:" + ",".join(consensus.used),
+                                 confidence=0.55, with_vector=False)
+            except Exception:                        # noqa: BLE001
+                LOG.debug("Відповідь безкоштовного ШІ не записано", exc_info=True)
+
     # ── виклик ─────────────────────────────────────────────────────────────
     def handled_names(self) -> set[str]:
         """Назви інструментів, які реєстр справді вміє виконувати."""
@@ -2437,6 +2534,42 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "press_enter": {"type": "boolean"},
                 },
                 "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_free_ai",
+            "description": (
+                "Спитати БЕЗКОШТОВНІ вебчати у вбудованому браузері "
+                "(DuckDuckGo AI, Perplexity, ChatGPT, Gemini) і отримати "
+                "об'єднану відповідь. Використовуй, коли власних знань "
+                "бракує: складне міркування, широка тема, треба другу думку. "
+                "Відповідь не «перша-ліпша»: спільне підсумовується, а "
+                "розбіжність у числах позначається явно. Отримане "
+                "автоматично зберігається в довгострокову пам'ять."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Питання людською мовою, повне й конкретне",
+                    },
+                    "providers": {
+                        "type": "string",
+                        "description": (
+                            "Ключі через кому: duckduckgo, perplexity, "
+                            "chatgpt, gemini. Порожньо — беремо ті, що "
+                            "працюють без входу."),
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Скільки секунд максимум чекати (типово 90)",
+                    },
+                },
+                "required": ["prompt"],
             },
         },
     },
