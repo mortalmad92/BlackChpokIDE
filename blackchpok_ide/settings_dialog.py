@@ -665,7 +665,7 @@ class SettingsDialog(tk.Toplevel):
 
         ttk.Label(options, text="Максимум кроків агента").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.steps_var = tk.IntVar(value=self.settings.agent.max_steps)
-        ttk.Spinbox(options, from_=1, to=25, textvariable=self.steps_var, width=6).grid(
+        ttk.Spinbox(options, from_=1, to=500, textvariable=self.steps_var, width=6).grid(
             row=2, column=1, sticky="w", padx=(10, 0), pady=(8, 0))
 
         self.skills_var = tk.BooleanVar(value=self.settings.agent.use_skills)
@@ -1590,7 +1590,7 @@ class SettingsDialog(tk.Toplevel):
         s.agent.system_prompt = self.prompt_text.get("1.0", "end-1c").strip()
         s.agent.confirm_commands = bool(self.confirm_cmd_var.get())
         s.agent.offline_fallback = bool(self.offline_var.get())
-        s.agent.max_steps = int(self._number("steps_var", "int", 12))
+        s.agent.max_steps = int(self._number("steps_var", "int", 60))
         s.agent.use_skills = bool(self.skills_var.get())
         s.agent.queue_auto_run = bool(self.autorun_var.get())
         s.agent.stream = bool(self.stream_var.get())

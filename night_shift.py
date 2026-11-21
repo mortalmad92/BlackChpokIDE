@@ -332,13 +332,21 @@ class NightRunner:
                 self._set_status(task_id, "done")
                 notes.append(f"Спроба {attempt}: перевірка зелена. Задачу закрито.")
                 return "\n".join(notes)
-            answer = self.complete(
-                "Задача:\n" + task
-                + "\n\nКонтекст з диска, без минулого кроку:\n" + context
-                + "\n\nПеревірки командного рядка:\n" + (before.output or "")[-2500:]
-                + "\n\nПоверни лише секції ### FILE: відносний/шлях і код у блоці. "
-                "Не повторюй минулий текст. Патч має зменшити число падінь."
-            )
+            try:
+                answer = self.complete(
+                    "Задача:\n" + task
+                    + "\n\nКонтекст з диска, без минулого кроку:\n" + context
+                    + "\n\nПеревірки командного рядка:\n" + (before.output or "")[-2500:]
+                    + "\n\nПоверни лише секції ### FILE: відносний/шлях і код у блоці. "
+                    "Не повторюй минулий текст. Патч має зменшити число падінь."
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Модель недоступна (LM Studio вимкнено, таймаут) — це не збій коду.
+                # Раніше виняток вилітав з run(), задача назавжди лишалась «running»,
+                # а журнал за ніч не писався взагалі.
+                self._set_status(task_id, "pending")
+                notes.append(f"Спроба {attempt}: модель недоступна ({type(exc).__name__}: {exc}). Задачу повернуто в чергу.")
+                return "\n".join(notes)
             files = files_from_answer(answer)
             if not files:
                 notes.append(f"Спроба {attempt}: модель не дала файлів.")

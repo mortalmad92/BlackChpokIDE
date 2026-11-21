@@ -576,7 +576,7 @@ class AgentSettings:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     auto_approve_edits: bool = True
     confirm_commands: bool = False       # автономний режим: без підтверджень
-    max_steps: int = 8
+    max_steps: int = 60
     offline_fallback: bool = True
     context_char_limit: int = 24_000
     use_skills: bool = True          # додавати увімкнені скіли в системний промпт

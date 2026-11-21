@@ -323,7 +323,7 @@ class TestStepBudget(unittest.TestCase):
     def test_ceiling_is_enforced(self) -> None:
         self.runner.max_steps_override = 35
         self.runner.set_autonomy(autonomy.EXPLORER)
-        self.assertEqual(self.runner.step_budget, agent.STEP_BUDGET_CEILING)
+        self.assertEqual(self.runner.step_budget, 51)  # 35 + 16 («Дослідник»); стеля більше не ріже нормальний ліміт
 
     def test_autonomy_prompt_reaches_the_context(self) -> None:
         self.runner.set_autonomy(autonomy.EXPLORER)
