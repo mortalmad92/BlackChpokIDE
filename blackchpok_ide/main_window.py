@@ -6369,12 +6369,20 @@ class BlackChpokIDE(tk.Tk):
             return False
 
     def _budget_state_for_panel(self) -> dict:
-        """Розподіл бюджету контексту (вікно/відповідь/історія/схеми)."""
+        """Розподіл бюджету контексту (вікно/відповідь/історія/схеми).
+
+        ``working`` — скільки ми ЗАПОВНЮЄМО цього разу (автовизначення під
+        запит, див. ``context_budget.working_window``). Воно може бути
+        меншим за ``window``: вікно — це стеля моделі, а не план на кожен
+        хід. Панель показує обидва числа, щоб «0 / 131072» не виглядало як
+        порожній контекст.
+        """
         budget = getattr(self.agent, "_context_budget", None)
         if budget is None:
             return {}
         return {
             "window": int(getattr(budget, "window", 0) or 0),
+            "working": int(getattr(budget, "working", 0) or 0),
             "answer": int(getattr(budget, "answer", 0) or 0),
             "history": int(getattr(budget, "history", 0) or 0),
             "tools": int(getattr(budget, "tools", 0) or 0),

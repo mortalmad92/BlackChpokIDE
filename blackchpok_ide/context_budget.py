@@ -62,12 +62,195 @@ MIN_USABLE_WINDOW = 2048
 #: Решта не «втрачається»: вона переїжджає в довгострокову пам'ять
 #: (NEUROMESH + RAG + хроніка) і повертається пошуком. Саме це й робить
 #: роботу швидкою, не втрачаючи знань.
+#:
+#: Це ВЕРХНЯ межа «за замовчуванням», а не постійний розмір: скільки саме
+#: заповнити — вирішує :func:`working_window` під КОЖЕН запит.
 WORKING_WINDOW = 32_768
 
-#: Вимкнути обмеження робочого бюджету (заповнювати все вікно).
+#: Крок округлення робочого бюджету.
 #:
-#: Типово ``False``: швидкість важливіша. ``True`` — для випадків, коли
-#: людина свідомо хоче «все в контексті» й готова чекати хвилини.
+#: Навіщо округлення, а не «рівно скільки треба». По-перше, людині й
+#: журналу зрозуміліше «16 384», ніж «13 517». По-друге, час першої
+#: відповіді заміряний саме на круглих розмірах (:data:`LATENCY_TABLE`),
+#: тож обіцянка «~23 с» лишається правдою. По-третє, близькі запити
+#: отримують однаковий бюджет, і префікс промпту не перебудовується.
+#:
+#: Сам крок — 2 048, а не «густа драбина»: дрібніше округлення не змінює
+#: відчуття швидкості, зате дає незрозумілі числа в рядку стану.
+CONTEXT_STEP = 2_048
+
+#: Скільки максимум відкладати під САМУ відповідь у РОЗПОДІЛІ бюджету.
+#:
+#: ``ANSWER_SHARE`` (25%) — це частка, але на вікні 131k вона давала 32k
+#: «про запас», і сама ця частка роздувала робочий бюджет: «привіт»
+#: отримував 73 с замість 20. Насправді резерв під відповідь НЕ впливає на
+#: час до першого токена — час визначає розмір промпту. Тому резерв
+#: обмежений зверху: 4 096 токенів вистачає на розгорнуту відповідь із
+#: кодом, а реальна стеля відповіді однаково береться з ``llm.max_tokens``
+#: (див. ``agent._answer_budget``).
+ANSWER_RESERVE_CAP = 4_096
+
+#: Заміряно 21.11.2026 (RTX 3060 + 64 ГБ RAM, кеш KV у RAM, q8_0):
+#: ``(токенів у промпті, секунд до першого токена відповіді)``.
+LATENCY_TABLE: tuple[tuple[int, float], ...] = (
+    (2_000, 3.6),
+    (8_000, 12.2),
+    (16_000, 23.0),
+    (32_000, 68.7),
+    (64_000, 229.5),
+)
+
+#: Скільки додати понад виміряну потребу (відповідь, службові дані, похибка
+#: токенізації кирилиці). Скільки саме — залежить від глибини запиту
+#: (див. ``agent._DEPTH_MARGIN``): питання-факт не потребує запасу на код.
+DEFAULT_MARGIN = 0.35
+
+#: Скільки місця лишати під САМУ РОБОТУ, навіть якщо виміряна потреба мала.
+#:
+#: Навіщо це окреме число. Виміряна потреба — це те, що вже лежить у сесії
+#: ЗАРАЗ: репліка «виправ баг» — це 30 токенів. Але наступний крок
+#: прочитає файл, і в сесії опиниться вже 8 000 токенів. Якби бюджет
+#: дорівнював виміряній потребі, кожен такий крок різався б під ніж.
+#:
+#: Тому мінімум «кімнати» задає ГЛИБИНА запиту (див.
+#: ``agent._DEPTH_ROOM``): питання-факт — 2k, звичайний запит — 6k,
+#: правка — 10k, продовження роботи — 24k.
+MIN_ROOM = 1_024
+
+
+def latency_seconds(tokens: int) -> float:
+    """Скільки секунд приблизно чекати першу відповідь на такому промпті.
+
+    Числа — заміряні (:data:`LATENCY_TABLE`), між точками — лінійна
+    інтерполяція, далі — та сама крутизна, що й на останній ділянці. Це
+    оцінка для людини («~14 с»), а не гарантія: швидкість залежить ще й
+    від вільної VRAM та довжини самої відповіді.
+    """
+    size = max(0, int(tokens or 0))
+    if size <= 0:
+        return 0.0
+    first_tokens, first_seconds = LATENCY_TABLE[0]
+    if size <= first_tokens:
+        return round(first_seconds * size / first_tokens, 1)
+    for (left_tokens, left_seconds), (right_tokens, right_seconds) in zip(
+            LATENCY_TABLE, LATENCY_TABLE[1:]):
+        if size <= right_tokens:
+            span = right_tokens - left_tokens
+            share = (size - left_tokens) / span
+            return round(left_seconds + (right_seconds - left_seconds) * share, 1)
+    (last_tokens, last_seconds), = LATENCY_TABLE[-1:]
+    (prev_tokens, prev_seconds), = LATENCY_TABLE[-2:-1]
+    slope = (last_seconds - prev_seconds) / (last_tokens - prev_tokens)
+    return round(last_seconds + (size - last_tokens) * slope, 1)
+
+
+def _snap_up(target: int) -> int:
+    """Підняти бюджет до найближчого кроку (:data:`CONTEXT_STEP`).
+
+    Округлення ВГОРУ, а не вниз: краще дати на 2k більше, ніж обрізати
+    запит, який щойно вліз. Стеля моделі й стеля людини застосовуються
+    вже після цього (див. :func:`working_window`).
+    """
+    step = CONTEXT_STEP
+    return max(step, ((max(0, int(target)) + step - 1) // step) * step)
+
+
+def working_window(*, needed: int = 0, window: int = 0,
+                   mode: str = "auto", ceiling: int = 0,
+                   fixed: int = 0, room: int = 0,
+                   margin_share: float | None = None) -> int:
+    """Скільки контексту РЕАЛЬНО заповнювати — за потребою ЦЬОГО запиту.
+
+    Вимога користувача (21.11.2026): «зроби автовизначення в залежності від
+    потреби на запит користувача».
+
+    Навіщо автовизначення, а не одне число. Вікно моделі на цій машині —
+    131 072 токени (кеш KV у RAM), і в стіну «переповнено» агент не
+    впирається ніколи. Але ЗАПОВНЕННЯ коштує часу прямо пропорційно
+    (:data:`LATENCY_TABLE`): 2k — це 3.6 с, а 64k — майже 4 хвилини.
+    Тримати 131k заради «привіт» — чекати хвилини на дрібницю; тримати 4k
+    на «прочитай ці два файли й порівняй» — не мати потрібного тексту.
+
+    ── ЯК РАХУЄТЬСЯ ──────────────────────────────────────────────────────
+    Бюджет не може дорівнювати потребі: у ньому ще мусить лишитись місце
+    під САМУ відповідь і запас на похибку токенізації
+    (:data:`ANSWER_SHARE` + :data:`SAFETY_SHARE`). Тому до потреби додаємо
+    резерв, а не масштабуємо її:
+
+        fixed    = система + схеми інструментів      ← не стискається
+        variable = max(needed − fixed, room) × (1 + запас)
+        target   = fixed + variable + резерв         ← під відповідь
+
+    ``room`` — гарантоване місце під САМУ роботу (за глибиною запиту).
+    Виміряна потреба описує, що лежить у сесії ЗАРАЗ, а наступний крок
+    додасть результати інструментів, тож без ``room`` бюджет дорівнював би
+    поточній репліці й різав кожен наступний крок під ніж.
+
+    Параметри:
+
+    * ``needed`` — виміряна потреба; ``0`` = «невідомо» → обережна типова
+      поведінка (:data:`WORKING_WINDOW`);
+    * ``window`` — скільки модель МОЖЕ (її справжнє вікно);
+    * ``mode`` — ``auto`` (типово), ``max`` (усе дозволене), ``fast``
+      (не більше :data:`WORKING_WINDOW`);
+    * ``ceiling`` — стеля від людини (``agent.working_context``; ``0`` —
+      без стелі);
+    * ``fixed`` — незмінна частина потреби (система + схеми);
+    * ``room`` — мінімум місця під роботу;
+    * ``margin_share`` — частка запасу на ріст роботи (за глибиною запиту).
+
+    Ніколи не повертає більше за ``window`` і за ``ceiling``; ніколи не
+    менше за :data:`MIN_USABLE_WINDOW` (менше — непрацездатна
+    конфігурація: самі схеми інструментів займають тисячі токенів).
+    """
+    total = max(0, int(window or 0))
+    if total <= 0:
+        total = WORKING_WINDOW
+    try:
+        bound = int(ceiling or 0)
+    except (TypeError, ValueError):
+        bound = 0
+    top = min(total, bound) if bound > 0 else total
+
+    choice = str(mode or "auto").strip().lower()
+    if choice in ("max", "full", "all"):
+        return max(MIN_USABLE_WINDOW, top)
+    if choice in ("fast", "fixed", "off"):
+        return max(MIN_USABLE_WINDOW, min(top, WORKING_WINDOW))
+
+    # ── auto ──────────────────────────────────────────────────────────────
+    want = max(0, int(needed or 0))
+    if want <= 0:
+        # Потреба НЕВІДОМА (бюджет рахували до запиту): обережне типове
+        # число, як до 21.11.2026. Це окрема вісь — «не міряли», а не
+        # «міряли й вийшло мало», тому вона не входить у монотонність.
+        return max(MIN_USABLE_WINDOW, min(top, WORKING_WINDOW))
+    try:
+        share = DEFAULT_MARGIN if margin_share is None else float(margin_share)
+    except (TypeError, ValueError):
+        share = DEFAULT_MARGIN
+    share = min(1.0, max(0.0, share))
+    structural = max(0, int(fixed or 0))
+    # ── Потреба не буває МЕНШОЮ за незмінну частину ───────────────────────
+    # ``needed`` міряє, що лежить у сесії. Якщо репліка коротка («привіт»),
+    # виміряна потреба могла вийти меншою за самі схеми — і бюджет падав би
+    # НИЖЧЕ за реально необхідне (перевірено: 1 000 токенів потреби давали
+    # 12 288 при потребі 0 → 32 768, тобто більша потреба отримувала МЕНШЕ).
+    want = max(want, structural)
+    pinned = min(structural, want)
+    minimum_room = max(MIN_ROOM, int(room or 0))
+    variable = max(want - pinned, minimum_room) * (1.0 + share)
+    reserve = int(min(ANSWER_RESERVE_CAP, max(512, (pinned + variable)
+                                              * ANSWER_SHARE)))
+    target = pinned + variable + reserve
+    return max(MIN_USABLE_WINDOW, min(top, _snap_up(int(target) + 1)))
+
+
+
+#: Вимкнути авто-визначення й заповнювати все вікно.
+#:
+#: Типово ``False``: розмір підбирається під запит
+#: (:func:`working_window`). ``True`` — поведінка «завжди все вікно».
 WORKING_LIMIT_OFF = False
 
 #: Частка вікна під ВІДПОВІДЬ моделі. 25% — компроміс: локальні моделі
@@ -127,13 +310,32 @@ class Budget:
     safety: int = 0
     #: Скільки токенів лишилось на власне повідомлення й результати.
     payload: int = 0
+    #: Скільки ми ЗАПОВНЮЄМО (може бути менше за вікно — див.
+    #: :func:`working_window`). ``0`` — як вікно.
+    working: int = 0
     notes: list[str] = field(default_factory=list)
 
+    @property
+    def effective(self) -> int:
+        """Розмір, від якого пораховані частки (вікно або робочий бюджет)."""
+        return int(self.working or self.window)
+
+    def latency_text(self) -> str:
+        """Скільки приблизно чекати першу відповідь на цьому бюджеті."""
+        return f"~{latency_seconds(self.effective):.0f} с"
+
     def text(self) -> str:
-        return (f"вікно {self.window:,} · відповідь {self.answer:,} · "
-                f"історія {self.history:,} · інструменти {self.tools:,} · "
-                f"система {self.system:,} · запас {self.safety:,}"
-                ).replace(",", " ")
+        parts = [f"вікно {self.window:,}"]
+        if self.working and self.working != self.window:
+            parts.append(f"заповнюю {self.working:,} ({self.latency_text()})")
+        parts.extend([
+            f"відповідь {self.answer:,}",
+            f"історія {self.history:,}",
+            f"інструменти {self.tools:,}",
+            f"система {self.system:,}",
+            f"запас {self.safety:,}",
+        ])
+        return " · ".join(parts).replace(",", " ")
 
 
 def resolve_window(*, settings: Any = None, props_ctx: int = 0,
@@ -184,44 +386,69 @@ def resolve_window(*, settings: Any = None, props_ctx: int = 0,
 
 
 def plan(window: Window | int, *, system_tokens: int = 0,
-         tools_tokens: int = 0) -> Budget:
+         tools_tokens: int = 0, needed: int = 0,
+         mode: str = "auto", ceiling: int = 0, room: int = 0,
+         margin_share: float | None = None) -> Budget:
     """Розподілити вікно: відповідь, історія, система, схеми, запас.
 
     ``payload`` — скільки токенів лишається на повідомлення й результати
     інструментів. Саме це число агент використовує для стискання, і саме
     його бракувало: раніше історія різалась за фіксованою формулою, яка не
     знала ні реального вікна, ні розміру схем.
+
+    ── ВІКНО vs БЮДЖЕТ ЗАПОВНЕННЯ ────────────────────────────────────────
+    ``total`` — скільки модель МОЖЕ тримати (до 131 072 на цій машині).
+    ``working`` — скільки ми реально ЗАПОВНЮЄМО цього разу, і його обирає
+    :func:`working_window` під сам запит: ``needed`` — виміряна потреба
+    (система + схеми + історія + дані), ``room`` — мінімум під роботу,
+    ``mode`` — вибір людини, ``ceiling`` — її стеля
+    (``agent.working_context``).
+
+    Без ``needed`` (0) розмір береться обережно — :data:`WORKING_WINDOW`:
+    так було до 21.11.2026, і так лишається для викликів без виміру.
     """
     total = int(window.tokens if isinstance(window, Window) else window) or 0
     if total <= 0:
         return Budget()
-    # ── ВІКНО vs БЮДЖЕТ ЗАПОВНЕННЯ ────────────────────────────────────────
-    # ``total`` — скільки модель МОЖЕ тримати (до 131 072 на цій машині).
-    # ``effective`` — скільки ми реально ЗАПОВНЮЄМО. Друге менше, бо
-    # заповнений контекст різко сповільнює відповідь (заміряно: 64k токенів
-    # → 229 с на кожен запит). Решта знань живе в довгостроковій пам'яті.
-    effective = min(total, WORKING_WINDOW) if not WORKING_LIMIT_OFF else total
-    answer = max(256, int(effective * ANSWER_SHARE))
-    safety = max(128, int(effective * SAFETY_SHARE))
     system = max(0, int(system_tokens))
     tools = max(0, int(tools_tokens))
-    fixed = answer + safety + system + tools
-    room = effective - fixed
-    if room < 256:
+    effective = working_window(needed=needed, window=total, mode=mode,
+                               ceiling=ceiling, fixed=system + tools,
+                               room=room, margin_share=margin_share)
+    if WORKING_LIMIT_OFF:
+        effective = total
+    answer = max(256, int(effective * ANSWER_SHARE))
+    safety = max(128, int(effective * SAFETY_SHARE))
+    free = effective - answer - safety - system - tools
+    if free < 256:
         # Схеми й система самі з'їли вікно: це чесна діагностика, а не
         # мовчазний збій. Викликач має зменшити набір інструментів.
         LOG.warning("Контекст переповнений службовими даними: вікно %s "
                     "(робоче %s), система %s, схеми %s",
                     total, effective, system, tools)
-    history = max(0, min(int(effective * HISTORY_SHARE), max(0, room)))
-    payload = max(0, room - history)
+    # ── Історія не має права забрати ВСЮ кімнату ──────────────────────────
+    # Коли службові дані з'їли майже все, ``free`` малий, і «частка вікна
+    # на історію» дорівнювала б усьому залишку — тоді ``payload`` ставав
+    # НУЛЕМ, тобто місця під саму репліку користувача не лишалось
+    # (перевірено: «історія 4 470 · payload 0» — модель не бачила запиту).
+    # Тому історія бере частку вікна, але не більше за те, що лишається
+    # після гарантованого місця під поточне повідомлення.
+    history_ceiling = max(0, free - MIN_ROOM) if free else 0
+    history = max(0, min(int(effective * HISTORY_SHARE), history_ceiling))
+    payload = max(0, free - history)
     budget = Budget(window=total, answer=answer, history=history,
-                    tools=tools, system=system, safety=safety, payload=payload)
+                    tools=tools, system=system, safety=safety, payload=payload,
+                    working=effective)
     if effective < total:
         budget.notes.append(
-            f"робочий бюджет {effective} із вікна {total}: більший контекст "
-            f"сповільнює відповідь, решта знань — у пам'яті")
-    if room < 256:
+            f"заповнюю {effective} із вікна {total}: більший контекст "
+            f"сповільнює відповідь ({latency_seconds(effective):.0f} с проти "
+            f"{latency_seconds(total):.0f} с), решта знань — у пам'яті")
+    if system + tools > effective * 0.5:
+        budget.notes.append(
+            f"службові дані {system + tools} токенів — понад половину "
+            f"робочого бюджету {effective}")
+    if free < 256:
         budget.notes.append(
             f"службові дані ({system + tools} токенів) майже з'їли вікно "
             f"{total}")
@@ -290,14 +517,23 @@ def fit_messages(messages: Iterable[dict[str, Any]], budget_tokens: int, *,
 
 
 __all__ = [
+    "ANSWER_RESERVE_CAP",
     "ANSWER_SHARE",
     "Budget",
+    "CONTEXT_STEP",
+    "DEFAULT_MARGIN",
     "HISTORY_SHARE",
+    "LATENCY_TABLE",
+    "MIN_ROOM",
     "MIN_USABLE_WINDOW",
     "SAFETY_SHARE",
+    "WORKING_LIMIT_OFF",
+    "WORKING_WINDOW",
     "Window",
     "estimate_tokens",
     "fit_messages",
+    "latency_seconds",
     "plan",
     "resolve_window",
+    "working_window",
 ]

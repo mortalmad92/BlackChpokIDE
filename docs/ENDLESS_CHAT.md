@@ -148,6 +148,45 @@ NEUROMESH».
 хмарних. Обидві були вигадані нами (32 000 і 200 000) й обидві зрізали
 можливості. Лишається лише санітарна межа `MAX_TOKENS_LIMIT`.
 
+### 6б. Автовизначення бюджету ЗАПОВНЕННЯ на кожен запит
+
+**Вимога:** «зроби автовизначення в залежності від потреби на запит
+користувача».
+
+Вікно (скільки модель МОЖЕ) і бюджет (скільки ми ЗАПОВНЮЄМО) — різні
+числа. Вікно на цій машині 131 072, але заповнювати його щоразу означало
+б чекати хвилини (заміряно: 2k → 3.6 с, 16k → 23 с, 64k → 229 с). Тому
+розмір обирає `context_budget.working_window` **під кожен запит**, а
+`AgentRunner.refresh_budget_for_request` перераховує його перед кожним
+кроком:
+
+| Що міряється | Звідки |
+| --- | --- |
+| потреба | система + схеми (лише коли їх справді надсилають) + історія + репліка ×2 |
+| «кімната» під роботу | глибина запиту (`context_flow`): факт 2k, звичайне 6k, правка 10k, «продовж» 24k |
+| запас | частка від потреби, за глибиною (15–45%) |
+| стеля | вікно моделі та `agent.working_context` (`0` = без стелі) |
+
+Розмір піднімається до кроку 2 048 (`CONTEXT_STEP`), щоб числа були
+круглими, а близькі запити діставали однаковий план. У рядку стану й
+панелі контексту видно і вікно, і план, і **оцінку часу** до першої
+відповіді (`context_budget.latency_seconds` — інтерполяція заміряної
+таблиці, а не вигадка).
+
+Що **заборонено** ламати:
+
+* рахувати вагу схем у розмові, де схеми не надсилаються (`_chat_only`
+  кличе `refresh_budget_for_request(with_tools=False)`) — інакше «привіт»
+  отримує 24k і чекає пів хвилини дарма;
+* брати «стелю» з вікна замість робочого бюджету в стисканні
+  (`_working_limit`) — при вікні 131 072 «чверть вікна на один результат
+  інструмента» = 32 768 токенів, і жоден план не тримається;
+* лишати історії всю вільну кімнату (`payload` стає нулем, і модель не
+  бачить самого запиту).
+
+Тести-охоронці: `tests/test_adaptive_context_per_request.py`,
+`tests/test_context_budget_floor.py`.
+
 ---
 
 ## 7. Авто-роутер інструментів
@@ -188,6 +227,7 @@ NEUROMESH».
 | Дві стелі `max_tokens` | локальна модель різалась до 32 000 | `test_context_probe` |
 | Проба вікна в головному потоці | 55 с очікування перед відповіддю | `test_context_probe` |
 | Модель без зору для мультимодальної хмари | картинки не прикріплювались | `test_image_attachments` |
+| Один бюджет на всю сесію | «привіт» чекав стільки ж, скільки велика робота | `test_adaptive_context_per_request` |
 
 ---
 
@@ -196,11 +236,12 @@ NEUROMESH».
 ```powershell
 python -m unittest tests.test_endless_chat -v       # гаряча черга, звільнення, роутер
 python -m unittest tests.test_context_probe -v      # автовизначення вікна
+python -m unittest tests.test_adaptive_context_per_request -v  # бюджет під запит
 python -m unittest tests.test_model_freedom -v      # свобода моделі
 python -m unittest tests.test_image_attachments -v  # зір і іконки
 ```
 
-Усі чотири набори мусять бути зеленими. Якщо падає — виправ **причину в
+Усі п'ять наборів мусять бути зеленими. Якщо падає — виправ **причину в
 коді**, а не тест: ці тести описують вимоги користувача.
 
 ---
@@ -211,12 +252,14 @@ python -m unittest tests.test_image_attachments -v  # зір і іконки
 blackchpok_ide/
   agent.py            auto_free_context, _evict_oldest_for_compact,
                       _archive_evicted_context, _live_context_window,
-                      _answer_budget, _select_schemas, _learn_from_turn
+                      _answer_budget, _needed_tokens,
+                      refresh_budget_for_request, _select_schemas, _learn_from_turn
   chat_panel.py       _queue_hot, take_hot_request, _run_hot_next
   context_probe.py    жива проба вікна (models / помилка / бінарний пошук)
   tool_select.py      профілі наборів інструментів
   memory_bridge.py    міст до NEUROMESH (факти, уроки, архів)
   longchat.py         хроніка розмови
   selflearning.py     уроки з помилок
-  context_budget.py   розподіл вікна (відповідь / історія / схеми / запас)
+  context_budget.py   вікно vs бюджет заповнення (working_window), розподіл
+                      (відповідь / історія / схеми / запас), оцінка часу
 ```

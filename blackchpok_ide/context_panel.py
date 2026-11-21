@@ -329,6 +329,12 @@ class ContextPanel(tk.Frame):
         if limit > 0:
             free = max(0, int(limit) - int(used or 0))
             parts.append(f"вільно {free:,}".replace(",", " "))
+        # Скільки ЗАПОВНЮЄМО цього разу. Вікно (``limit``) — стеля моделі;
+        # план під конкретний запит може бути меншим, і без цього числа
+        # «вільно 130 000» виглядало б як «контекст порожній».
+        working = int((budget or {}).get("working") or 0)
+        if working and limit and working < limit:
+            parts.append(f"план {working:,}".replace(",", " "))
         for key, label in (("answer", "відп"), ("history", "іст"),
                            ("tools", "схеми"), ("system", "сис")):
             value = int((budget or {}).get(key) or 0)

@@ -728,6 +728,21 @@ class AgentSession:
         self.trim()
         return restored
 
+    def _working_limit(self) -> int:
+        """Скільки токенів ми ЗАПОВНЮЄМО (а не скільки модель може).
+
+        Вікно (``context_limit``) — це стеля моделі: на цій машині 131 072.
+        Але стискання й обрізання мають рахуватись від РОБОЧОГО бюджету
+        (``_context_budget.working``): інакше «чверть вікна на один
+        результат інструмента» = 32 768 токенів, і жоден план не тримається.
+
+        Якщо бюджету ще немає — повертає вікно: обережне число краще за
+        нуль, який вимкнув би стискання взагалі.
+        """
+        budget = getattr(self, "_context_budget", None)
+        working = int(getattr(budget, "working", 0) or 0) if budget else 0
+        return working or int(getattr(self, "context_limit", 0) or 0)
+
     def system_message(self) -> dict[str, Any]:
         prompt = self.settings.system_prompt.strip() or "Ти — BlackChpok AI, агент усередині IDE."
         # Вузьке вікно моделі: повний промпт + схеми інструментів не лишали
@@ -794,7 +809,7 @@ class AgentSession:
         локальної норми — щоб малі вікна працювали як раніше.
         """
         base = max(2000, int(self.settings.context_char_limit or 24_000) // 4)
-        window = int(getattr(self, "context_limit", 0) or 0)
+        window = self._working_limit()
         if window <= 0:
             return base
         # ~3 символи на токен; чверть вікна під один результат.
@@ -932,9 +947,15 @@ class AgentSession:
         if limit <= 0:
             return
         budget = getattr(self, "_context_budget", None)
-        if budget is not None and budget.window:
-            # Стеля = вікно мінус відповідь, запас і службові дані.
-            ceiling = max(512, budget.window - budget.answer - budget.safety)
+        if budget is not None and getattr(budget, "window", 0):
+            # Стеля = РОБОЧИЙ бюджет мінус відповідь і запас.
+            #
+            # Саме ``budget.effective``, а не ``window``: вікно — це
+            # скільки модель МОЖЕ (131 072), а заповнюємо ми 20–65k
+            # (див. ``context_budget.working_window``). Рахунок від вікна
+            # лишав «кімнату» вдесятеро більшою за план, і жодне стискання
+            # не спрацьовувало.
+            ceiling = max(512, budget.effective - budget.answer - budget.safety)
         else:
             # Запас на відповідь моделі (коли бюджет ще не пораховано).
             ceiling = limit - max(256, int(limit * context_budget.ANSWER_SHARE))
@@ -951,7 +972,7 @@ class AgentSession:
             LOG.info("Історію підрізано під вікно %s (стеля %s): лишилось %s "
                      "повідомлень", limit, ceiling, len(self.messages))
         # Окремі повідомлення й результати інструментів теж не мають права
-        # бути більшими за свою частку вікна.
+        # бути більшими за свою частку РОБОЧОГО бюджету.
         self._clip_oversized_messages(max(512, ceiling // 3))
         self._clip_tool_results()
 
@@ -1016,7 +1037,7 @@ class AgentSession:
 
     def _token_chars_budget(self) -> int:
         """Скільки токенів лишити під історію (решта — промпт, схеми, відповідь)."""
-        limit = int(self.context_limit or 0)
+        limit = self._working_limit()
         if limit <= 0:
             return 10**9   # вікно невідоме — працюємо за лімітом символів
         # Місце під відповідь моделі.
@@ -1028,10 +1049,14 @@ class AgentSession:
         return max(400, room)
 
     def _clip_tool_results(self) -> None:
-        limit = int(self.context_limit or 0)
+        limit = self._working_limit()
         if limit <= 0:
             return
-        # ~1 токен на 3 символи; один результат не має брати понад 25% вікна.
+        # ~1 токен на 3 символи; один результат не має брати понад 25%
+        # РОБОЧОГО бюджету. Саме робочого, а не вікна: при вікні 131 072
+        # чверть вікна — це 32 768 токенів на ОДИН результат, і жоден
+        # бюджет не втримався б: історія з двох файлів перевищувала план
+        # учетверо (перевірено живим заміром 21.11.2026).
         allowed = max(2000, int(limit * 0.25 * 3))
         for message in self.messages:
             if message.get("role") == "tool":
@@ -1932,6 +1957,148 @@ class AgentRunner:
                  window.text(), budget.text())
         for note in budget.notes:
             LOG.warning("Контекст: %s", note)
+        return budget
+
+    #: Скільки токенів додавати понад виміряну потребу, за глибиною запиту.
+    #:
+    #: Запас — це відповідь моделі, службові дані й похибка токенізації
+    #: кирилиці. Він різний, бо різні запити: питання-факт потребує двох
+    #: абзаців, «напиши сайт із шести файлів» — тисяч токенів коду.
+    _DEPTH_MARGIN: dict[str, float] = {
+        context_flow.DEPTH_MINIMAL: 0.15,
+        context_flow.DEPTH_SHALLOW: 0.20,
+        context_flow.DEPTH_MEDIUM: 0.30,
+        context_flow.DEPTH_DEEP: 0.45,
+    }
+
+    #: Скільки місця лишати під САМУ РОБОТУ, за глибиною запиту.
+    #:
+    #: Виміряна потреба описує, що лежить у сесії ЗАРАЗ: репліка «виправ
+    #: баг» — це 30 токенів. Але вже наступний крок прочитає файл, і в сесії
+    #: опиниться 8 000. Тому «кімната» задається наміром, а не поточним
+    #: розміром тексту: питання-факт — 2k, звичайне завдання — 6k, правка —
+    #: 10k, продовження роботи — 24k.
+    _DEPTH_ROOM: dict[str, int] = {
+        context_flow.DEPTH_MINIMAL: 2_048,
+        context_flow.DEPTH_SHALLOW: 6_144,
+        context_flow.DEPTH_MEDIUM: 10_240,
+        context_flow.DEPTH_DEEP: 24_576,
+    }
+
+    def _needed_tokens(self, *, with_tools: bool = True) -> int:
+        """Скільки токенів ЦЕЙ запит реально хоче зайняти.
+
+        Міряємо те, що справді піде в промпт, а не «скільки є»:
+
+        * системний промпт;
+        * схеми інструментів (вони вже вибрані під це вікно) — ЛИШЕ коли
+          цей хід справді надсилає схеми: у звичайній розмові їх немає, і
+          рахувати їхні 9 646 токенів означало б «привіту» давати 24k;
+        * історію, що зараз лежить у сесії;
+        * **останню репліку користувача двічі** — вона вже в історії, але
+          саме вона виросте під час роботи (результати інструментів
+          приєднуються до неї), тож без запасу «прочитай ці два файли» не
+          дістало б місця під самі файли.
+
+        Повертає ``0``, якщо вікно ще невідоме: тоді працює обережна
+        типова поведінка, а не вигадана потреба.
+        """
+        limit = int(getattr(self.session, "context_limit", 0) or 0)
+        if limit <= 0:
+            return 0
+        try:
+            system_text = str(self.session.system_message().get("content") or "")
+        except (AttributeError, TypeError):
+            system_text = ""
+        total = self.session._tokens_in(system_text)
+        if with_tools:
+            try:
+                total += int(self.session._tools_tokens())
+            except (AttributeError, TypeError):
+                pass
+        last_user = 0
+        for message in reversed(getattr(self.session, "messages", []) or ()):
+            if str(message.get("role") or "") != "user":
+                continue
+            body = message.get("content")
+            last_user = self.session._tokens_in(
+                body if isinstance(body, str) else str(body or ""))
+            break
+        for message in getattr(self.session, "messages", []) or ():
+            body = message.get("content")
+            total += self.session._tokens_in(
+                body if isinstance(body, str) else str(body or ""))
+        # Остання репліка йде в сумі ОДИН раз — додаємо ще один, щоб вийшло
+        # «двічі»: стільки місця їй треба на ріст під час роботи.
+        total += last_user
+        return max(0, total)
+
+    def refresh_budget_for_request(self, *, with_tools: bool = True) -> "context_budget.Budget":
+        """Перерахувати робочий бюджет під КОЖЕН запит.
+
+        Вимога користувача (21.11.2026): «зроби автовизначення в залежності
+        від потреби на запит».
+
+        Навіщо перераховувати, а не рахувати раз на старті. Потреба різна на
+        кожному ході: «привіт» хоче ~2k, а «порівняй ці два файли» —
+        десятки тисяч. Один бюджет на всю сесію означав би або хвилини
+        очікування на дрібницю, або обрізаний текст у великій роботі.
+
+        Розмір вибирає :func:`context_budget.working_window`:
+        ``needed`` — виміряна потреба (:meth:`_needed_tokens`), ``mode`` —
+        ``agent.context_mode`` (``full`` = усе вікно), ``ceiling`` —
+        ``agent.working_context`` (``0`` = без стелі).
+
+        ``with_tools=False`` — для звичайної розмови, де схеми інструментів
+        НЕ надсилаються: їхні 9 646 токенів не мають роздувати бюджет
+        «привіту».
+
+        Старий бюджет лишається, якщо вікно невідоме: краще обережне
+        число, ніж жодного.
+        """
+        window = getattr(self, "_context_window", None)
+        limit = int(getattr(self.session, "context_limit", 0) or 0)
+        if window is None or not limit:
+            return getattr(self, "_context_budget", None) or context_budget.Budget()
+        needed = 0
+        try:
+            needed = self._needed_tokens(with_tools=with_tools)
+        except Exception:                        # noqa: BLE001
+            LOG.debug("Потребу в контексті не виміряно", exc_info=True)
+        settings = getattr(self, "agent_settings", None)
+        mode = "auto"
+        ceiling = 0
+        if str(getattr(settings, "context_mode", "auto") or "") == "full":
+            mode = "max"
+        try:
+            ceiling = int(getattr(settings, "working_context", 0) or 0)
+        except (TypeError, ValueError):
+            ceiling = 0
+        # ``-1`` — «усе вікно моделі» (людина обрала це явно): стелі немає,
+        # і автовизначення теж не звужує план.
+        if ceiling < 0:
+            mode = "max"
+            ceiling = 0
+        depth_level = ""
+        try:
+            depth_level = str(getattr(self.context_plan().depth, "level", "") or "")
+        except Exception:                        # noqa: BLE001
+            depth_level = ""
+        margin = self._DEPTH_MARGIN.get(depth_level)
+        room = self._DEPTH_ROOM.get(depth_level, 0)
+        budget = context_budget.plan(
+            window,
+            system_tokens=self.session._tokens_in(
+                str(self.session.system_message().get("content") or "")),
+            tools_tokens=self.session._tools_tokens() if with_tools else 0,
+            needed=needed,
+            mode=mode,
+            ceiling=ceiling,
+            room=room,
+            margin_share=margin,
+        )
+        self._context_budget = budget
+        LOG.info("Бюджет під запит: потреба %s → %s", needed, budget.text())
         return budget
 
     def _live_context_window(self, base_url: str) -> int:
@@ -4403,6 +4570,28 @@ class AgentRunner:
             LOG.debug("Роутер не дав підказки для %r", text[:60], exc_info=True)
         return True
 
+    def _announce_budget(self, budget: Any) -> None:
+        """Сказати людині, скільки контексту взято й скільки це часу.
+
+        Показуємо лише тоді, коли бюджет СПРАВДІ звужений відносно вікна:
+        «заповнюю 131072 із 131072» нічого не додає, а рядок про кожен хід
+        перетворився б на шум.
+
+        Навіщо взагалі показувати. Користувач бачить паузу й має розуміти,
+        звідки вона: це не «модель задумалась», а заповнення контексту, і
+        час заміряний (див. ``context_budget.LATENCY_TABLE``).
+        """
+        if budget is None:
+            return
+        working = int(getattr(budget, "working", 0) or 0)
+        window = int(getattr(budget, "window", 0) or 0)
+        if not working or not window or working >= window:
+            return
+        self._emit("status",
+                   f"Контекст під запит: {working:,} із {window:,} "
+                   f"({budget.latency_text()} до першої відповіді)"
+                   .replace(",", " "))
+
     def _answer_budget(self) -> int:
         """Скільки токенів просити під ОДНУ відповідь у розмові.
 
@@ -4466,6 +4655,14 @@ class AgentRunner:
         # Хроніка потрібна й у звичайній розмові: довгий чат без інструментів
         # теж впирається у вікно.
         self._render_digest()
+        # ── Бюджет БЕЗ схем: їх у розмові не надсилають ────────────────────
+        # Рахувати 9 646 токенів схем, яких модель не побачить, означало б
+        # дати «привіту» вчетверо більший контекст, ніж йому треба.
+        try:
+            tuned = self.refresh_budget_for_request(with_tools=False)
+            self._announce_budget(tuned)
+        except Exception:  # noqa: BLE001 - бюджет не має ламати розмову
+            LOG.debug("Бюджет розмови не перераховано", exc_info=True)
         messages = self.session.build()
         started = time.perf_counter()
         # ── Бюджет відповіді: не «min(700)», а стільки, скільки дає модель ──
@@ -4752,6 +4949,21 @@ class AgentRunner:
                     self._emit("status", f"Контекст: {budget.text()}")
             except Exception:  # noqa: BLE001 - бюджет не має ламати хід
                 LOG.debug("Вікно контексту не визначено", exc_info=True)
+            # ── АВТОВИЗНАЧЕННЯ БЮДЖЕТУ ПІД ЦЕЙ ЗАПИТ ──────────────────────
+            # Вікно — це скільки модель МОЖЕ. Скільки ЗАПОВНЮВАТИ — інше
+            # число, і воно різне на кожному ході: «привіт» хоче ~2k,
+            # «порівняй ці два файли» — десятки тисяч. Готуємо його ТУТ,
+            # коли текст запиту вже в сесії, а схеми й хроніка взяті під
+            # поточне вікно.
+            #
+            # Надсилати чи ні — вирішує :meth:`_loop` (зі схемами) або
+            # :meth:`_chat_only` (без них): у звичайній розмові схем немає,
+            # і рахувати їхні 9 646 токенів означало б «привіту» давати
+            # 24 000 — рівно те, від чого ця вимога й рятує.
+            try:
+                self.refresh_budget_for_request(with_tools=bool(self.tools_enabled))
+            except Exception:  # noqa: BLE001 - не має ламати хід
+                LOG.debug("Бюджет під запит не перераховано", exc_info=True)
             # ── Відповідь на наше ж питання про GitHub ─────────────────────
             # Користувач бачить «Оновити файли на GitHub?» і відповідає
             # «так». Без цієї гілки агент сприйняв би «так» як нове
@@ -5695,6 +5907,14 @@ class AgentRunner:
 
     def _loop(self, client: LLMClient) -> None:
         schemas = self.tool_schemas()
+        # ── Бюджет під ЦЕЙ хід: зі схемами, бо вони справді підуть ─────────
+        # Схеми вже вибрані під вікно, тож потреба вимірюється РАЗОМ із ними
+        # і з поточною історією. Далі на кожному кроці цикл перерахує його
+        # заново: історія виросла, і бюджет мусить вирости разом із нею.
+        try:
+            self._announce_budget(self.refresh_budget_for_request(with_tools=True))
+        except Exception:  # noqa: BLE001 - бюджет не має ламати роботу
+            LOG.debug("Бюджет ходу не перераховано", exc_info=True)
         #: Скільки разів поспіль модель повторила ОДИН і той самий виклик.
         #: Локальні моделі (особливо 7B-класу) застрягають: інструмент
         #: відповідає помилкою, модель повторює той самий виклик і так до
@@ -5751,6 +5971,14 @@ class AgentRunner:
             # міг витіснити блок історії, і модель має побачити оновлений
             # слід розмови вже в цьому запиті, а не в наступному.
             self._render_digest()
+            # ── Бюджет перераховується на КОЖНОМУ кроці ────────────────────
+            # Історія виросла (результати інструментів, хроніка), і план
+            # мусить вирости разом із нею. Рахуємо від РЕАЛЬНОЇ потреби, а не
+            # «тримаємо 32k, бо так стояло в налаштуваннях».
+            try:
+                self.refresh_budget_for_request(with_tools=True)
+            except Exception:  # noqa: BLE001 - не має ламати хід
+                LOG.debug("Бюджет кроку не перераховано", exc_info=True)
             messages = self.session.build()
             result = self._ask(client, messages, schemas)
             elapsed = time.perf_counter() - started

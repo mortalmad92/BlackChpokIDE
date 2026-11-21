@@ -40,6 +40,73 @@ def _vision_value(choice: str) -> Optional[bool]:
     return None
 
 
+#: Вибір «скільки контексту заповнювати на запит» (``agent.working_context``).
+#:
+#: ``0`` — АВТО: розмір підбирається під кожен запит (типово). Інші
+#: значення — жорстка стеля в токенах. Числа не круглі «на око»: заміряний
+#: час першої відповіді на RTX 3060 — 3.6 с / 23 с / 69 с / 229 с
+#: (див. ``context_budget.LATENCY_TABLE``).
+WORKING_CHOICES: tuple[tuple[int, str], ...] = (
+    (0, "Авто (під кожен запит)"),
+    (16_384, "не більше 16K (~23 с)"),
+    (32_768, "не більше 32K (~69 с)"),
+    (49_152, "не більше 48K (~2 хв)"),
+    (65_536, "не більше 64K (~4 хв)"),
+    (-1, "Усе вікно моделі (повільно)"),
+)
+
+
+def _working_choice(value: Any) -> str:
+    """``agent.working_context`` → підпис у списку."""
+    try:
+        number = int(value or 0)
+    except (TypeError, ValueError):
+        number = 0
+    for key, label in WORKING_CHOICES:
+        if key == number:
+            return label
+    # Невідоме додатне число: показуємо його чесно, а не «Авто».
+    if number > 0:
+        return f"не більше {number} токенів"
+    return WORKING_CHOICES[0][1]
+
+
+def _working_value(choice: str, keys: list[int]) -> int:
+    """Підпис зі списку → ``agent.working_context`` (0 — авто).
+
+    Спершу — точний збіг підпису, потім ЧИСЛО з підпису. Число потрібне для
+    значень поза списком (напр. ``40000`` у старому файлі налаштувань,
+    підпис «не більше 40000 токенів»): без цього такий вибір тихо ставав би
+    «Авто» й людина втрачала власну стелю.
+    """
+    text = str(choice or "")
+    for key, label in WORKING_CHOICES:
+        if label == text:
+            return key
+    if "усе вікно" in text.lower():
+        return -1
+    for chunk in text.replace("\u00a0", " ").split():
+        if chunk.isdigit():
+            return int(chunk)
+    for key in keys:
+        if key > 0 and str(key) in text:
+            return key
+    return 0
+
+
+def _working_ceiling(value: Any) -> int:
+    """Значення зі списку → стеля для ``context_budget``.
+
+    ``0`` — автовизначення (без стелі), ``-1`` — «усе вікно» (теж без
+    стелі, але з явним наміром людини: режим ``full`` ставить агент).
+    """
+    try:
+        number = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return 0 if number < 0 else number
+
+
 class SettingsDialog(tk.Toplevel):
     def __init__(self, master: tk.Misc, fonts: theme.Theme, settings: Settings,
                  on_saved: Optional[Callable[[], None]] = None,
@@ -820,6 +887,31 @@ class SettingsDialog(tk.Toplevel):
                                 "агент працює безперервно.",
                   style="Faint.TLabel", wraplength=460).grid(
             row=13, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        # ── скільки контексту заповнювати на запит ────────────────────────
+        # Вікно моделі (скільки вона МОЖЕ) і бюджет (скільки ми ЗАПОВНЮЄМО)
+        # — різні речі. Типово розмір підбирається під сам запит: «привіт»
+        # бере кілька тисяч і відповідає швидко, велика робота — десятки
+        # тисяч. Стеля потрібна тим, хто не хоче чекати ніколи.
+        ttk.Label(options, text="Контекст на запит: скільки заповнювати").grid(
+            row=23, column=0, sticky="w", pady=(10, 0))
+        self.working_ctx_var = tk.StringVar(
+            value=self._working_choice(
+                getattr(self.settings.agent, "working_context", 0)))
+        ttk.Combobox(
+            options, textvariable=self.working_ctx_var, state="readonly",
+            width=24, values=[label for _key, label in WORKING_CHOICES],
+        ).grid(row=23, column=1, sticky="w", padx=(10, 0), pady=(10, 0))
+        self._working_keys: list[int] = [key for key, _label in WORKING_CHOICES]
+        ttk.Label(
+            options,
+            text=("«Авто» — розмір підбирається під кожен запит (типово). "
+                  "«Усе вікно» — максимум пам'яті, але кожне запитання може "
+                  "чекати хвилини. Решта — жорстка стеля, якщо хвилини "
+                  "неприйнятні.\nЧас заміряно на RTX 3060: 2 тис. токенів — "
+                  "3.6 с, 16 тис. — 23 с, 32 тис. — 69 с, 64 тис. — 229 с."),
+            style="Faint.TLabel", wraplength=460).grid(
+            row=24, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # ── постійні побажання ────────────────────────────────────────────
         # Показуємо РІВНО те, що агент запам'ятав, і даємо це стерти.
@@ -1637,6 +1729,14 @@ class SettingsDialog(tk.Toplevel):
             LOG.debug("Рівень свободи дій не збережено", exc_info=True)
         s.agent.long_chat = bool(self.long_chat_var.get())
         s.agent.self_learning = bool(self.self_learning_var.get())
+        # ── скільки контексту заповнювати на запит ────────────────────────
+        # Зберігаємо ЧИСЛО (0 = авто), а не підпис: підписи міняються разом
+        # із заміряним часом, а число — це контракт із ``context_budget``.
+        try:
+            s.agent.working_context = _working_value(
+                str(self.working_ctx_var.get() or ""), self._working_keys)
+        except (AttributeError, tk.TclError):
+            LOG.debug("Розмір контексту на запит не збережено", exc_info=True)
         # GitHub: прапорець питати й токен (шифрується під час save()).
         try:
             s.git.offer_after_work = bool(self.git_offer_var.get())
