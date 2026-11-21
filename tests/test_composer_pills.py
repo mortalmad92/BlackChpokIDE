@@ -61,29 +61,36 @@ class TestComposerPills(unittest.TestCase):
         self.root.update()
         return panel, host
 
-    def test_both_pills_exist_above_input(self) -> None:
+    def test_workspace_pill_is_removed(self) -> None:
+        """Пігулки теки в чаті БІЛЬШЕ НЕМАЄ (вимога 21.11.2026).
+
+        «Заборони змінювати привязку до однієї теки. Як вже вибрав одну
+        папку — один чат, то так і працюємо тут, прибери кнопку з чату!».
+
+        Навіщо прибрано: пігулка дозволяла перемкнути теку посеред розмови,
+        і агент починав писати в інший проєкт. Тепер тека фіксується на чат.
+        """
         panel, host = self._panel()
         try:
-            self.assertTrue(panel.workspace_btn.winfo_exists())
-            # Пігулка режиму прибрана 20.11.2026 на прохання користувача:
-            # «модель має працювати в режимі агента та чату і використання
-            # будь-яких інструментів на розсуд самої моделі». Її підпис
-            # читався як заборона працювати з файлами.
+            self.assertIsNone(panel.workspace_btn,
+                              "пігулки теки в композері більше немає")
+            # Пігулки режиму теж немає (прибрано 20.11.2026).
             self.assertIsNone(panel.mode_btn,
                               "пігулки режиму в композері більше немає")
-            # Робочий простір стоїть вище за поле вводу в СВОЇЙ сітці.
-            self.assertLess(panel.space_row.grid_info().get("row"),
-                            panel.input_box.grid_info().get("row"))
+            # Поле вводу й рядок дій лишились на місці.
+            self.assertTrue(panel.input_box.winfo_exists())
         finally:
             host.destroy()
 
-    def test_workspace_pill_shows_real_name(self) -> None:
+    def test_workspace_state_is_kept_without_pill(self) -> None:
+        """Стан теки зберігається навіть без пігулки — для підпису й журналу."""
         panel, host = self._panel()
         try:
             panel.set_workspace("blackchpock_ai", path=str(ROOT))
-            self.assertEqual(panel.workspace_btn.label.cget("text"), "blackchpock_ai")
+            self.assertEqual(panel._workspace_name, "blackchpock_ai")
+            self.assertEqual(panel._workspace_path, str(ROOT))
             panel.set_workspace("")
-            self.assertIn("не обрано", panel.workspace_btn.label.cget("text"))
+            self.assertEqual(panel._workspace_name, "")
         finally:
             host.destroy()
 
@@ -105,22 +112,20 @@ class TestComposerPills(unittest.TestCase):
             host.destroy()
 
     def test_pill_click_calls_shell_callback(self) -> None:
+        """Колбеки меню лишаються робочими, хоч пігулок у чаті немає.
+
+        Пігулку теки прибрано 21.11.2026 («один чат — одна тека»), пігулку
+        режиму — 20.11.2026. Але меню теки й режиму ще досяжні з меню
+        програм і слэш-команд, тож колбеки вікна мусять працювати.
+        """
         panel, host = self._panel()
         calls: list[str] = []
         panel.on_workspace_menu = lambda _btn: calls.append("workspace")
         panel.on_mode_menu = lambda _btn: calls.append("mode")
         try:
-            panel.workspace_btn.event_generate("<Button-1>")
-            self.root.update()
-            # Пігулки режиму немає — меню викликають програмно (слэш-команда
-            # чи меню програм), і колбек вікна мусить лишатись робочим.
+            panel._open_workspace_menu()
             panel._open_mode_menu()
             self.root.update()
-            if "workspace" not in calls:
-                # event_generate у прихованому вікні може не дійти —
-                # викликаємо той самий обробник явно (він і є бізнес-логікою).
-                panel._open_workspace_menu()
-            # Кожен колбек спрацював рівно один раз.
             self.assertEqual(sorted(calls), ["mode", "workspace"])
         finally:
             host.destroy()

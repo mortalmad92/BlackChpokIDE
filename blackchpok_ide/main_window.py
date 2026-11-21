@@ -8608,6 +8608,20 @@ class BlackChpokIDE(tk.Tk):
         self._on_model_changed()
         self._model_proved_online = False
         self._replace_loaded_model(entry)
+        # ── ЗАПАМ'ЯТАТИ ВИБІР НА ДИСК ───────────────────────────────────────
+        # Скарга користувача (21.11.2026): «не запам'ятовує останню вибрану
+        # модель, завжди стартує на хмарній».
+        #
+        # Причина: ``apply_choice`` змінював ``self.settings`` у ПАМ'ЯТІ, але
+        # у файл це не потрапляло — ``save()`` викликали лише в інших місцях.
+        # Після перезапуску читався старий ``llm.model`` (хмарний), і вибір
+        # людини зникав. Тепер зберігаємо одразу після кожного перемикання.
+        try:
+            self.settings.save()
+            LOG.info("Вибір моделі збережено: %s (%s)", entry.name,
+                     "локальна" if entry.is_local else "хмарна")
+        except Exception as exc:                     # noqa: BLE001
+            LOG.warning("Вибір моделі не збережено: %s", exc, exc_info=True)
         # ── Стан НОВОЇ адреси, а не старого запису зі списку ──────────────
         # ``entry.online`` описує запис, знятий ДО вибору. Для хмари він
         # майже завжди ``False``: хмару не перевіряли, доки вона не поточна
@@ -9003,10 +9017,60 @@ class BlackChpokIDE(tk.Tk):
         except (tk.TclError, AttributeError):
             pass
 
+    @staticmethod
+    def _is_local_choice(base_url: str) -> bool:
+        """Чи збережений вибір моделі — ЛОКАЛЬНИЙ (рушій або localhost).
+
+        Потрібно, щоб хмарні налаштування не перебивали вибір людини при
+        старті. ``native://`` — вбудований рушій; ``127.0.0.1``/``localhost`` —
+        локальний сервер (llama-server, LM Studio, Ollama).
+        """
+        value = str(base_url or "").strip().lower()
+        if not value:
+            return False
+        if value.startswith("native://"):
+            return True
+        return any(marker in value for marker in
+                   ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+
     def _apply_cloud_provider(self) -> bool:
-        """Якщо в налаштуваннях є хмарний агент — підключити його замість локального."""
+        """Підключити ЗБЕРЕЖЕНИЙ вибір моделі — локальний чи хмарний.
+
+        ── ЩО БУЛО НЕ ТАК (скарга користувача 21.11.2026) ───────────────────
+        «Завантаження програми стартує з хмарної моделі, а не локальної, і не
+        запам'ятовує останню вибрану».
+
+        Причина. Цей метод біля кожного старту БЕЗУМОВНО переписував
+        ``llm.base_url``/``llm.model`` на хмарні значення, щойно в
+        налаштуваннях був ключ провайдера — навіть якщо людина востаннє
+        працювала з ЛОКАЛЬНОЮ моделлю. Додатково він ставив
+        ``engine.auto_start = False``, тобто забороняв піднімати локальний
+        рушій. Через це:
+
+        * програма стартувала в хмарі (хоча у файлі ``llm.model`` лежала
+          локальна назва — її просто затирали);
+        * локальна модель не завантажувалась узагалі (``auto_start=False``),
+          і замість неї лишалась «МОДЕЛЬ ОФЛАЙН»;
+        * після перезапуску вибір знову «скидався» на хмару.
+
+        ── ЯК ТЕПЕР ─────────────────────────────────────────────────────────
+        Збережений вибір має пріоритет:
+
+        * ``llm.base_url`` вказує на локальний рушій (``native://`` або
+          ``127.0.0.1``) — хмарні налаштування НЕ чіпаємо взагалі;
+        * вибір справді хмарний — підключаємо хмару, але ``auto_start``
+          лишаємо як було (людина могла мати намір повернутись на локальну).
+
+        Повертає ``True``, якщо підключено хмару.
+        """
         cloud = getattr(self.settings, "cloud", None)
         if cloud is None or not getattr(cloud, "enabled", False):
+            return False
+        # ── Локальний вибір не перекриваємо хмарою ─────────────────────────
+        current = str(getattr(self.settings.llm, "base_url", "") or "")
+        if self._is_local_choice(current):
+            LOG.info("Збережений вибір локальний (%s) — хмарні налаштування "
+                     "не застосовую", current)
             return False
         url = cloud_agents.normalise_base_url(cloud.base_url)
         if not url or not cloud.api_key.strip():
@@ -9023,8 +9087,9 @@ class BlackChpokIDE(tk.Tk):
         # користувача.
         self.settings.llm.max_tokens = max(256, int(cloud.max_tokens or 8192))
         self.settings.llm.temperature = float(cloud.temperature or 0.3)
-        # Хмарний агент уже запущений — локальний рушій не потрібен.
-        self.settings.engine.auto_start = False
+        # ``auto_start`` НЕ вимикаємо: раніше тут стояло ``= False``, і після
+        # будь-якого хмарного старту локальний рушій уже не піднімався —
+        # навіть коли людина поверталась на локальну модель.
         self.agent.llm_settings = self.settings.llm
         provider = cloud_agents.get(cloud.provider)
         name = provider.label if provider else "хмара"

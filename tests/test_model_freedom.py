@@ -197,8 +197,18 @@ class TestComposerHasNoModeCage(unittest.TestCase):
                               "пігулка режиму має бути прибрана")
             self.assertIsNone(getattr(panel, "mode_caption", "missing"),
                               "підпис режиму має бути прибраний")
-            # Робочий простір лишається — це не режим, а тека проєкту.
-            self.assertIsNotNone(panel.workspace_btn)
+            # ── Пігулку ТЕКИ теж прибрано (21.11.2026) ────────────────────
+            # Раніше тут вимагалось ``assertIsNotNone(panel.workspace_btn)``:
+            # «тека — не режим, тому пігулка лишається». Користувач змінив
+            # вимогу: «Заборони змінювати привязку до однієї теки. Як вже
+            # вибрав одну папку — один чат, то так і працюємо тут, прибери
+            # кнопку з чату!». Причина: пігулка дозволяла перемкнути теку
+            # посеред розмови, і агент починав писати в інший проєкт.
+            self.assertIsNone(getattr(panel, "workspace_btn", "missing"),
+                              "пігулка теки має бути прибрана з чату")
+            # Стан теки лишається доступним (для підпису й журналу).
+            panel.set_workspace("proj", path=str(ROOT))
+            self.assertEqual(panel._workspace_name, "proj")
         finally:
             host.destroy()
 

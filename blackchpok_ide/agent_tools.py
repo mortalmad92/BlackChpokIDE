@@ -301,6 +301,8 @@ class ToolRegistry:
             "git_publish": self.git_publish,
             "project_tree": self.project_tree,
             "python_check": self.python_check,
+            # ── контекст на вимогу: модель сама каже, скільки їй треба ──────
+            "request_context": self.request_context,
             # ── саморемонт IDE (перевірка й лікування самого застосунку)
             "self_diagnose": self.self_diagnose,
             "self_repair": self.self_repair,
@@ -377,6 +379,15 @@ class ToolRegistry:
         чаті користувача з'являлось чуже темне вікно).
         """
         self.browser_hwnd_provider = provider
+
+    def attach_context_request(self, listener) -> None:
+        """Підключити приймач прохань моделі про контекст.
+
+        ``listener`` — функція ``(depth, query) -> None``, яку надає агент:
+        саме він вирішує, скільки лишити у вікні після ходу й що підкласти з
+        пам'яті. Реєстр лише передає прохання — він не знає про сесію.
+        """
+        self.on_context_request = listener
 
     def attach_page_opener(self, opener) -> None:
         """Підключити відкриття сторінки у вбудованому браузері.
@@ -959,6 +970,54 @@ class ToolRegistry:
             return sorted(self._handlers.keys())
         except Exception:                            # noqa: BLE001
             return []
+
+    def request_context(self, messages: int = 0, *, need_history: bool = True,
+                        need_memory: bool = True, query: str = "",
+                        reason: str = "") -> str:
+        """Модель САМА каже, скільки контексту їй потрібно на цей запит.
+
+        Ідея користувача (21.11.2026): «сама модель щоб робила запит і на її
+        запит визначався контекст — вона ж знає, скільки їй потрібно».
+
+        Чому це точніше за евристику. Агент визначає глибину за словами
+        запиту («продовж» → більше, «яка ціна» → менше). Модель бачить своє
+        завдання зсередини й знає напевно, чи потрібен їй попередній код.
+
+        ``messages`` — скільки останніх повідомлень лишити у вікні
+        (``0`` — уся історія, що вміщається). Стеля —
+        :data:`context_flow.MAX_REQUESTED_MESSAGES`.
+
+        ``need_memory`` — підкласти факти й правила з NEUROMESH/RAG.
+        ``need_history`` — чи потрібен слід давнішого (хроніка).
+
+        Повертає підтвердження, щоб модель знала, що її почули.
+        """
+        from . import context_flow
+
+        try:
+            depth = context_flow.parse_request(
+                messages, need_history=bool(need_history),
+                need_memory=bool(need_memory), query=str(query or ""),
+                reason=str(reason or ""))
+        except context_flow.RequestError as exc:
+            raise ToolError(f"Некоректний запит контексту: {exc}") from exc
+        # План зберігається на раннері: він вирішує, що лишиться у вікні
+        # після ходу й що підкладеться з пам'яті ПЕРЕД наступним.
+        listener = getattr(self, "on_context_request", None)
+        if callable(listener):
+            try:
+                listener(depth, str(query or ""))
+            except Exception:  # noqa: BLE001 - прохання не має ламати хід
+                LOG.debug("Запит контексту не передано агенту", exc_info=True)
+        parts = [
+            f"Прийнято: {context_flow.describe_request(depth)}.",
+            "Пам'ять: " + ("підкладу факти й правила" if need_memory
+                           else "не чіпатиму"),
+            "Історія: " + ("з хронікою" if need_history else "без хроніки"),
+        ]
+        if query:
+            parts.append(f"Пошук за: «{query[:80]}»")
+        return ". ".join(parts) + "."
 
     def _self_report(self, *, repair: bool):
         """Спільна частина ``self_diagnose`` і ``self_repair``."""
@@ -2534,6 +2593,44 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "press_enter": {"type": "boolean"},
                 },
                 "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "request_context",
+            "description": (
+                "Попросити потрібний контекст, якщо його бракує для "
+                "відповіді. Ти сам знаєш, скільки минулого тобі треба: "
+                "скажи кількість повідомлень і чи шукати в пам'яті."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "messages": {
+                        "type": "integer",
+                        "description": ("Скільки останніх повідомлень "
+                                        "лишити (0 — уся історія)"),
+                    },
+                    "need_history": {
+                        "type": "boolean",
+                        "description": "Чи потрібен слід давнішого (хроніка)",
+                    },
+                    "need_memory": {
+                        "type": "boolean",
+                        "description": ("Чи підкласти факти й правила з "
+                                        "довгострокової пам'яті"),
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Що саме шукати в пам'яті",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Навіщо тобі це (для журналу)",
+                    },
+                },
             },
         },
     },

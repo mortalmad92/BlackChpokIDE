@@ -157,8 +157,9 @@ class TestLazyAccess(unittest.TestCase):
         """
         runner = _runner(ctx=8192)
         before = _names(runner.tool_schemas())
-        all_names = set(runner.tool_registry_state().get("names") or []) or set(
-            TOOL_SCHEMAS_NAMES)
+        # Усі назви беремо з реєстру (``tool_registry_state`` не має поля
+        # ``names`` — попередня версія цього тесту вигадувала його).
+        all_names = {str(card.name) for card in runner.lazy_router()._cards}
         cut = sorted(all_names - before)
         self.assertTrue(cut, f"очікували звужений набір, отримали {sorted(before)}")
         target = cut[0]

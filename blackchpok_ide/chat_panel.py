@@ -777,11 +777,20 @@ class ChatPanel(tk.Frame):
                             pady=(theme.SPACE_SM, 0))
         self.space_row.columnconfigure(2, weight=1)
 
-        self.workspace_btn = _ComposerPill(
-            self.space_row, self.fonts, icon="🗂", text="теку не обрано",
-            command=self._open_workspace_menu,
-            tip="Робочий простір: тека, у якій агент працює з файлами")
-        self.workspace_btn.grid(row=0, column=0, sticky="w")
+        # ── ПІГУЛКИ ТЕКИ БІЛЬШЕ НЕМАЄ (21.11.2026) ────────────────────────
+        # Вимога користувача: «Заборони змінювати привязку до однієї теки.
+        # Як вже вибрав одну папку — один чат, то так і працюємо тут, прибери
+        # кнопку з чату!».
+        #
+        # Навіщо прибрано. Пігулка дозволяла перемкнути теку ПРОСТО ПОСЕРЕД
+        # розмови — і агент починав писати в інший проєкт, хоч людина цього
+        # не просила. Тепер тека фіксується на чат: обрали один раз — і всі
+        # кроки цього чату працюють лише там.
+        #
+        # Сам ``set_workspace`` лишається: він показує теку в підписі чату,
+        # і його кличе вікно. Змінити теку можна лише в налаштуваннях або
+        # створивши новий чат.
+        self.workspace_btn = None
 
         # ── Пігулки режиму БІЛЬШЕ НЕМАЄ (20.11.2026) ──────────────────────
         # Вимога користувача: «прибери цей пункт, модель має працювати в
@@ -818,6 +827,10 @@ class ChatPanel(tk.Frame):
         self.input_box.bind("<Control-c>", lambda _e: self._clip_copy())
         self.input_box.bind("<Control-v>", self._clip_paste)
         self.input_box.bind("<Control-x>", lambda _e: self._clip_cut())
+        # ── Права кнопка в полі вводу (вимога 21.11.2026) ──────────────────
+        # Гарячі клавіші були, а правий клік нічого не робив: людина, яка
+        # звикла до контекстного меню, не могла ні вставити, ні скопіювати.
+        self.input_box.bind("<Button-3>", self._input_menu)
         self.input_box.bind("<<Modified>>", self._on_input_modified)
 
         #: Смуга прикріплених зображень — над полем вводу.
@@ -1136,15 +1149,23 @@ class ChatPanel(tk.Frame):
         widget.configure(state="normal")
         widget.insert("1.0", text)
         widget.configure(state="disabled")
-        self._track_text(card, widget, max_lines=self._body_lines)
+        self._track_text(card, widget, max_lines=self._body_lines, text=text)
         self._fit_text(widget)
         return widget
 
-    def _track_text(self, card: _MessageCard, widget: tk.Text, *, max_lines: int) -> None:
-        """Запам'ятати текст картки, щоб перерахувати висоту при зміні ширини."""
+    def _track_text(self, card: _MessageCard, widget: tk.Text, *, max_lines: int,
+                    text: str = "") -> None:
+        """Запам'ятати текст картки, щоб перерахувати висоту при зміні ширини.
+
+        ``text`` — САМЕ цей текст (питання або відповідь). Потрібен, щоб
+        «копіювати цю відповідь» копіювало її, а не весь чат: раніше пункт
+        меню брав ``transcript.get()`` і повертав усю розмову.
+        """
         try:
             card.text_widget = widget  # type: ignore[attr-defined]
             card.max_lines = max_lines  # type: ignore[attr-defined]
+            if text:
+                card.text = text  # type: ignore[attr-defined]
         except tk.TclError:
             return
         self._bind_text_wheel(widget)
@@ -1569,27 +1590,31 @@ class ChatPanel(tk.Frame):
             except (tk.TclError, AttributeError):
                 pass
 
-    # ── пігулки композера: робочий простір і режим ─────────────────────────
+    # ── пігулки композера: робочий простір ─────────────────────────────────
     def set_workspace(self, name: str, *, path: str = "") -> None:
-        """Показати реальну теку проєкту на пігулці над полем вводу.
+        """Показати реальну теку проєкту — БЕЗ можливості перемкнути.
 
-        Порожня назва — це «теку не обрано», а не порожня пігулка: інакше
-        користувач не розуміє, чому агент відмовляється працювати.
+        Вимога користувача (21.11.2026): «Заборони змінювати привязку до
+        однієї теки. Як вже вибрав одну папку — один чат, то так і працюємо
+        тут, прибери кнопку з чату!».
+
+        Тому пігулки-кнопки в композері більше немає (``workspace_btn`` —
+        ``None``). Метод лишається, щоб вікно могло ЗБЕРЕГТИ стан (назву й
+        шлях) для підпису чату й для журналу: саме звідти видно, у якій теці
+        працює цей чат. Нічого не перемикає й не відкриває меню.
         """
+        self._workspace_name = str(name or "").strip()
+        self._workspace_path = str(path or "").strip()
         button = getattr(self, "workspace_btn", None)
         if button is None:
+            # Пігулки немає — лишається тільки стан (для тестів і журналу).
             return
-        shown = (name or "").strip()
+        shown = self._workspace_name
         text = shown if shown else "теку не обрано"
         if len(text) > 34:
             text = text[:33] + "…"
         button.set_text(text, accent=bool(shown))
-        button.set_command(self._open_workspace_menu)
-        button._body_tip = str(path or "")  # для діагностики й тестів
-        try:
-            widgets.Tip(button.icon, str(path) if path else "Робочий простір не вибрано")
-        except tk.TclError:
-            pass
+        button._body_tip = self._workspace_path
 
     def set_mode(self, label: str, *, icon: str = "◈", accent: bool = True,
                  hint: str = "") -> None:
@@ -2303,6 +2328,116 @@ class ChatPanel(tk.Frame):
         except tk.TclError:
             pass
         return "break"
+
+    # ── контекстне меню правої кнопки (вимога 21.11.2026) ──────────────────
+    def _input_menu(self, event=None) -> str:
+        """Права кнопка в полі вводу: вставити, скопіювати, вирізати, очистити.
+
+        Вимога користувача: «додай вже нарешті контекстне меню в чаті для
+        вставки тексту і копіювання на праву кнопку миші».
+
+        Чому саме тут. Гарячі клавіші (Ctrl+V/C/X) уже працювали, але людина,
+        яка звикла до правої кнопки, їх не шукає. У полі вводу меню не було
+        зовсім — правий клік нічого не робив.
+
+        Що в меню:
+
+        * **Вставити** — завжди доступне;
+        * **Копіювати** / **Вирізати** — лише коли є виділення (інакше пункт
+          мовчки нічого не робить, і це виглядає як зламана кнопка);
+        * **Виділити все**;
+        * **Очистити поле** — те, що найчастіше потрібно після довгого тексту.
+        """
+        has_selection = self._has_selection()
+        items: list[tuple[str, Optional[Callable[[], None]]]] = [
+            ("Вставити", self._clip_paste),
+        ]
+        if has_selection:
+            items.append(("Копіювати", self._clip_copy))
+            items.append(("Вирізати", self._clip_cut))
+        items.extend([
+            ("", None),
+            ("Виділити все", self._select_all),
+            ("Очистити поле", self._clear_input),
+        ])
+        try:
+            widgets.context_menu(self, items, event)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _has_selection(self) -> bool:
+        """Чи є виділення в полі вводу (без винятку, якщо немає)."""
+        try:
+            return bool(self.input_box.get("sel.first", "sel.last"))
+        except tk.TclError:
+            return False
+
+    def _clear_input(self) -> None:
+        """Очистити поле вводу (і повернути підказку)."""
+        try:
+            self.input_box.delete("1.0", "end")
+        except tk.TclError:
+            return
+        self._clear_placeholder()
+
+    def _text_menu(self, event, card: "_MessageCard") -> str:
+        """Права кнопка на ТЕКСТІ повідомлення: копіювати, виділити, вставити.
+
+        Окремо від меню коду (``_code_menu``): там пункти про блоки коду,
+        тут — про сам текст повідомлення. Обидва доступні з тієї самої
+        картки, і це найзручніше для людини: правий клік на коді дає дії з
+        кодом, правий клік на тексті — дії з текстом.
+        """
+        widget = event.widget if event is not None else None
+        selected = ""
+        try:
+            selected = widget.selection_get() if widget is not None else ""
+        except Exception:                        # noqa: BLE001 - немає виділення
+            selected = ""
+        own = str(getattr(card, "text", "") or "")
+        items: list[tuple[str, Optional[Callable[[], None]]]] = []
+        if selected:
+            items.append(("Копіювати виділене",
+                          lambda t=selected: self._copy(t)))
+        items.append(("Копіювати цю відповідь", lambda: self._copy(own)))
+        items.append(("Виділити все", lambda w=widget: self._select_widget(w)))
+        items.extend([
+            ("", None),
+            ("Вставити в поле вводу", self._paste_into_input),
+        ])
+        try:
+            widgets.context_menu(self, items, event)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _select_widget(self, widget) -> None:
+        """Виділити весь текст у текстовому віджеті картки."""
+        if widget is None:
+            return
+        try:
+            widget.tag_add("sel", "1.0", "end-1c")
+        except tk.TclError:
+            pass
+
+    def _paste_into_input(self) -> None:
+        """Вставити буфер обміну в поле вводу (з будь-якої картки)."""
+        try:
+            text = str(self.clipboard_get() or "")
+        except tk.TclError:
+            self._note("Буфер обміну порожній.")
+            return
+        if not text:
+            self._note("Буфер обміну порожній.")
+            return
+        self._clear_placeholder()
+        try:
+            self.input_box.insert("insert", text)
+            self.input_box.focus_set()
+        except tk.TclError:
+            return
+        self._note("Вставлено в поле вводу.")
 
     def _clip_copy(self) -> str:
         """Ctrl+C — скопіювати виділене з поля."""
@@ -3303,7 +3438,13 @@ class ChatPanel(tk.Frame):
             key = f"{key_prefix}:{index}"
             self._pending_code[key] = code
         widget.configure(state="disabled")
-        self._track_text(card, widget, max_lines=0)
+        # ``key_prefix`` — щоб «скопіювати весь код» знав, які блоки належать
+        # САМЕ цій відповіді (див. ``_all_code``).
+        try:
+            card.key_prefix = key_prefix  # type: ignore[attr-defined]
+        except tk.TclError:
+            pass
+        self._track_text(card, widget, max_lines=0, text=text)
         # Рендерер запам'ятовуємо: при зміні теми ним же перемальовуємо текст.
         try:
             card.renderer = renderer  # type: ignore[attr-defined]
@@ -3312,7 +3453,14 @@ class ChatPanel(tk.Frame):
         # Відповідь показуємо ПОВНІСТЮ: жодних власних прокруток усередині
         # картки — інакше між повідомленнями з'являлась смуга прокрутки.
         self._fit_text(widget)
-        widget.bind("<Button-3>", lambda e, r=renderer: self._code_menu(e, r, card))
+        # Права кнопка: на коді — дії з кодом, поза кодом — дії з текстом.
+        # Обидва меню потрібні (вимога 21.11.2026): раніше правий клік поза
+        # блоком коду не давав нічого, і скопіювати відповідь можна було
+        # лише виділенням мишею.
+        widget.bind("<Button-3>", lambda e, r=renderer, c=card:
+                    self._code_menu(e, r, c)
+                    if self._code_index_at(e, c) is not None
+                    else self._text_menu(e, c))
 
     def _palette(self, bg: str = "") -> markdown_view.ChatPalette:
         """Кольори markdown для картки з фоном ``bg``.
@@ -3496,6 +3644,17 @@ class ChatPanel(tk.Frame):
             self._note(f"Не вдалось відкрити знімок: {exc}")
 
     def _code_menu(self, event, renderer, card: _MessageCard) -> None:
+        """Меню правої кнопки: окремо код, окремо ЦЯ відповідь, окремо все.
+
+        Вимога користувача (21.11.2026): «потрібне окреме копіювання для
+        запиту користувача і окреме для повної відповіді агента і окремо для
+        коду».
+
+        Що було не так. Пункт «Копіювати всю відповідь» брав
+        ``self.transcript.get()`` — а це ВЕСЬ чат: людина натискала
+        «скопіювати відповідь» і отримувала всю розмову разом із власними
+        запитами. Тепер кожен пункт копіює РІВНО те, що названо.
+        """
         index = self._code_index_at(event, card)
         items: list[tuple[str, Optional[Callable[[], None]]]] = []
         if index is not None:
@@ -3504,8 +3663,33 @@ class ChatPanel(tk.Frame):
             items.append(("Вставити в редактор", lambda: self._apply_code(code or "")))
             items.append(("Додати в чат як контекст", lambda: self._quote(code or "")))
             items.append(("", None))
-        items.append(("Копіювати всю відповідь", lambda: self._copy(self.transcript.get())))
+        # Ця відповідь — не весь чат. ``card.text`` ставить ``_track_text``.
+        own = str(getattr(card, "text", "") or "")
+        items.append(("Копіювати цю відповідь", lambda: self._copy(own)))
+        if index is None:
+            # Весь код із відповіді одним блоком — коли блоків кілька.
+            items.append(("Копіювати весь код відповіді",
+                          lambda: self._copy(self._all_code(card))))
+        items.append(("", None))
+        items.append(("Копіювати всю розмову",
+                      lambda: self._copy(self.transcript.get())))
         widgets.context_menu(self, items, event)
+
+    def _all_code(self, card: _MessageCard) -> str:
+        """Увесь код із ЦІЄЇ відповіді, розділений порожнім рядком."""
+        prefix = ""
+        try:
+            renderer = getattr(card, "renderer", None)
+            key_prefix = str(card.key_prefix or "")  # type: ignore[attr-defined]
+            prefix = key_prefix
+            del renderer
+        except (AttributeError, tk.TclError):
+            prefix = ""
+        if not prefix:
+            return ""
+        codes = [value for key, value in self._pending_code.items()
+                 if key.startswith(f"{prefix}:")]
+        return "\n\n".join(codes)
 
     def _code_index_at(self, event, card: _MessageCard) -> Optional[int]:
         """Номер блоку коду під курсором (за рядком заголовка блоку)."""

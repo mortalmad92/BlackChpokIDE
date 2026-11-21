@@ -28,9 +28,14 @@ from blackchpok_ide.agent_tools import ToolRegistry  # noqa: E402
 
 
 def make_runner(*, turns: int = 6, fresh: bool = True) -> AgentRunner:
-    """Раннер із наповненою історією (без мережі й без моделі)."""
+    """Раннер із наповненою історією (без мережі й без моделі).
+
+    ``fresh`` тепер задається через ``context_mode``: режимів три
+    (auto/fresh/full), і прапорець ``fresh_context`` замінено на них.
+    """
+    mode = "fresh" if fresh else "full"
     runner = AgentRunner(ToolRegistry(ROOT), config.LLMSettings(),
-                         config.AgentSettings(fresh_context=fresh), ROOT)
+                         config.AgentSettings(context_mode=mode), ROOT)
     runner.settings_ref = None
     runner.tools_enabled = False
     for index in range(turns):
@@ -137,12 +142,13 @@ class TestTurnReset(unittest.TestCase):
 
 
 class TestSetting(unittest.TestCase):
-    """Налаштування керує режимом."""
+    """Режим контексту керує поведінкою."""
 
-    def test_default_is_on(self) -> None:
-        self.assertTrue(config.AgentSettings().fresh_context)
+    def test_default_is_adaptive(self) -> None:
+        """Типово — ``auto``: глибина підбирається під запит."""
+        self.assertEqual(config.AgentSettings().context_mode, "auto")
 
-    def test_disabled_keeps_history(self) -> None:
+    def test_full_mode_keeps_history(self) -> None:
         runner = make_runner(fresh=False)
         archived: list[list] = []
         runner._archive_turn_context = lambda items: archived.append(list(items))
@@ -151,7 +157,7 @@ class TestSetting(unittest.TestCase):
         self.assertEqual(len(runner.session.messages), before)
         self.assertEqual(archived, [])
 
-    def test_enabled_resets(self) -> None:
+    def test_fresh_mode_resets(self) -> None:
         runner = make_runner(fresh=True)
         runner._archive_turn_context = lambda items: None
         before = len(runner.session.messages)
@@ -179,7 +185,7 @@ class TestRealMemory(unittest.TestCase):
         service = Neuromesh(database)
         try:
             runner = AgentRunner(ToolRegistry(ROOT), config.LLMSettings(),
-                                 config.AgentSettings(fresh_context=True), ROOT)
+                                 config.AgentSettings(context_mode="fresh"), ROOT)
             runner.tools_enabled = False
             runner.memory_bridge = memory_bridge.MemoryBridge(service)
             runner.session.add_user(
