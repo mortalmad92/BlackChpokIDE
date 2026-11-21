@@ -12,8 +12,28 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 from typing import Callable, Optional
 
-from . import theme, widgets, workspace as ws
-from .editor import CodeEditor
+# ── ПРЯМИЙ ЗАПУСК ФАЙЛУ (виправлено після збою) ───────────────────────────
+# Відносні імпорти працюють лише всередині пакета: коли файл запускають як
+# скрипт (``python blackchpok_ide/tabs.py``), ``__package__`` порожній, і
+# Python падає з
+#     ImportError: attempted relative import with no known parent package
+# Це не помилка логіки, а спосіб запуску. Тому для прямого запуску додаємо
+# корінь проєкту в ``sys.path`` і беремо ТІ САМІ модулі абсолютними іменами.
+# Усередині пакета (звичайний шлях — ``main.py``) працює гілка ``else``,
+# тобто поведінка не змінюється.
+if __package__ in (None, ""):                        # pragma: no cover
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _root = _Path(__file__).resolve().parent.parent
+    if str(_root) not in _sys.path:
+        _sys.path.insert(0, str(_root))
+    from blackchpok_ide import theme, widgets
+    from blackchpok_ide import workspace as ws
+    from blackchpok_ide.editor import CodeEditor
+else:
+    from . import theme, widgets, workspace as ws
+    from .editor import CodeEditor
 
 MODIFIED_DOT = "●"
 
@@ -558,15 +578,22 @@ class EditorTabs(tk.Frame):
         if editor is None:
             return False
         if editor.modified:
-            name = editor.path.name if editor.path else "Без назви"
-            answer = messagebox.askyesnocancel(
-                "Незбережені зміни",
-                f"Зберегти зміни у «{name}» перед закриттям?",
-                parent=self,
-            )
-            if answer is None:
+            # ── БЕЗ ПИТАННЯ «ЗБЕРЕГТИ?» (вимога користувача) ───────────────
+            # Раніше тут був ``askyesnocancel``: закриття вкладки посеред
+            # роботи зупиняло все модальним вікном, і агент чекав, поки
+            # людина натисне кнопку. Тепер файл із шляхом зберігається
+            # МОВЧКИ (це те саме, що зробила б людина), і вкладка закривається.
+            #
+            # Для файлу без імені зберегти нікуди — тоді вкладку лишаємо
+            # відкритою й пишемо підказку в рядок стану: жодного діалогу,
+            # жодної втраченої роботи.
+            path = self.paths.get(frame_id)
+            if path is None:
+                if self.on_status:
+                    self.on_status("Файл без імені — збережи його (Ctrl+S) "
+                                    "або закрий після цього.")
                 return False
-            if answer and not self.save_tab(frame_id):
+            if not self.save_tab(frame_id):
                 return False
         self._forget_tab(frame_id)
         return True
