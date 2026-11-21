@@ -2147,7 +2147,26 @@ class AgentRunner:
             if registry_text:
                 parts.append(registry_text)
         if self.skill_book is not None and self.agent_settings.use_skills:
+            # ── Скіли під ЦЕЙ запит ────────────────────────────────────────
+            # Раніше брався лише ``book.prompt()`` — тобто тільки те, що
+            # людина ввімкнула вручну. На практиці жоден скіл не був
+            # увімкнений (вибір не зберігався), і агент працював без
+            # інструкцій проєкту: не знав, як запускати тести, які правила
+            # стилю, що збірка — окремий крок.
+            #
+            # Тепер скіли, доречні саме для цього запиту, вмикаються
+            # автоматично (за словами опису), а ручний вибір людини діє
+            # завжди й має вищий пріоритет.
+            try:
+                auto = self.skill_book.auto_enable(text)
+            except Exception:                        # noqa: BLE001
+                auto = []
             skill_prompt = self.skill_book.prompt()
+            if auto:
+                self._emit(
+                    "status",
+                    "Скіли цього запиту: "
+                    + ", ".join(skill.name for skill in auto))
             if skill_prompt.strip():
                 parts.append(skill_prompt)
         parts.append(permissions.prompt_hint(self.permission_mode))

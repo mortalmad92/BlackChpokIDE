@@ -19,6 +19,15 @@ LOG = logging.getLogger("blackchpok.skills")
 SKILL_FILE = "SKILL.md"
 SEARCH_DIRS = (".agents/skills", ".cursor/skills", ".dsh/skills", "skills")
 
+#: Слова, які нічого не кажуть про тему запиту. Без них автовибір скілів
+#: чіплявся за «цього», «який», «мені» в описах і вмикав не те.
+_STOP_WORDS: frozenset[str] = frozenset({
+    "цього", "який", "яка", "які", "мені", "тобі", "треба", "можна",
+    "якщо", "коли", "чого", "щоб", "буде", "було", "вони", "воно",
+    "проєкту", "проекту", "роботи", "робота", "зроби", "зробити",
+    "потрібно", "справді", "тільки", "дуже", "тепер", "зараз",
+})
+
 
 @dataclass
 class Skill:
@@ -95,7 +104,23 @@ def load_skill(path: Path) -> Optional[Skill]:
     name, description, body = parse_skill(text, fallback_name=path.parent.name)
     if not name:
         return None
-    return Skill(name=name, description=description, body=body, path=path, source=str(path))
+    return Skill(name=name, description=description, body=body, path=path,
+                 source=str(path))
+
+
+#: Скільки символів інструкції вважаємо «змістовним скілом».
+#:
+#: Навіщо поріг. У проєкті лежали скіли-заглушки на два рядки (``тест``,
+#: ``тест-ім'я``) — залишки перевірок. Вони успішно збігалися з будь-яким
+#: запитом про тести й підкладали моделі порожню інструкцію замість
+#: справжньої, витісняючи корисний скіл за лімітом місця.
+MIN_SKILL_BODY = 80
+
+
+def is_meaningful(skill: Skill) -> bool:
+    """Чи скіл справді щось інструкує (а не заглушка на два рядки)."""
+    body = " ".join(str(skill.body or "").split())
+    return len(body) >= MIN_SKILL_BODY
 
 
 def discover_skills(root: Path) -> list[Skill]:
@@ -195,23 +220,86 @@ def tool_schemas() -> list[dict[str, object]]:
 
 
 class SkillBook:
-    """Реєстр скілів, який знає робочу теку й тримає позначки «увімкнено»."""
+    """Реєстр скілів, який знає робочу теку й тримає позначки «увімкнено».
+
+    Увімкнені скіли ЗБЕРІГАЮТЬСЯ (``.agents/skills-enabled.json`` у робочій
+    теці). Раніше позначки жили лише в пам'яті процесу: користувач вмикав
+    скіл у панелі, перезапускав IDE — і агент знову працював без інструкцій
+    проєкту. Саме тому «скіли є, але агент ними не користується».
+    """
+
+    #: Файл зі списком увімкнених скілів (у робочій теці проєкту).
+    STATE_FILE = ".agents/skills-enabled.json"
 
     def __init__(self, root: Path, enabled_names: Iterable[str] = ()) -> None:
         self.root = Path(root)
         self.skills: list[Skill] = []
+        #: Увімкнені вручну (з налаштувань або панелі).
         self.enabled: set[str] = set(enabled_names)
+        #: Увімкнені автоматично — ті, що стосуються поточного запиту
+        #: (див. :meth:`auto_enable`). Окремий набір, щоб автовибір не
+        #: переписував ручний вибір людини.
+        self.auto: set[str] = set()
         self.reload()
+        self._load_state()
+
+    # ── збереження вибору ──────────────────────────────────────────────────
+    def _state_path(self) -> Path:
+        return self.root / self.STATE_FILE
+
+    def _load_state(self) -> None:
+        """Підтягнути збережений список увімкнених скілів."""
+        import json
+
+        try:
+            raw = self._state_path().read_text(encoding="utf-8")
+        except OSError:
+            return
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            LOG.debug("Файл увімкнених скілів пошкоджено — ігнорую")
+            return
+        names = data.get("enabled") if isinstance(data, dict) else data
+        if not isinstance(names, list):
+            return
+        for name in names:
+            clean = str(name or "").strip()
+            if clean:
+                self.enabled.add(clean)
+        self._apply_enabled()
+
+    def _save_state(self) -> None:
+        """Зберегти вибір людини (автовибір не зберігаємо)."""
+        import json
+
+        path = self._state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Атомарний запис: обірваний файл означав би втрату вибору.
+            temp = path.with_suffix(".json.tmp")
+            temp.write_text(json.dumps({"enabled": sorted(self.enabled)},
+                                       ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+            temp.replace(path)
+        except OSError:
+            LOG.debug("Вибір скілів не збережено", exc_info=True)
+
+    def _apply_enabled(self) -> None:
+        for skill in self.skills:
+            skill.enabled = (skill.name in self.enabled
+                             or skill.name in self.auto)
 
     def reload(self) -> list[Skill]:
         self.skills = discover_skills(self.root)
-        for skill in self.skills:
-            skill.enabled = skill.name in self.enabled
+        self._apply_enabled()
         return self.skills
 
     def set_root(self, root: Path) -> None:
         self.root = Path(root)
+        self.auto.clear()
         self.reload()
+        self._load_state()
 
     def get(self, name: str) -> Optional[Skill]:
         key = (name or "").strip().lower()
@@ -221,21 +309,111 @@ class SkillBook:
         return None
 
     def toggle(self, name: str, enabled: Optional[bool] = None) -> bool:
+        """Увімкнути/вимкнути скіл ВРУЧНУ й зберегти вибір."""
         skill = self.get(name)
         if skill is None:
             return False
         skill.enabled = (not skill.enabled) if enabled is None else bool(enabled)
         if skill.enabled:
             self.enabled.add(skill.name)
+            self.auto.discard(skill.name)
         else:
             self.enabled.discard(skill.name)
+            self.auto.discard(skill.name)
+            skill.enabled = False
+        self._save_state()
         return skill.enabled
 
     def active(self) -> list[Skill]:
         return [skill for skill in self.skills if skill.enabled]
 
+    # ── автовибір під запит ────────────────────────────────────────────────
+    def auto_enable(self, text: str, *, limit: int = 3) -> list[Skill]:
+        """Увімкнути скіли, які стосуються ЦЬОГО запиту.
+
+        Навіщо. Увімкнені вручну скіли — вибір людини, і він діє завжди. Але
+        тримати всі 13 скілів у кожному промпті марнотратно: інструкція про
+        збірку релізу не потрібна, коли просять пояснити функцію.
+
+        Тут — дешевий збіг за словами опису скіла й тексту запиту. Це не
+        «магія»: скіл з описом «як запускати тести» вмикається на «запусти
+        тести», і його інструкція потрапляє в промпт ДО дії.
+
+        Словозміни враховуються грубо, за основою слова: «тестах», «тести» й
+        «тестів» мають спільний початок, і без цього запит «виправ баг у
+        тестах» не вмикав скіл про тести (заміряно на цьому ж проєкті).
+
+        Повертає список увімкнених автоматично (для журналу).
+        """
+        body = " ".join(str(text or "").lower().split())
+        if not body:
+            return []
+        words = {part for part in re.split(r"[^\w\u0400-\u04FF]+", body)
+                 if len(part) >= 4 and part not in _STOP_WORDS}
+        if not words:
+            return []
+        scored: list[tuple[int, str, Skill]] = []
+        for skill in self.skills:
+            # Заглушки не підбираємо: вони збігаються з будь-яким запитом і
+            # витісняють справжній скіл за лімітом місця в промпті.
+            if not is_meaningful(skill):
+                continue
+            haystack = f"{skill.name} {skill.description}".lower()
+            hits = 0
+            for word in words:
+                if word in haystack:
+                    hits += 1
+                    continue
+                # Основа слова: «тестах» ↔ «тести» ↔ «тестів» мають спільні
+                # перші чотири літери. Довша основа не збігалась («теста»
+                # проти «тести»), і запит «виправ баг у тестах» не вмикав
+                # скіл про тести — заміряно на цьому ж проєкті.
+                stem = word[:4]
+                if len(stem) >= 4 and stem in haystack:
+                    hits += 1
+            if not hits:
+                continue
+            # Ручний вибір уже діє — не дублюємо його в автовибір.
+            if skill.name in self.enabled:
+                continue
+            scored.append((-hits, skill.name, skill))
+        scored.sort()
+        chosen: list[Skill] = []
+        self.auto.clear()
+        for _hits, _name, skill in scored[:max(0, int(limit))]:
+            self.auto.add(skill.name)
+            skill.enabled = True
+            chosen.append(skill)
+        # Скіли, які більше не актуальні, вимикаємо: інакше автовибір лишався
+        # б назавжди й накопичував інструкції з минулих завдань.
+        for skill in self.skills:
+            if skill.name in self.enabled:
+                continue
+            if skill.name not in self.auto:
+                skill.enabled = False
+        return chosen
+
     def prompt(self) -> str:
-        return skills_prompt(self.skills)
+        """Блок інструкцій для системного промпта.
+
+        Окремо позначаємо скіл, який користувач увімкнув САМ: його інструкція
+        важливіша за автоматично підібрану, і тест-охоронець
+        (``test_features``) перевіряє саме такий блок.
+        """
+        block = skills_prompt(self.skills)
+        manual = [skill for skill in self.skills
+                  if skill.enabled and skill.name in self.enabled]
+        auto = [skill for skill in self.skills
+                if skill.enabled and skill.name not in self.enabled]
+        parts: list[str] = []
+        if manual:
+            parts.append(skills_prompt(manual))
+        if auto:
+            # Автоматично підібрані — окремим блоком: модель має знати, що це
+            # доречно ЗАРАЗ, а не постійне правило проєкту.
+            parts.append("Скіли, доречні для поточного запиту:\n\n"
+                         + "\n\n".join(skill.prompt for skill in auto))
+        return "\n\n".join(part for part in parts if part).strip() or block
 
     def describe(self) -> str:
         """Текстовий перелік — його бачить агент через інструмент list_skills."""
@@ -244,5 +422,10 @@ class SkillBook:
         lines = []
         for skill in self.skills:
             mark = "[x]" if skill.enabled else "[ ]"
-            lines.append(f"{mark} {skill.name} — {skill.description or 'без опису'}")
+            source = ""
+            if skill.enabled:
+                source = " (авто)" if skill.name in self.auto else ""
+            lines.append(
+                f"{mark} {skill.name}{source} — "
+                f"{skill.description or 'без опису'}")
         return "\n".join(lines)
