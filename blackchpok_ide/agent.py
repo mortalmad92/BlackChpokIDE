@@ -26,6 +26,7 @@ from . import extensions as extensions_module
 from . import intent_engine
 from . import language
 from . import llm_client
+from . import local_guard
 from . import longchat
 from . import memory_bridge
 from . import model_profile
@@ -132,6 +133,15 @@ STEP_BUDGET_CEILING_LARGE = STEP_BUDGET_CEILING
 
 #: З якого розміру вікна вважаємо модель «великою» (токени).
 LARGE_WINDOW_TOKENS = 100_000
+
+#: Найменше вікно, у якому показуємо ПОВНИЙ набір схем інструментів.
+#:
+#: Вимога користувача (21.11.2026): «ніяких режимів лінивий, тільки повний
+#: режим». Повний набір (87 схем) — це ~12 тисяч токенів, тож у вікно 8k він
+#: фізично не влазить і запит обривається помилкою контексту. Межа стоїть
+#: там, де повний набір справді вміщається разом із системою, історією та
+#: відповіддю. Нижче — звуження як запобіжник, а не як «економія».
+FULL_SET_MIN_WINDOW = 16_384
 
 #: Скільки разів повторювати порожню відповідь у звичайній розмові.
 #:
@@ -271,25 +281,15 @@ def _repeat_hint(name: str, count: int, outcome: ToolResult) -> str:
 
     Навмисно конкретна: локальні моделі не розуміють абстрактного «спробуй
     інакше» і повторюють те саме. Тому кажемо, ЩО робити замість цього.
+
+    Текст беруть із :mod:`local_guard`: там на кожен інструмент є окрема
+    наступна дія («файл уже прочитано — переходь до edit_file»), і саме вона
+    витягує модель із циклу. Раніше тут було загальне «обери інший спосіб» —
+    локальні моделі його ігнорували й повторювали виклик до ліміту кроків.
     """
     body = (outcome.output or "").strip()
-    if len(body) > 300:
-        body = body[:300] + "…"
-    if not outcome.ok:
-        return (
-            f"Інструмент «{name}» уже відповів ПОМИЛКОЮ {count} рази "
-            f"поспіль, і ти повторюєш той самий виклик. Це не спрацює.\n\n"
-            f"Відповідь інструмента:\n{body}\n\n"
-            "Не викликай цей інструмент знову. Обери інший спосіб: інший "
-            "інструмент, інші аргументи або відповідай користувачу тим, що "
-            "справді відомо, і чесно скажи, чого зробити не вдалося."
-        )
-    return (
-        f"Ти вже викликав «{name}» з тими самими аргументами {count} рази "
-        f"поспіль, і результат не змінився:\n{body}\n\n"
-        "Не повторюй цей самий виклик. Або переходь до наступного кроку, "
-        "або відповідай користувачу тим, що вже маєш."
-    )
+    return local_guard.hint_for(name, None, ok=outcome.ok, output=body,
+                                count=count, level=local_guard.LEVEL_TIRED)
 
 
 class _RepeatGuard:
@@ -304,28 +304,49 @@ class _RepeatGuard:
     нічого: ні аргументи, ні відповідь інструмента.
     """
 
-    __slots__ = ("_seen", "_last", "_streak", "_total")
+    __slots__ = ("_seen", "_last", "_streak", "_total", "_ring", "_cycle_hits",
+                 "_cycle")
 
     def __init__(self) -> None:
         self._seen: dict[str, int] = {}
         self._last: str = ""
         self._streak: int = 0
         self._total: int = 0
+        #: Останні відбитки — щоб побачити довгий цикл A→B→A→B, у якому
+        #: жоден виклик не повторюється ПІДРЯД (лічильник ``_seen`` його не
+        #: бачить: у моделі щоразу «новий» виклик, а прогресу немає).
+        self._ring: list[str] = []
+        #: Скільки разів цикл уже підтверджено (другий раз — припиняємо).
+        self._cycle_hits: int = 0
+        #: Останній знайдений цикл (відбитки) — для пояснення користувачу.
+        self._cycle: list[str] = []
 
     @staticmethod
     def fingerprint(name: str, arguments: Any, outcome_ok: bool,
                     output: str) -> str:
-        """Відбиток «виклик + результат» (стабільний і короткий)."""
+        """Відбиток «виклик + результат» (стабільний і короткий).
+
+        Нормалізацію робить :func:`local_guard.fingerprint`: ``.\\a.py``,
+        ``a.py`` і ``file=a.py`` — це ОДИН виклик, хоч для порівняння байт у
+        байт вони різні. Живий прогін локальної моделі давав саме такий цикл:
+        ``read_file(path="x.py")`` → ``read_file(file="x.py")`` → знову
+        ``path``, і жодного разу не спрацьовував лічильник повторів.
+        """
         try:
-            payload = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
-        except (TypeError, ValueError):
-            payload = str(arguments)
-        # Довгий вивід (файл на тисячу рядків) не має ламати порівняння —
-        # беремо початок і кінець, цього досить, щоб відрізнити різні дані.
-        body = (output or "").strip()
-        if len(body) > 400:
-            body = body[:200] + "…" + body[-200:]
-        return f"{name}|{payload}|{'ok' if outcome_ok else 'fail'}|{body}"
+            return local_guard.fingerprint(
+                str(name), arguments if isinstance(arguments, dict) else None,
+                outcome_ok, output or "")
+        except Exception:                            # noqa: BLE001
+            # Наглядач не має ламати роботу агента: якщо нормалізація впала,
+            # лишається просте порівняння.
+            try:
+                payload = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                payload = str(arguments)
+            body = (output or "").strip()
+            if len(body) > 400:
+                body = body[:200] + "…" + body[-200:]
+            return f"{name}|{payload}|{'ok' if outcome_ok else 'fail'}|{body}"
 
     def observe(self, fingerprint: str) -> tuple[int, bool, bool]:
         """Врахувати виклик.
@@ -347,6 +368,26 @@ class _RepeatGuard:
         self._seen[fingerprint] = count
         tired = count >= REPEAT_LIMIT
         hopeless = count >= HARD_REPEAT_LIMIT
+        # ── Довгий цикл A→B→A→B ───────────────────────────────────────────
+        # Кожен виклик «новий», тому ``_seen`` мовчить, а робота стоїть.
+        # Живий прогін на локальній моделі: ``list_dir`` → ``read_file`` →
+        # ``list_dir`` → ``read_file`` … і жодного файлу на диску.
+        self._ring.append(fingerprint)
+        if len(self._ring) > local_guard.WINDOW:
+            self._ring.pop(0)
+        # Цикл перевіряємо ЗАВЖДИ, навіть коли лічильник однакових викликів
+        # уже спрацював: у A→B→A→B третє «A» дає ``tired``, і без цієї
+        # перевірки робота йшла б до ``HARD_REPEAT_LIMIT`` (8 кроків), хоч
+        # модель уже давно ходить по колу.
+        found = local_guard.cycle_in(self._ring)
+        if found:
+            self._cycle = found
+            # Рахуємо лише до другого підтвердження: далі це той самий цикл,
+            # і число «12 повторів» у підсумку лише заплутувало б.
+            self._cycle_hits = min(self._cycle_hits + 1, 2)
+            tired = True
+            if self._cycle_hits >= 2:
+                hopeless = True
         return count, tired, hopeless
 
     @property
@@ -376,6 +417,18 @@ class _RepeatGuard:
         """
         if not self._seen:
             return ""
+        # ── Довгий цикл ────────────────────────────────────────────────────
+        # Коли жоден виклик не повторюється підряд, а робота стоїть,
+        # повідомлення «повторювався N разів» було б неправдою. Тому
+        # спершу кажемо про цикл — із назвами інструментів.
+        if self._cycle and self._cycle_hits >= 2:
+            names: list[str] = []
+            for key in self._cycle:
+                name = str(key).split("|", 1)[0]
+                if name not in names:
+                    names.append(name)
+            return ("модель ходила по колу: " + " → ".join(names)
+                    + f" ({self._cycle_hits} повтори).")
         # Формат відбитка: «назва|аргументи|ok|вивід» — статус третій.
         failed = [(key, count) for key, count in self._seen.items()
                   if "|fail|" in key]
@@ -2575,20 +2628,28 @@ class AgentRunner:
             except Exception:  # noqa: BLE001 - не має ламати вибір схем
                 LOG.debug("Вікно перед вибором схем не визначено", exc_info=True)
         available = self._available_schemas()
-        # ── АВТО-РОУТЕР: моделі — лише потрібні інструменти ───────────────
-        # Вимога користувача: «щоб не брало всі інструменти без
-        # необхідності, а тільки необхідні при виконанні задачі».
+        # ── ПОВНИЙ НАБІР ІНСТРУМЕНТІВ (без звуження) ──────────────────────
+        # Вимога користувача (21.11.2026): «ніяких режимів лінивий, тільки
+        # повний режим з повною автономією!».
         #
-        # Раніше повний режим віддавав УСІ схеми (8–20 тисяч токенів на
-        # кожен запит), а «лінивий» брав ядро з 12 плюс усі зовнішні —
-        # незалежно від того, що просить людина. Тепер набір вибирається за
-        # наміром задачі (:mod:`tool_select`): для розмови — майже нічого,
-        # для правки — читання/запис/перевірка, для запуску — команда.
+        # Що було. Два шари звужували набір незалежно: авто-роутер
+        # (:mod:`tool_select`) брав «профіль за наміром» — у живому прогоні
+        # 13 інструментів із 87, — а «лінивий» реєстр лишав ядро плюс те, що
+        # модель здогадалась завантажити. Наслідок: модель не бачила
+        # потрібного інструмента, витрачала кроки на ``load_tools`` і йшла по
+        # колу замість роботи.
         #
-        # Гарантія досяжності: ``find_tools``/``load_tools``/``run_tool``
-        # показуються завжди, тож будь-який інструмент доступний за один
-        # крок навіть тоді, коли його схеми немає в запиті.
-        available = self._select_schemas(available)
+        # Що тепер. Якщо набір узагалі вміщається у вікно — модель бачить
+        # УСІ схеми. Звуження лишається ЛИШЕ як запобіжник для вузьких
+        # вікон (8k і менше), де повний набір фізично не вміщається: краще
+        # показати ядро, ніж обірвати запит помилкою контексту.
+        # ``getattr`` тут, а не пряме звертання: раннер можна створити
+        # частково (тести, відновлення) без ``agent_settings``, і вибір схем
+        # не має через це падати — типово повний режим.
+        settings = getattr(self, "agent_settings", None)
+        full_tools = bool(getattr(settings, "full_tools", True))
+        if not full_tools:
+            available = self._select_schemas(available)
         # ── Рішення: повний набір чи лінивий реєстр ─────────────────────────
         # Порівнюємо РЕАЛЬНИЙ розмір схем із бюджетом схем. Якщо все вміщається
         # — передаємо повний набір і не змушуємо модель робити зайвий крок.
@@ -2598,6 +2659,10 @@ class AgentRunner:
             budget_tokens=self._schema_budget(),
             token_counter=AgentSession._tokens_in,
             specs=self._specs or None,
+            # Повний режим: лінивість вимикаємо, поки набір фізично вміщається
+            # у вікно моделі. Вузьке вікно (8k і менше) лишає запобіжник —
+            # інакше запит обривається помилкою контексту замість роботи.
+            force_full=full_tools and self._full_set_fits(),
         )
         self._schemas_lazy = bool(lazy)
         if lazy:
@@ -2607,6 +2672,9 @@ class AgentRunner:
         # до розмови, а в 2048 — більше за все вікно: сервер відповідав
         # ``exceed_context_size_error``. Тому схеми впорядковані за
         # важливістю й лишаються найпотрібніші (див. ``_fit_schemas``).
+        #
+        # У ПОВНОМУ режимі це єдине місце, де набір ще може скоротитись, і
+        # скорочується він ЛИШЕ під реальний розмір вікна — не за наміром.
         schemas = self._fit_schemas(available)
         # Кеш для оцінки токенів: схеми займають помітну частину вікна,
         # і бюджет історії має це враховувати.
@@ -2710,11 +2778,6 @@ class AgentRunner:
         return narrowed
 
     def _schema_budget(self) -> int:
-        """Скільки токенів відведено під схеми інструментів.
-
-        Береться зі СПІЛЬНОГО розподілу бюджету (:meth:`adopt_context_window`),
-        щоб схеми не обліковувались двічі — і не «40% навмання».
-        """
         limit = int(getattr(self.session, "context_limit", 0) or 0)
         if limit <= 0:
             return 0
@@ -2726,6 +2789,24 @@ class AgentRunner:
                                     - budget_model.safety
                                     - budget_model.system))
         return max(512, int(limit * 0.25))
+
+    def _full_set_fits(self) -> bool:
+        """Чи вміщається ПОВНИЙ набір схем у вікно моделі.
+
+        Навіщо окремо від ``update``. ``tool_lazy`` порівнює розмір із
+        бюджетом схем — а бюджет — це 25% вікна. Для повного режиму цього
+        замало: питання не «скільки відведено під схеми», а «чи влізе
+        взагалі разом із системою, історією й відповіддю».
+
+        Вузьке вікно (8k і менше) лишає запобіжник увімкненим: краще
+        показати ядро, ніж обірвати запит помилкою контексту.
+        """
+        limit = int(getattr(self.session, "context_limit", 0) or 0)
+        if limit <= 0:
+            # Вікно невідоме — обережно вважаємо, що повний набір уміщається:
+            # більшість моделей, з якими працює проєкт, мають ≥16k.
+            return True
+        return limit >= FULL_SET_MIN_WINDOW
 
     def _refresh_lazy_specs(self) -> None:
         """Додати специфікації інструментів керування реєстром.

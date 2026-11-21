@@ -364,14 +364,12 @@ class BlackChpokIDE(tk.Tk):
         # Створюється ДО розкладки, бо центр завдань у нижній панелі вже
         # показує кнопки, підключені до нього. Сам агент створюється
         # пізніше — виконавець кличе його лише під час роботи кроку.
+        # Перевірка МЕТИ кроку (а не лише «файл змінився»): задача «прибери
+        # позначку TODO» не стає «готово», поки маркер справді не зник.
         self.executor = task_executor.QueueExecutor(
             self.task_queue,
             validator=task_executor.TaskValidator(
-                self._project_root,
-                # Перевірка МЕТИ, а не лише «файл змінився»: задача «прибери
-                # позначку TODO» не стає «готово», поки маркер справді не
-                # зник. Без цього та сама задача йшла по колу.
-                goal_checker=self._task_goal_problem),
+                self._project_root, goal_checker=self._task_goal_problem),
             on_run_step=self._run_plan_step,
             # Колбеки йдуть із ПОТОКУ АГЕНТА, а чіпають віджети. Tkinter
             # цього не дозволяє: ``set_status`` і ``_update_queue_badge``

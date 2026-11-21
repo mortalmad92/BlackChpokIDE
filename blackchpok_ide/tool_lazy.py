@@ -311,11 +311,22 @@ class LazyToolRouter:
         budget_tokens: int = 0,
         token_counter: Callable[[Any], int] | None = None,
         specs: Mapping[str, Any] | None = None,
+        force_full: bool = False,
     ) -> bool:
         """Перебудувати реєстр. Повертає ``True``, якщо ввімкнено лінивість.
 
         ``budget_tokens`` — скільки токенів відведено під схеми. Якщо 0,
         рішення ухвалюється лише за кількістю (:data:`MAX_EAGER_TOOLS`).
+
+        ``force_full=True`` — НЕ вмикати лінивість, навіть якщо набір
+        завеликий за кількістю чи бюджетом.
+
+        Навіщо прапорець. Вимога користувача (21.11.2026): «ніяких режимів
+        лінивий, тільки повний режим з повною автономією!». Лінивість
+        економила токени, але коштувала дорожче: модель не бачила потрібного
+        інструмента, витрачала кроки на ``load_tools`` і застрягала. Тепер
+        рішення ухвалює викликач, а не поріг навмання; для вузьких вікон
+        запобіжник лишається (див. ``AgentRunner.tool_schemas``).
         """
         fresh: dict[str, dict[str, Any]] = {}
         for schema in schemas or ():
@@ -352,9 +363,18 @@ class LazyToolRouter:
         total_tokens = self._cost(list(fresh.values()), token_counter)
         over_count = len(fresh) > self._max_eager
         over_budget = bool(budget_tokens) and total_tokens > int(budget_tokens)
-        self._lazy = bool(over_count or over_budget)
+        self._lazy = bool(not force_full and (over_count or over_budget))
         self._budget = int(budget_tokens or 0)
-        if self._lazy:
+        if force_full and (over_count or over_budget):
+            why = []
+            if over_budget:
+                why.append(f"схеми {total_tokens} токенів > бюджету "
+                           f"{int(budget_tokens)}")
+            if over_count:
+                why.append(f"інструментів {len(fresh)} > {self._max_eager}")
+            self._reason = ("повний набір на вимогу (" + "; ".join(why)
+                            + ") — лінивість вимкнено")
+        elif self._lazy:
             why = []
             if over_budget:
                 why.append(f"схеми {total_tokens} токенів > бюджету "
