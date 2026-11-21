@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 from typing import Callable, Optional
 
 # ── ПРЯМИЙ ЗАПУСК ФАЙЛУ (виправлено після збою) ───────────────────────────
@@ -269,9 +269,13 @@ class EditorTabs(tk.Frame):
         try:
             content, encoding = ws.read_text_file(path)
         except ws.WorkspaceError as exc:
+            # ── БЕЗ МОДАЛЬНОГО ВІКНА ───────────────────────────────────────
+            # Раніше тут з'являвся ``showwarning`` — і кожна невдача відкриття
+            # (бінарний файл, файл зайнятий іншим процесом) зупиняла роботу
+            # діалогом, який треба було закрити руками. Тепер причина йде в
+            # рядок стану: інформації достатньо, а робота не спиняється.
             if self.on_status:
-                self.on_status(str(exc))
-            messagebox.showwarning("Не вдалось відкрити", str(exc), parent=self)
+                self.on_status(f"Не вдалось відкрити {path.name}: {exc}")
             return False
         frame_id, editor = self._new_editor(path.name, path.name)
         editor.set_text(content)
@@ -498,7 +502,9 @@ class EditorTabs(tk.Frame):
         try:
             ws.write_text_file(path, editor.get_text())
         except ws.WorkspaceError as exc:
-            messagebox.showerror("Помилка запису", str(exc), parent=self)
+            # Без діалогу: причина у рядку стану (див. open_file).
+            if self.on_status:
+                self.on_status(f"Не вдалось зберегти {path.name}: {exc}")
             return False
         editor.modified = False
         tab = self._tabs.get(frame_id)
@@ -528,7 +534,8 @@ class EditorTabs(tk.Frame):
         try:
             ws.write_text_file(path, editor.get_text())
         except ws.WorkspaceError as exc:
-            messagebox.showerror("Помилка запису", str(exc), parent=self)
+            if self.on_status:
+                self.on_status(f"Не вдалось зберегти {path.name}: {exc}")
             return False
         self.paths[frame_id] = path
         self._by_path[str(path.resolve())] = frame_id
@@ -724,7 +731,11 @@ class EditorTabs(tk.Frame):
         try:
             content = raw.decode(encoding)
         except UnicodeDecodeError:
-            messagebox.showerror("Кодування", f"Файл не читається як {encoding}", parent=self)
+            # Без діалогу: людина бачить причину в рядку стану, редактор
+            # лишається з попереднім вмістом — нічого не втрачено.
+            if self.on_status:
+                self.on_status(f"{path.name}: не читається як {encoding} — "
+                                "вибери інше кодування.")
             return
         editor.set_text(content.replace("\r\n", "\n"))
         editor.encoding = encoding  # type: ignore[attr-defined]
