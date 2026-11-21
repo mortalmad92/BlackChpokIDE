@@ -1,4 +1,5 @@
 import unittest
-class T(unittest.TestCase):
-    def test_example(self):
-        self.assertTrue(True)
+
+class TestExample(unittest.TestCase):
+    def test_addition(self):
+        self.assertEqual(5 + 3, 8)
