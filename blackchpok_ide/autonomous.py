@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,28 @@ SEED_PER_CYCLE = 2
 #: Скільки разів ту саму ідею можна поставити в чергу (захист від циклу).
 MAX_REPEATS = 2
 
+#: Позначки боргу, які сканер узагалі вважає маркером.
+DEBT_MARKERS = ("TODO", "FIXME", "HACK", "XXX")
+
+#: Маркер рахуємо ЛИШЕ як початок коментаря: ``# TODO``, ``// FIXME``,
+#: ``/* HACK``, ``<!-- XXX``, ``-- TODO`` (SQL/Lua) і ``; TODO``.
+#:
+#: Навіщо так суворо. Раніше маркер шукався як підрядок у рядку, і в чергу
+#: пішли задачі, які неможливо виконати:
+#:
+#: * ``social.py``: рядок ``"mastodon": …`` містить «TODO» всередині слова
+#:   MAS-TODO-N — «прибрати позначку» означало б зламати ключ;
+#: * ``stream_apply.py``: коментар ``# ``\uXXXX`` …`` містить «XXX»;
+#: * докстрінги з прикладами («… доказом «line 120 has TODO»»);
+#: * тестові дані ``{"old_string": "TODO", …}``.
+#:
+#: Модель бралася за таку задачу, «правила» рядок, маркер лишався — і сканер
+#: ставив її знову. Живий прогін 21.11.2026: 14 перезаписів одного
+#: тест-файлу й 21 запуск тієї самої команди за годину.
+_MARKER_RE = re.compile(
+    r"(?:#|//|/\*|<!--|--|;)\s*(?P<marker>TODO|FIXME|HACK|XXX)\b",
+    re.IGNORECASE)
+
 #: Теки, які сканер не читає: сміття, залежності, збірки.
 SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
@@ -74,10 +97,30 @@ class Candidate:
     kind: str = KIND_CODE
     path: str = ""                  # файл, якого стосується ідея
     weight: float = 1.0            # більший — важливіший
+    #: Номер рядка, якщо ідея стосується конкретного місця (0 — не стосується).
+    line: int = 0
+    #: Текст маркера боргу (``TODO``, ``FIXME``…), якщо це позначка.
+    marker: str = ""
+    #: Вид ідеї — стабільна ознака БЕЗ тексту рядка й без номера рядка.
+    category: str = ""
 
     def key(self) -> str:
-        """Ключ для захисту від повторів."""
-        return f"{self.kind}|{self.path}|{self.title}"
+        """Ключ для захисту від повторів.
+
+        Навіщо окремо від :attr:`title`. Колись ключем був увесь заголовок,
+        а заголовок містить ТЕКСТ рядка з позначкою. Модель «правила» рядок
+        (додавала слово, перейменовувала клас) — текст у заголовку змінювався,
+        ключ ставав новим, лічильник ``MAX_REPEATS`` обнулявся, і та сама
+        робота знову йшла в чергу. Живий прогін: цикл на ``test_sample.py``
+        перезаписував файл ~14 разів за годину.
+
+        Тепер ключ — «вид ідеї + файл» (для позначок — ще й маркер): він не
+        залежить від того, як саме модель переписала рядок.
+        """
+        kind = self.category or self.kind
+        if self.category == "marker" and self.marker:
+            return f"{kind}|{self.path}|{self.marker.upper()}"
+        return f"{kind}|{self.path}"
 
 
 @dataclass
@@ -192,12 +235,12 @@ def analyse_project(root: Path, *, limit: int = 24) -> list[Candidate]:
             continue
         lines = text.splitlines()
 
-        # 1. Позначки боргу: TODO / FIXME / HACK.
+        # 1. Позначки боргу: TODO / FIXME / HACK — лише в КОМЕНТАРЯХ.
         for number, line in enumerate(lines, start=1):
-            marker = next((m for m in ("TODO", "FIXME", "HACK", "XXX")
-                           if m in line), "")
-            if not marker:
+            found = _MARKER_RE.search(line)
+            if not found:
                 continue
+            marker = found.group("marker").upper()
             clean = " ".join(line.strip().lstrip("#/ ").split())[:140]
             ideas.append(Candidate(
                 title=f"Розібрати позначку {marker} у {rel}:{number}",
@@ -207,7 +250,8 @@ def analyse_project(root: Path, *, limit: int = 24) -> list[Candidate]:
                     f"позначка, прибери її й перевір синтаксис (python -m py_compile, "
                     f"якщо це .py). Змінюй лише цей файл."
                 ),
-                kind=KIND_CODE, path=rel, weight=3.0))
+                kind=KIND_CODE, path=rel, weight=3.0,
+                line=number, marker=marker, category="marker"))
             break        # одна ідея на файл, щоб не завалити чергу
 
         # 2. Проковтнуті винятки: except ...: pass
@@ -221,7 +265,7 @@ def analyse_project(root: Path, *, limit: int = 24) -> list[Candidate]:
                     f"LOG.debug або LOG.warning із контекстом у кожне таке місце, "
                     f"де це справді діагностика. Не змінюй поведінку успішного шляху."
                 ),
-                kind=KIND_CODE, path=rel, weight=2.4))
+                kind=KIND_CODE, path=rel, weight=2.4, category="swallowed"))
 
         # 3. print() замість журналу в бібліотечному коді.
         if path.suffix.lower() == ".py":
@@ -236,7 +280,7 @@ def analyse_project(root: Path, *, limit: int = 24) -> list[Candidate]:
                         f"текстом. Якщо logging ще не налаштований у файлі — додай "
                         f"LOG = logging.getLogger(...). Перевір синтаксис."
                     ),
-                    kind=KIND_CODE, path=rel, weight=1.8))
+                    kind=KIND_CODE, path=rel, weight=1.8, category="prints"))
 
         # 4. Дуже довгий файл: його важко читати й супроводжувати.
         if len(lines) > 900:
@@ -249,7 +293,7 @@ def analyse_project(root: Path, *, limit: int = 24) -> list[Candidate]:
                     f"перевірки: спершу план, далі — один безпечний крок "
                     f"(винести допоміжні функції в новий модуль і оновити імпорти)."
                 ),
-                kind=KIND_CODE, path=rel, weight=1.2))
+                kind=KIND_CODE, path=rel, weight=1.2, category="huge_file"))
 
         # 5. Модуль без тестів: найдешевший спосіб зменшити ризик.
         if path.suffix.lower() == ".py" and path.parent.name not in SKIP_DIRS:
@@ -265,7 +309,7 @@ def analyse_project(root: Path, *, limit: int = 24) -> list[Candidate]:
                             f"Потім запусти: python -m unittest tests.test_{path.stem} "
                             f"і виправ падіння, якщо вони через твій же тест."
                         ),
-                        kind=KIND_VERIFY, path=rel, weight=2.0))
+                        kind=KIND_VERIFY, path=rel, weight=2.0, category="missing_tests"))
 
     # 6. Перевірка, що проєкт узагалі живий після змін.
     if (root / "tests").is_dir():
@@ -592,7 +636,18 @@ class AutonomousEngine:
         return True, "Задачу додано — виконаю її першою."
 
     def seed(self, *, limit: int = SEED_PER_CYCLE) -> int:
-        """Знайти покращення й поставити їх у чергу від імені агента."""
+        """Знайти покращення й поставити їх у чергу від імені агента.
+
+        Дві перевірки перед постановкою задачі:
+
+        1. **задача вже стоїть у черзі** з тим самим ключем ідеї — не дублюємо
+           (раніше в живій черзі було по дві задачі на один і той самий файл:
+           сканер віддавав ідею, ``_seen`` рахував її окремо, а черга вже
+           містила копію);
+        2. **мета вже досягнута** — для позначки боргу перевіряємо, чи маркер
+           справді зник із файлу. Модель часто «править» рядок і не прибирає
+           маркер; без цієї перевірки така сама задача йшла по колу.
+        """
         if self.project is None or self.state != STATE_RUNNING:
             return 0
         try:
@@ -609,14 +664,19 @@ class AutonomousEngine:
         for idea in ideas:
             if added >= limit:
                 break
-            seen = self._seen.get(idea.key(), 0)
+            key = idea.key()
+            seen = self._seen.get(key, 0)
             if seen >= MAX_REPEATS:
                 continue
+            if self._pending_has(key):
+                # Та сама ідея вже чекає у черзі — не плодимо копію.
+                continue
             task = self.queue.add(idea.instruction, origin=ORIGIN_AGENT,
-                                  file_hint=idea.path, chat_id=self.chat_id)
+                                  file_hint=idea.path, chat_id=self.chat_id,
+                                  idea_key=key)
             if task is None:
                 continue
-            self._seen[idea.key()] = seen + 1
+            self._seen[key] = seen + 1
             added += 1
             self.plan.append(PlanItem(text=idea.title, kind=idea.kind, state="далі"))
         del self.plan[MAX_PLAN_ITEMS:]
@@ -626,6 +686,28 @@ class AutonomousEngine:
             self.log("Нових ідей не знайдено — перевірю проєкт ще раз пізніше.")
         self._changed()
         return added
+
+    def _pending_has(self, key: str) -> bool:
+        """Чи вже є в черзі незакрита задача з цим ключем ідеї."""
+        try:
+            tasks = list(self.queue.tasks)
+        except Exception:  # noqa: BLE001 - черга може бути недоступна
+            return False
+        for task in tasks:
+            if getattr(task, "settled", False):
+                continue
+            if str(getattr(task, "idea_key", "") or "") == key:
+                return True
+        return False
+
+    def task_succeeded(self, *, idea_key: str, path: str = "") -> str:
+        """Чи справді досягнуто мети задачі. Порожній рядок — так.
+
+        Потрібно, щоб не вважати «готово» роботу, яка насправді не змінила
+        нічого: позначка ``TODO`` лишилась у файлі, тест-файл перезаписано
+        тим самим вмістом. Повертає людську причину, якщо мети не досягнуто.
+        """
+        return goal_problem(self.project, idea_key=idea_key, path=path)
 
     # ── рішення про наступний крок ─────────────────────────────────────────
     def tick(self, *, busy: bool, has_pending: bool) -> str:
@@ -675,6 +757,33 @@ def _short(text: str, limit: int = 70) -> str:
     return clean if len(clean) <= limit else clean[: limit - 1] + "…"
 
 
+def goal_problem(project: Path | None, *, idea_key: str, path: str = "") -> str:
+    """Мета задачі справді досягнута? Порожній рядок — так.
+
+    Публічна (без підкреслення), бо її кличе ще й ``TaskValidator`` у
+    ``task_executor``: перевірка результату кроку стоїть у двох місцях
+    (виконавець черги і вікно), і обидві мусять брати мету з одного джерела.
+
+    Перевіряється лише те, що справді можна перевірити без моделі: позначка
+    боргу мусить ЗНИКНУТИ з файлу. Решта ідей (тести, рефакторинг) лишаються
+    на розсуд виконавця — вигадувати для них формальний критерій означало б
+    блокувати справжню роботу.
+    """
+    clean = str(idea_key or "").strip()
+    if not clean.startswith("marker|") or not path or project is None:
+        return ""
+    marker = clean.rsplit("|", 1)[-1].strip().upper()
+    if not marker:
+        return ""
+    try:
+        body = (Path(project) / path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if _MARKER_RE.search(body):
+        return f"позначка {marker} досі у файлі {path}"
+    return ""
+
+
 def _same(left: Path, right: Path) -> bool:
     try:
         return left.resolve() == right.resolve()
@@ -684,6 +793,7 @@ def _same(left: Path, right: Path) -> bool:
 
 __all__ = [
     "Candidate",
+    "DEBT_MARKERS",
     "Focus",
     "KIND_ANALYSIS",
     "KIND_CODE",
@@ -699,6 +809,7 @@ __all__ = [
     "STATE_STOPPING",
     "AutonomousEngine",
     "analyse_project",
+    "goal_problem",
     "project_packages",
     "research_ideas",
 ]

@@ -37,6 +37,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 __all__ = [
     "Lesson",
+    "NO_TESTS_ADVICE",
     "TurnFacts",
     "SelfLearning",
     "advice_chars",
@@ -106,6 +107,25 @@ REWRITE_LIMIT = 3
 #: Скільки разів той самий виклик з тими самими аргументами — зациклення.
 REPEAT_LIMIT = 2
 
+#: Ознаки того, що тести не знайшли (``unittest`` віддає код 5).
+_NO_TESTS_MARKERS = (
+    "no tests ran", "ran 0 tests", "executed 0 tests",
+)
+
+#: Порада, яка лікує «нуль тестів» у цьому проєкті.
+#:
+#: Перевірено окремо перед тим, як це писати: у теці ``tests`` немає
+#: ``__init__.py``, тому ``python -m unittest discover`` від кореня завжди
+#: дає «Ran 0 tests» і код 5. З ``-s tests`` тести знаходяться. Модель
+#: бачила код 5, вважала це збоєм і повторювала ту саму команду — за годину
+#: живого прогону таких повторів було 21.
+NO_TESTS_ADVICE = (
+    "«Ran 0 tests» означає, що тека запуску неправильна, а не що тестів "
+    "немає: запускай `python -m unittest discover -s tests -p \"test_*.py\" -v` "
+    "або один модуль `python -m unittest tests.test_ім'я -v`. Не переписуй "
+    "тестовий файл заради цього — його вміст на результат не впливає."
+)
+
 
 def _clip(text: str, limit: int) -> str:
     body = " ".join(str(text or "").split())
@@ -115,6 +135,12 @@ def _clip(text: str, limit: int) -> str:
 def _is_flaky(text: str) -> bool:
     low = (text or "").lower()
     return any(marker in low for marker in _FLAKY_MARKERS)
+
+
+def _is_no_tests(text: str) -> bool:
+    """Чи це «нуль тестів» (а не справжній збій тестів)."""
+    low = (text or "").lower()
+    return any(marker in low for marker in _NO_TESTS_MARKERS)
 
 
 @dataclass
@@ -285,6 +311,38 @@ def extract_lessons(facts: TurnFacts) -> list[Lesson]:
                     f"edit_file з точними old_string/new_string, а не повний "
                     f"перезапис."),
             confidence=0.55, times=count))
+
+    # ── 7. «Тестів не знайдено» ────────────────────────────────────────────
+    # Найдовший цикл у живих прогонах: команда віддає код 5, модель вважає
+    # це збоєм, переписує тестовий файл і запускає ту саму команду знову.
+    # Правило конкретне: причина — тека запуску, а не вміст файлу.
+    empty_runs = sum(1 for name, ok, text in calls
+                     if name == "run_command" and _is_no_tests(text))
+    if empty_runs:
+        lessons.append(Lesson(
+            trigger=trigger,
+            mistake=(f"команда тестів {empty_runs} раз(и) не знайшла жодного "
+                     f"тесту (код 5, «Ran 0 tests»)"),
+            advice=NO_TESTS_ADVICE,
+            confidence=0.75, times=empty_runs))
+
+    # ── 8. Файли змінювались, але мети кроку не досягнуто ──────────────────
+    # Ознака «робота вхолосту»: один і той самий .py записано кілька разів,
+    # а хід усе одно невдалий. Тоді проблема не в синтаксисі, а в тому, що
+    # модель не змінює САМЕ те місце.
+    if not facts.ok and facts.changed_files:
+        thumb = _file_write_counts(facts.changed_files)
+        if thumb:
+            path, count = thumb[0]
+            lessons.append(Lesson(
+                trigger=trigger,
+                mistake=(f"файл {path} перезаписано {count} разів, а крок "
+                         f"так і не завершився"),
+                advice=("Якщо правка не дає результату з першого разу — не "
+                        "перезаписуй файл заново. Прочитай його (read_file), "
+                        "переконайся, що змінюєш САМЕ потрібний рядок, і "
+                        "перевір наслідок командою, а не на око."),
+                confidence=0.7, times=count))
 
     return lessons[:WRITE_LIMIT]
 

@@ -67,12 +67,38 @@ class TaskValidator:
     файлів, не зараховуємо, поки цих файлів не існує.
     """
 
-    def __init__(self, root_provider: Callable[[], Optional[Path]]) -> None:
+    def __init__(self, root_provider: Callable[[], Optional[Path]],
+                 goal_checker: Optional[
+                     Callable[[queue_engine.QueueTask], str]] = None) -> None:
         self.root_provider = root_provider
+        #: Додаткова перевірка МЕТИ кроку (а не лише факту зміни файлів).
+        #:
+        #: Навіщо окремий хук. Задача «прибери позначку TODO у файлі X»
+        #: завершувалась статусом «готово», якщо агент будь-що записав у X:
+        #: перевірка бачила змінений файл і зараховувала крок. Насправді
+        #: маркер лишався, сканер знову ставив ту саму задачу — і робота
+        #: йшла по колу (живий прогін 21.11.2026: 14 перезаписів одного
+        #: файлу за годину). Хук повертає причину, якщо мети не досягнуто.
+        self.goal_checker = goal_checker
 
     def validate(self, task: queue_engine.QueueTask, answer: str, *,
                  changed: Iterable[str] = ()) -> ValidationResult:
         """Перевірити відповідь агента для одного кроку плану."""
+        result = self._validate_files(task, answer, changed=changed)
+        if not result.ok or self.goal_checker is None:
+            return result
+        try:
+            problem = str(self.goal_checker(task) or "").strip()
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Перевірка мети кроку впала", exc_info=True)
+            return result
+        if problem:
+            return ValidationResult(False, "мету кроку не досягнуто: " + problem)
+        return result
+
+    def _validate_files(self, task: queue_engine.QueueTask, answer: str, *,
+                        changed: Iterable[str] = ()) -> ValidationResult:
+        """Перевірити, що крок справді дав результат на диску."""
         text = (answer or "").strip()
         files = [str(item) for item in changed if str(item).strip()]
         if not text and not files:

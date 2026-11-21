@@ -142,6 +142,13 @@ class QueueTask:
     tools: list[str] = field(default_factory=list)
     #: Файли, які задача створила або змінила (заповнює виконавець).
     files_changed: list[str] = field(default_factory=list)
+    #: Ключ ідеї, з якої народилась задача (заповнює автономний режим).
+    #:
+    #: Потрібен, щоб не ставити в чергу ту саму роботу двічі й щоб після
+    #: виконання перевірити, чи мета справді досягнута. Окреме поле, а не
+    #: ``detail``: ``detail`` показується людині в картці задачі, і
+    #: технічний рядок там був би сміттям.
+    idea_key: str = ""
     #: Скільки разів задача вже запускалась (захист від вічних повторів).
     attempts: int = 0
     #: Журнал фактичних кроків виконання: (час, вид, текст).
@@ -229,6 +236,8 @@ class QueueTask:
                 clean[name] = []
         if not isinstance(clean.get("history"), list):
             clean["history"] = []
+        if not isinstance(clean.get("idea_key"), str):
+            clean["idea_key"] = ""
         try:
             clean["number"] = int(clean.get("number") or 0)
         except (TypeError, ValueError):
@@ -326,7 +335,8 @@ class TaskQueue:
             origin: str = ORIGIN_AGENT, file_hint: str = "",
             front: bool = False, chat_id: str = "",
             number: int = 0, detail: str = "", goal: str = "",
-            depends_on: Iterable[str] = (), tools: Iterable[str] = ()) -> Optional[QueueTask]:
+            depends_on: Iterable[str] = (), tools: Iterable[str] = (),
+            idea_key: str = "") -> Optional[QueueTask]:
         """Додати задачу в чергу.
 
         ``origin`` визначає автора: задачі користувача мають вищий
@@ -352,6 +362,7 @@ class TaskQueue:
             goal=(goal or "").strip(),
             depends_on=[str(dep) for dep in depends_on or () if str(dep).strip()],
             tools=[str(tool) for tool in tools or () if str(tool).strip()],
+            idea_key=(idea_key or "").strip(),
         )
         if front:
             self.tasks.insert(0, task)

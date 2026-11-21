@@ -1744,10 +1744,18 @@ def _missing_command_hint(command: str, code: int, body: str = "") -> str:
         return (
             "ПРИЧИНА: тестів не знайдено — команда відпрацювала, але "
             "перевіряти нічого. Це НЕ помилка коду.\n"
-            "Що зробити: створи файл тестів (напр. test_<назва>.py з "
-            "`import unittest` і класом `class T(unittest.TestCase)`), і "
-            "запусти `python -m unittest discover -v`. Не повторюй ту саму "
-            "команду — результат не зміниться.")
+            "Що зробити (вибери ОДНЕ, не повторюй ту саму команду):\n"
+            "1. Тести вже є, але лежать у теці `tests` — запусти їх так: "
+            "`python -m unittest discover -s tests -p \"test_*.py\" -v`.\n"
+            "2. Запусти один конкретний модуль: "
+            "`python -m unittest tests.test_ім'я -v`.\n"
+            "3. Тестів справді немає — створи файл `tests/test_<назва>.py` "
+            "з `import unittest` і класом `class TestName(unittest.TestCase)` "
+            "(файл мусить починатися з `test_`, інакше discover його не "
+            "побачить) і запусти команду з пункту 1.\n"
+            "ВАЖЛИВО: `python -m unittest discover` БЕЗ `-s tests` у цьому "
+            "проєкті завжди дає «Ran 0 tests» — у теці `tests` немає "
+            "`__init__.py`. Повтор цієї команди нічого не змінить.")
     # ── Модуль Python, а не команда ───────────────────────────────────────
     # ``py -m pip install x`` із відсутнім пакетом дає «No module named», і
     # назвати причиною «немає команди python» було б неправдою: команда є,
@@ -1780,7 +1788,8 @@ def _missing_command_hint(command: str, code: int, body: str = "") -> str:
             "`python -m unittest discover -s tests -v`;",
             "• для одного файлу: `python -m unittest tests.test_модуль -v`;",
             "• якщо тестів ще немає — створи їх через write_file і запусти "
-            "`python -m unittest discover`.",
+            "`python -m unittest discover -s tests -v` (без `-s tests` "
+            "discover у цьому проєкті нічого не знаходить).",
         ]
     elif "pip" in low or "No module named" in body:
         lines += [

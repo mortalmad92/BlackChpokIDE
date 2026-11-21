@@ -38,12 +38,16 @@ class NeuromeshPanel(tk.Frame):
         *,
         on_open_memory: Optional[Callable[[str], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
+        root_provider: Optional[Callable[[], Any]] = None,
     ) -> None:
         super().__init__(master, bg=theme.BG_ALT, bd=0, highlightthickness=0)
         self.fonts = fonts
         self._service_provider = service_provider
         self.on_open_memory = on_open_memory
         self.on_status = on_status
+        #: Тека проєкту — потрібна, щоб перевірити факти пакета знань по
+        #: СПРАВЖНІХ файлах. Без неї беремо поточну теку процесу.
+        self._root_provider = root_provider
         self._queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self._after: Optional[str] = None
         self._busy = False
@@ -123,6 +127,8 @@ class NeuromeshPanel(tk.Frame):
             ("Консолідація", self.run_consolidate, "Злити дублікати й знайти конфлікти"),
             ("Бекап", self.run_backup, "Створити резервну копію через SQLite Backup API"),
             ("Зі старого RAG", self.run_migrate, "Перенести спогади з rag_memory"),
+            ("Знання проєкту", self.run_seed_knowledge,
+             "Записати перевірені факти про проєкт (тести, архітектура, правила)"),
         )):
             chip = widgets.Chip(actions, label, command=command)
             chip.grid(row=0, column=column, padx=(0, 4), pady=2, sticky="w")
@@ -365,6 +371,47 @@ class NeuromeshPanel(tk.Frame):
 
         threading.Thread(target=work, daemon=True, name="neuromesh-migrate").start()
         self._schedule_pump()
+
+    def run_seed_knowledge(self) -> None:
+        """Записати в пам'ять перевірені знання про проєкт.
+
+        Ті самі факти, які агент отримує на старті: як запускати тести, де
+        що лежить, які правила ламати не можна. Кнопка потрібна, щоб це
+        можна було зробити вручну після змін у проєкті — факт із невдалою
+        перевіркою не пишеться, а показується як застарілий.
+        """
+        service = self.service
+        if service is None:
+            return
+        self._say("Записую знання проєкту в пам'ять…")
+
+        def work() -> None:
+            try:
+                from . import knowledge_pack
+
+                report = knowledge_pack.seed(service, self._project_root())
+                text = report.describe()
+                if report.stale:
+                    text += (" Перевірка не пройшла (файли змінились): "
+                             + ", ".join(report.stale[:5]) + ".")
+                self._queue.put(("message", text))
+                self._queue.put(("reload", None))
+            except Exception as exc:             # noqa: BLE001
+                self._queue.put(("error", str(exc)))
+
+        threading.Thread(target=work, daemon=True, name="neuromesh-knowledge").start()
+        self._schedule_pump()
+
+    def _project_root(self):
+        """Тека проєкту для перевірки фактів (поточна, якщо невідомо)."""
+        from pathlib import Path
+
+        if self._root_provider is None:
+            return Path.cwd()
+        try:
+            return Path(self._root_provider() or Path.cwd())
+        except Exception:                            # noqa: BLE001
+            return Path.cwd()
 
 
 __all__ = ["NeuromeshPanel", "RECENT_LIMIT"]

@@ -366,7 +366,12 @@ class BlackChpokIDE(tk.Tk):
         # пізніше — виконавець кличе його лише під час роботи кроку.
         self.executor = task_executor.QueueExecutor(
             self.task_queue,
-            validator=task_executor.TaskValidator(self._project_root),
+            validator=task_executor.TaskValidator(
+                self._project_root,
+                # Перевірка МЕТИ, а не лише «файл змінився»: задача «прибери
+                # позначку TODO» не стає «готово», поки маркер справді не
+                # зник. Без цього та сама задача йшла по колу.
+                goal_checker=self._task_goal_problem),
             on_run_step=self._run_plan_step,
             # Колбеки йдуть із ПОТОКУ АГЕНТА, а чіпають віджети. Tkinter
             # цього не дозволяє: ``set_status`` і ``_update_queue_badge``
@@ -408,6 +413,12 @@ class BlackChpokIDE(tk.Tk):
                 self.registry.attach_memory(self.memory)
             except Exception:                        # noqa: BLE001
                 LOG.warning("Пам'ять не підключено до реєстру", exc_info=True)
+            # ── Базові знання про проєкт — у пам'ять, а не в нікуди ────────
+            # Локальна модель не знає нічого про ЦЕЙ проєкт: ні як запускати
+            # тести, ні де лежить черга. Без цього кроку кожне завдання
+            # починалося з нуля й повторювало вже виправлені помилки.
+            # Запис іде у фоні: старт вікна не має чекати на пам'ять.
+            self._seed_knowledge()
         self.layout = layout.load()
         # Живе тестування: агент запускає/клікає/знімає скріншоти застосунку.
         self.app = AppController(self._project_root)
@@ -1329,6 +1340,7 @@ class BlackChpokIDE(tk.Tk):
             self.side_stack, self.theme, lambda: self.memory,
             on_open_memory=self._show_memory_item,
             on_status=self.set_status,
+            root_provider=self._project_root,
         )
         self._side_widgets = {
             "chats": self.chat_list,
@@ -4863,6 +4875,26 @@ class BlackChpokIDE(tk.Tk):
             self.autonomous_panel.refresh()
         except (tk.TclError, AttributeError):
             pass
+
+    def _task_goal_problem(self, task) -> str:
+        """Чи справді досягнуто мети кроку черги (порожній рядок — так).
+
+        Задача, яку поставив автономний режим, пам'ятає свій ключ ідеї
+        (``idea_key``). Для позначки боргу мета перевіряється буквально:
+        маркер мусить зникнути з файлу. Інакше крок ставав «готово» лише
+        тому, що файл змінився, і та сама задача поверталась у чергу.
+        """
+        try:
+            idea_key = str(getattr(task, "idea_key", "") or "")
+            if not idea_key:
+                return ""
+            project = self.autonomous_engine.project or self._project_root()
+            return autonomous.goal_problem(
+                project, idea_key=idea_key,
+                path=str(getattr(task, "file_hint", "") or ""))
+        except Exception:  # noqa: BLE001 - перевірка не має валити крок
+            LOG.debug("Перевірка мети кроку впала", exc_info=True)
+            return ""
 
     def _autonomous_tick(self) -> None:
         """Серце режиму: раз на кілька секунд вирішує, що робити далі."""
@@ -9355,6 +9387,58 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Пам'ять NEUROMESH недоступна: %s", exc, exc_info=True)
             self.set_status(f"Пам'ять недоступна: {exc}")
             return None
+
+    def _seed_knowledge(self, *, quiet: bool = True) -> dict[str, Any]:
+        """Записати перевірені знання про проєкт у довгострокову пам'ять.
+
+        Що це дає локальній моделі. Кожен факт пакета — коротке перевірене
+        твердження (як запускати тести, де лежить черга, які правила ламати
+        не можна). Вони лягають у NEUROMESH і підкладаються в контекст
+        наступного запиту через ``memory_bridge`` — тобто модель не мусить
+        щоразу доходити до цього сама.
+
+        Чому у фоні. Запис 18 фактів — це 18 транзакцій SQLite плюс вектори;
+        старт вікна не має чекати. Результат повертається в журнал/панель.
+
+        Чому фактів так мало і кожен з перевіркою. Пам'ять із вигаданими
+        фактами гірша за порожню: модель спирається на них упевнено.
+        Не пройшла перевірка по файлу — факт не пишемо й кажемо про це.
+        """
+        from . import knowledge_pack
+
+        result: dict[str, Any] = {"added": 0, "confirmed": 0,
+                                  "stale": [], "failed": 0, "skipped": True}
+        if self.memory is None:
+            return result
+
+        def work() -> None:
+            try:
+                report = knowledge_pack.seed(self.memory, self._project_root())
+            except Exception as exc:                 # noqa: BLE001
+                LOG.debug("Пакет знань не записано: %s", exc, exc_info=True)
+                return
+            result.update(added=report.added, confirmed=report.confirmed,
+                          stale=list(report.stale), failed=report.failed,
+                          skipped=False)
+            text = report.describe()
+            LOG.info("%s", text)
+            if not quiet or report.added or report.stale:
+                self._ui_call(self.set_status, text)
+            self._ui_call(self._refresh_memory_panel)
+
+        threading.Thread(target=work, daemon=True,
+                         name="memory-knowledge").start()
+        return result
+
+    def _refresh_memory_panel(self) -> None:
+        """Оновити панель пам'яті, якщо вона вже створена."""
+        panel = getattr(self, "neuromesh_panel", None)
+        if panel is None:
+            return
+        try:
+            panel.refresh()
+        except (tk.TclError, AttributeError):
+            pass
 
     def _replace_loaded_model(self, entry) -> None:
         """Нова модель займає місце попередньої, а не сідає поруч.
