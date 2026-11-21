@@ -44,6 +44,7 @@ from . import tool_router
 from . import tool_specs
 from . import trace_store
 from . import autonomy
+from . import context_flow
 from . import web_learning
 from .agent_tools import TOOL_SCHEMAS, ToolRegistry, ToolResult
 from .config import (
@@ -144,8 +145,25 @@ LARGE_WINDOW_TOKENS = 100_000
 #: Нижче — звуження як запобіжник, а не як «економія».
 FULL_SET_MIN_WINDOW = 16_384
 
-#: Частка вікна, яка МУСИТЬ лишитись на саму розмову (історію).
+#: Вікно, у якому дозволяємо ЛИШЕ ядро й контроль реєстру.
 #:
+#: Заміряно 21.11.2026: при вікні 2048 системний промпт (775 токенів) і три
+#: схеми керування лишають близько 500 токенів на саме повідомлення. Будь-яка
+#: повна схема (110–350) цей залишок з'їдає, і запит переповнюється
+#: (2121 при ліміті 2048). Таке вікно вже непридатне для агентської роботи —
+#: тому показуємо мінімум, а решту лишаємо досяжною через ``run_tool``.
+_TINY_WINDOW_TOKENS = 3_000
+
+#: Що лишається моделі при дуже вузькому вікні (до 3k токенів).
+#:
+#: Чотири найпотрібніші дії — прочитати, записати, виправити, запустити.
+#: Разом із трьома схемами контролю реєстру це вміщається в залишок після
+#: системного промпту; решта доступна через ``run_tool``.
+_TINY_WINDOW_TOOLS: frozenset[str] = frozenset({
+    "read_file", "write_file", "edit_file", "run_command",
+})
+
+#: Частка вікна, яка МУСИТЬ лишитись на саму розмову (історію).
 #: Заміряно на живому прогоні 21.11.2026: коли інструментів стало 91, схеми
 #: зайняли 11 520 токенів, і бюджет історії став НУЛЕМ («система 8 939,
 #: схеми 4 252, історія 0»). Модель не бачила, що вже зроблено, і хід ставав
@@ -289,6 +307,72 @@ def set_token_counter(counter: Callable[[str], int] | None) -> None:
 def current_token_counter() -> Callable[[str], int] | None:
     """Поточний точний лічильник (``None`` — працюємо на евристиці)."""
     return _TOKEN_COUNTER
+
+
+#: Ознаки того, що пошук НІЧОГО не дав (а не знайшов інформацію).
+_EMPTY_SEARCH_MARKERS: tuple[str, ...] = (
+    "нічого не знайдено", "не знайдено", "no results",
+    "nothing found", "0 результатів",
+)
+
+
+def _is_empty_search(body: str) -> bool:
+    """Чи це «нічого не знайдено», а не справжній результат пошуку.
+
+    Навіщо. Пошук повертає не лише знайдене: коли нічого немає, він віддає
+    пояснення з порадами. Додавати такий текст у промпт шкідливо — модель
+    бачить «нічого не знайдено» і переносить це у відповідь, хоч питання
+    взагалі не потребувало мережі.
+    """
+    low = " ".join(str(body or "").lower().split())
+    if not low:
+        return True
+    # Якщо є хоч одне посилання — це вже результат.
+    if "http" in low:
+        return False
+    return any(marker in low for marker in _EMPTY_SEARCH_MARKERS)
+
+
+#: Ознаки «обіцянки замість результату» в переказі.
+_PROMISE_MARKERS: tuple[str, ...] = (
+    "зараз покажу", "зараз зроблю", "покажу зараз", "давайте подивимось",
+    "давай подивимось", "ось що я зроблю", "я покажу", "let me show",
+    "here's what i'll", "i will show",
+)
+
+
+def _is_bare_promise(text: str) -> bool:
+    """Чи це обіцянка показати щось замість самого результату."""
+    low = " ".join(str(text or "").lower().split())
+    if len(low) > 160:
+        # Довгий текст майже завжди містить і зміст — це вже відповідь.
+        return False
+    return any(marker in low for marker in _PROMISE_MARKERS)
+
+
+def _shares_terms(answer: str, data: str) -> bool:
+    """Чи є в переказі хоч одне слово з даних (число, назва, шлях)."""
+    words = {word for word in re.split(r"[^\w\u0400-\u04FF.]+", data.lower())
+             if len(word) >= 4}
+    if not words:
+        return True
+    low = str(answer or "").lower()
+    return any(word in low for word in words)
+
+
+class _ContextAsk:
+    """Прохання МОДЕЛІ про контекст (див. інструмент ``request_context``).
+
+    Окрема структура, а не словник: її читає ``context_plan``, і помилка в
+    ключі тут означала б тихе «модель попросила, але її не почули».
+    """
+
+    __slots__ = ("text", "depth", "query")
+
+    def __init__(self, *, text: str, depth: Any, query: str = "") -> None:
+        self.text = text
+        self.depth = depth
+        self.query = query
 
 
 def _repeat_hint(name: str, count: int, outcome: ToolResult) -> str:
@@ -582,6 +666,13 @@ class AgentSession:
         #: рахує бюджет перед кожним запитом і кладе сюди результат
         #: (:meth:`AgentRunner._render_digest`).
         self.digest_block: str = ""
+        #: ПОРАДА від роутера, коли інструменти вибирає модель.
+        #:
+        #: На відміну від ``action_prompt`` (жорсткі правила проєкту), це
+        #: саме ЗДОГАД: «схоже, тут просять список файлів». Модель бачить
+        #: його й вирішує сама — брати інструмент чи ні (вимога 21.11.2026:
+        #: «дай їй свободу думок і хай сама підбирає інструменти»).
+        self.hint_prompt: str = ""
 
     def reset(self) -> None:
         self.messages.clear()
@@ -609,6 +700,7 @@ class AgentSession:
         self.extra_prompt = ""
         self.skill_prompt = ""
         self.action_prompt = ""
+        self.hint_prompt = ""
         restored = 0
         if not isinstance(messages, list):
             return 0
@@ -652,6 +744,8 @@ class AgentSession:
         )
         if self.action_prompt.strip():
             prompt += "\n\n" + self.action_prompt.strip()
+        if self.hint_prompt.strip():
+            prompt += "\n\n" + self.hint_prompt.strip()
         if self.extra_prompt.strip():
             prompt += "\n\n" + self.extra_prompt.strip()
         # ── Хроніка довгого чату ───────────────────────────────────────────
@@ -2206,6 +2300,13 @@ class AgentRunner:
         # мають бути в контексті одразу, інакше агент перепитує те, що вже
         # пояснювали, і повторює виправлені помилки.
         self._recall_memory(text)
+        # ── ІНТЕРНЕТ НА КОЖЕН ЗАПИТ ───────────────────────────────────────
+        # Вимога користувача: «до кожного запиту в локальній моделі додавався
+        # запит до інтернету». Порядок важливий: пам'ять і мережа додаються
+        # ПЕРЕД контекстом, щоб модель бачила їх разом зі своїм завданням.
+        web_block = self._web_context_for(text)
+        if web_block:
+            parts.append(web_block)
         context_block = self._context_block()
         if context_block:
             parts.append(context_block)
@@ -2230,7 +2331,7 @@ class AgentRunner:
         self._thread.start()
         return True
 
-    def turn_reset(self) -> int:
+    def turn_reset(self, *, keep: int = 0) -> int:
         """Режим «один запит — один контекст»: увесь хід → у пам'ять.
 
         Вимога користувача (21.11.2026): «не обов'язково тримати все в
@@ -2244,11 +2345,12 @@ class AgentRunner:
         історії, а все, що було, вже лежить у довгостроковій пам'яті
         (NEUROMESH + RAG + хроніка) і повертається пошуком.
 
-        Що лишається у вікні:
+        ``keep`` — скільки останніх повідомлень ЛИШИТИ.
 
-        * системний промпт (він не в ``messages``, тож не чіпається);
-        * ОСТАННІЙ обмін — питання й відповідь. Без нього модель узагалі не
-          знатиме, про що йшлося, і доведеться покладатись лише на пошук.
+        * ``0`` (типово) — визначає :meth:`_keep_for_reset`: останній обмін.
+        * ``-1`` — не чіпати вікно взагалі (глибина «глибоко»).
+        * додатне число — рівно стільки (адаптивний режим, див.
+          :mod:`context_flow`).
 
         Що НЕ робиться:
 
@@ -2262,10 +2364,12 @@ class AgentRunner:
         if getattr(self.state, "private", False):
             return 0
         messages = list(getattr(self.session, "messages", []) or ())
-        # Лишаємо останній обмін: щонайменше одну репліку користувача й одну
-        # відповідь. Решта — в пам'ять.
-        keep = self._keep_for_reset(messages)
-        to_archive = messages[:max(0, len(messages) - keep)]
+        if keep < 0:
+            # Глибина «глибоко»: історію не чіпаємо зовсім.
+            return 0
+        # Лишаємо останній обмін (або стільки, скільки просив викликач).
+        wanted = int(keep) if int(keep or 0) > 0 else self._keep_for_reset(messages)
+        to_archive = messages[:max(0, len(messages) - wanted)]
         if not to_archive:
             return 0
         # У пам'ять іде РІВНО те, що зникає з вікна — і лише після того, як
@@ -2590,6 +2694,15 @@ class AgentRunner:
             ok=bool(ok),
             goal=str(getattr(self.state, "goal", "") or ""),
             intent_type=str(getattr(self.intent, "intent_type", "") or ""),
+            # ── Три джерела одного ходу: модель + інтернет + користувач ────
+            # Урок виводиться не лише з ПОМИЛОК: знайдене в мережі й
+            # поправка людини — теж знання, і воно має дійти до наступного
+            # ходу (вимога 21.11.2026).
+            web_query=str(getattr(self, "_web_query", "") or ""),
+            web_digest=str(getattr(self, "_web_digest", "") or ""),
+            web_facts=int(getattr(self, "_web_facts", 0) or 0),
+            user_corrected=bool(getattr(self, "_user_corrected", False)),
+            user_words=str(getattr(self, "_user_correction", "") or ""),
         )
         try:
             saved = learning.learn_turn(facts)
@@ -3217,6 +3330,48 @@ class AgentRunner:
                 name = ""
             important = name.startswith(("mcp__", "router:")) or name in {
                 "list_skills", "read_skill", *tool_lazy.CONTROL_TOOLS}
+            # ── КОНТРОЛЬ РЕЄСТРУ — ПОНАД БЮДЖЕТ, АЛЕ ЗАВЖДИ ───────────────
+            # Заміряно 21.11.2026: при 18 слотах ``run_tool`` ВИПАВ, і
+            # «лінивість» перетворилась на «недоступність»: модель не могла
+            # викликати жоден інструмент, чиєї схеми не бачить.
+            #
+            # Тому три схеми керування (``find_tools``/``load_tools``/
+            # ``run_tool``) додаються ПЕРШИМИ й безумовно: вони дешеві (три
+            # маленькі схеми), а без них решта набору стає пасткою.
+            if name in tool_lazy.CONTROL_TOOLS:
+                kept.append(schema)
+                used += cost
+                continue
+            # ── ДУЖЕ ВУЗЬКЕ ВІКНО: МІНІМУМ, А РЕШТА — ЧЕРЕЗ run_tool ───────
+            # У вікні 2048 системний промпт (775) + ядро з 14 схем (≈2100)
+            # переповнюють контекст: заміряно 2121 при ліміті 2048, а після
+            # підрізання — 3450. Тому при такому вікні лишаємо РІВНО
+            # чотири речі: читати, писати, правити й запускати. Більше
+            # нічого: будь-яка зайва схема шкодить більше, ніж дає, бо
+            # агент фізично не бачить повідомлення.
+            #
+            # Решта інструментів ЛИШАЄТЬСЯ ДОСЯЖНОЮ через ``run_tool`` —
+            # саме тому контроль реєстру вище додається безумовно.
+            if limit and limit < _TINY_WINDOW_TOKENS:
+                if name in _TINY_WINDOW_TOOLS:
+                    kept.append(schema)
+                    used += cost
+                continue
+            # ── ЗАВАНТАЖЕНІ МОДЕЛЛЮ — ТЕЖ БЕЗ ОБРІЗАННЯ ───────────────────
+            # Заміряно 21.11.2026: ``load_tools`` відповідав «завантажено»,
+            # але схема НЕ з'являлась у наборі — бо обрізання викидало її
+            # знову. Модель бачила підтвердження й не могла викликати
+            # інструмент: обіцянка без можливості.
+            #
+            # Тепер усе, що модель попросила сама, лишається у наборі
+            # (у межах розумного запасу): вона вже витратила крок на
+            # прохання, і повторювати його означало б цикл.
+            router_now = getattr(self, "_lazy_router", None)
+            asked = getattr(router_now, "_loaded", set()) if router_now else set()
+            if name in asked:
+                kept.append(schema)
+                used += cost
+                continue
             # Першу (найважливішу) схему беремо завжди: агент без інструментів
             # не працює, навіть якщо вона сама більша за бюджет.
             if kept and used + cost > budget:
@@ -3228,6 +3383,25 @@ class AgentRunner:
                     continue
             kept.append(schema)
             used += cost
+        # ── ДУЖЕ ВУЗЬКЕ ВІКНО: СТИСКАЄМО ОПИСИ, А НЕ ВІДКИДАЄМО ДІЇ ───────
+        # У вікні 2048 ядро + контроль важать 1190 токенів, системний промпт
+        # 780 — разом 1970, і на повідомлення лишається 78. Запит
+        # переповнюється (заміряно: 2199 при ліміті 2048).
+        #
+        # Замість відкидати дії (модель стає безпорадною) — СТИСКАЄМО описи.
+        # Назви, типи й обов'язкові параметри лишаються, тож усі сім
+        # інструментів працюють; зникає лише багатослівність.
+        if limit and limit < _TINY_WINDOW_TOKENS and kept:
+            compact = tool_lazy.compact_schemas(
+                kept,
+                description_limit=tool_lazy.COMPACT_DESCRIPTION_TIGHT,
+                param_limit=tool_lazy.COMPACT_PARAM_TIGHT)
+            saved = self._schemas_cost(kept) - self._schemas_cost(compact)
+            if saved > 0:
+                LOG.info("Вузьке вікно %s: схеми стиснуто, зекономлено %s "
+                         "токенів (дії лишились усі: %s)",
+                         limit, saved, len(compact))
+                kept = compact
         if len(kept) < len(schemas):
             LOG.info("Схем інструментів обрізано під вікно %s "
                      "(бюджет схем %s, використано %s): %s з %s",
@@ -3891,6 +4065,150 @@ class AgentRunner:
         return repaired
 
     # ── основний цикл ──────────────────────────────────────────────────────
+    def _web_context_for(self, text: str) -> str:
+        """ЗАВЖДИ сходити в інтернет і повернути блок знань для промпту.
+
+        Вимога користувача (21.11.2026): «я взагалі просив, щоб до кожного
+        запиту в локальній моделі додавався запит до інтернету. Користувач
+        запитує — пошук в інтернеті + дані від моделі = загальна відповідь
+        агента».
+
+        Чому саме так, а не «нехай модель сама вирішить». Локальна модель
+        фізично не знає свіжих даних і не має доступу до мережі з власного
+        контексту. Тому пошук виконується ДО запиту до моделі, а її
+        відповідь будується вже з цими даними — і вона бачить:
+        «ось що є в мережі зараз, врахуй це».
+
+        Що НЕ робимо:
+
+        * не шукаємо, якщо інструменти вимкнені або режим приватний;
+        * не шукаємо на порожній/службовий текст;
+        * помилка мережі не ламає хід — модель просто працює без цього блоку.
+
+        Повертає готовий текст для промпту (порожній рядок — нічого немає).
+        """
+        if not getattr(self.agent_settings, "web_every_turn", True):
+            return ""
+        if not self.tools_enabled or self.state.private:
+            return ""
+        query = " ".join(str(text or "").split())
+        if len(query) < 3:
+            return ""
+        # Службові повідомлення (кроки плану, повтори) у мережу не йдуть.
+        if query.startswith(("Ти вже викликав", "Ти виконав ПОШУК",
+                             "ВАЖЛИВО:", "Я запустив")):
+            return ""
+        cached = getattr(self, "_web_context_cache", None)
+        if cached is not None and cached[0] == query:
+            return cached[1]
+        self._emit("status", "Шукаю в інтернеті перед відповіддю…")
+        try:
+            from . import internet
+
+            result = internet.search(query[:200])
+            body = result.as_text()
+        except Exception:                            # noqa: BLE001
+            LOG.info("Мережа недоступна — відповідаю без неї", exc_info=True)
+            self._emit("status", "Мережа недоступна — відповідаю без пошуку.")
+            self._web_context_cache = (query, "")
+            return ""
+        if not body.strip():
+            self._web_context_cache = (query, "")
+            return ""
+        # ── ПОРОЖНІЙ РЕЗУЛЬТАТ — НЕ ЗНАННЯ ────────────────────────────────
+        # Заміряно 21.11.2026: на «напиши функцію множення» пошук повертав
+        # «Нічого не знайдено… Поради». Додавати це в промпт означало б
+        # підсунути моделі сумнівний текст замість її власних знань — і вона
+        # починала відповідати «нічого не знайдено» на просте прохання
+        # написати код.
+        if _is_empty_search(body):
+            self._web_context_cache = (query, "")
+            return ""
+        # Знайдене одразу в довгострокову пам'ять: наступний чат теж побачить.
+        try:
+            self._learn_web_text(body, query)
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Знання з мережі не записано", exc_info=True)
+        block = (
+            "ДАНІ З ІНТЕРНЕТУ (уже зібрані для тебе — не викликай пошук сам).\n"
+            "Використай їх у відповіді разом зі своїми знаннями й посилайся "
+            "на джерела. Якщо дані суперечать твоїм знанням — вір свіжим, "
+            "але обов'язково СКАЖИ про це.\n"
+            "Відповідай одразу, готовим текстом для людини; не переказуй цю "
+            "інструкцію.\n\n" + body[:2500])
+        # Запам'ятати для уроків: що шукали, що знайшли й скільки фактів
+        # лягло в пам'ять. Це і є «модель + інтернет + користувач» у дії.
+        self._web_query = query[:160]
+        self._web_digest = " ".join(body.split())[:200]
+        self._web_context_cache = (query, block)
+        return block
+
+    def _learn_web_text(self, body: str, query: str) -> None:
+        """Записати знайдене з мережі в NEUROMESH (залізне правило)."""
+        if not getattr(self.agent_settings, "memory_participates", True):
+            return
+        bridge = getattr(self, "memory_bridge", None)
+        service = getattr(bridge, "service", None) if bridge is not None else None
+        if service is None:
+            return
+        facts = web_learning.extract(body, query=query[:160])
+        if facts:
+            saved = web_learning.remember(service, facts)
+            self._web_facts = int(saved or 0)
+            if saved:
+                self._emit("status",
+                           f"Знання з інтернету в пам'ять: {saved}.")
+
+    def _hint_advice(self) -> str:
+        """Текст-порада моделі: «можна зробити так», а не «зроби так».
+
+        Навіщо окремий метод. Підказки роутера — це ЗДОГАД за словами. Коли
+        їх виконувати примусово, будь-яка помилка евристики стає помилкою
+        роботи: «давай грати в гру» перетворювалось на створення `game.py`
+        (заміряно 21.11.2026). Коли ж віддати їх моделі як ПОРАДУ, вона
+        бачить увесь запит і може не погодитись.
+
+        Текст навмисно короткий: місце в промпті дороге, а це лише здогад.
+        """
+        hints = list(getattr(self, "_pending_hint", []) or [])
+        if not hints:
+            return ""
+        lines = ["Можлива дія (це ЗДОГАД за словами, а не наказ)."]
+        for hint in hints[:3]:
+            args = ", ".join(f"{key}={value}" for key, value in
+                             (hint.arguments or {}).items() if str(value).strip())
+            call = f"{hint.tool}({args})" if args else hint.tool
+            lines.append(f"- {call} — {hint.reason or 'доречно тут'}")
+        lines.append(
+            "Вирішуй САМ: якщо запит про інше (розмова, гра в чаті, "
+            "пояснення) — не викликай інструмент, просто відповідай. "
+            "Якщо дія справді потрібна — виклич її сам. "
+            "НЕ переказуй цю підказку користувачу — це службовий текст.")
+        return "\n".join(lines)
+
+    def _may_override_model(self, result: Any = None) -> bool:
+        """Чи можна виконати дію роутера ПОПРИ рішення моделі.
+
+        Правило одне: евристика втручається ЛИШЕ тоді, коли модель не
+        впоралась сама. «Не впоралась» означає:
+
+        * вона не викликала ЖОДНОГО інструмента цього ходу — і
+        * її текст не містить блоку коду (це не спроба зробити роботу).
+
+        Якщо модель узяла інструмент — її вибір остаточний. Саме цього
+        вимагав користувач: «хай сама підбирає інструменти, а не буде
+        захардкодена».
+        """
+        if not getattr(self.agent_settings, "model_decides", True):
+            # Стара поведінка: слабка модель без нативних викликів.
+            return True
+        if self._observations:
+            return False
+        content = str(getattr(result, "content", "") or "") if result else ""
+        if content and self._wrote_code_in_chat(content):
+            return False
+        return True
+
     def _run_hints(self) -> bool:
         """Виконати дії, які знайшов роутер, замість порожньої балачки.
 
@@ -3902,6 +4220,18 @@ class AgentRunner:
         аргументи перевіряються за схемою, невідомий інструмент не
         виконується, а користувач бачить людське пояснення, а не сирий
         вивід інструмента.
+
+        ── ЛИШЕ КОЛИ МОДЕЛЬ НЕ ВПОРАЛАСЬ ────────────────────────────────
+        Вимога користувача (21.11.2026): «дай їй свободу думок і хай сама
+        підбирає інструменти, а не буде захардкодена».
+
+        Тому тут є дві умови, і ОБИДВІ мусять виконуватись:
+
+        1. ``model_decides`` вимкнено (модель не вміє викликати інструменти), АБО
+        2. модель відповіла ПОРОЖНЬО/словами й нічого не зробила.
+
+        Коли модель узяла інструмент сама — цей шлях не втручається взагалі:
+        її рішення важливіше за здогад евристики.
         """
         self._hints_need_continue = False
         hints = self._pending_hint or []
@@ -3965,7 +4295,22 @@ class AgentRunner:
         # Відповідь збираємо тим самим шаром, що й для моделі: список файлів
         # стає списком, довгий вивід — коротким блоком, а не «стіною».
         draft = response_engine.answer_from_observations(observations)
-        answer = draft.text or "\n\n".join(produced)
+        raw_answer = draft.text or "\n\n".join(produced)
+        # ── МОДЕЛЬ МАЄ ОБРОБИТИ ДАНІ ПЕРЕД ВИДАЧЕЮ ────────────────────────
+        # Вимога користувача (21.11.2026): «мені потрібно відповідь не кодом
+        # а текстом з реальною обробкою моделью перед видачею користувачу!».
+        #
+        # Що було не так. Коли дані приходили з інструмента (``search_web``,
+        # ``read_file``), агент віддавав їх людині ЯК Є: «Готово. Результат:
+        # search_web» + сирий JSON/список. Користувач бачив код замість
+        # відповіді — хоч модель могла б спокійно переказати це своїми
+        # словами.
+        #
+        # Тепер: якщо є зібрані дані, робимо ОДИН додатковий запит до моделі
+        # «перекажи це людині своїми словами, спираючись на ці дані». Якщо
+        # модель недоступна — лишається структурований звіт (чесно, але не
+        # замість відповіді).
+        answer = self._narrate_results(produced) or raw_answer
         # Роутер відповідає з реальних результатів, але його підсумок може
         # містити числа/назви, яких у виводі не було. Той самий шар правди.
         answer = self._enforce_evidence(answer, step=0)
@@ -4336,6 +4681,20 @@ class AgentRunner:
     def _run(self, text: str) -> None:
         self.session.workspace = self.workspace
         self.session.add_user(text)
+        # ── Поправка користувача — сигнал навчання ────────────────────────
+        # «Модель + інтернет + користувач має агент самонавчатися» (вимога
+        # 21.11.2026). Якщо людина каже «неправильно, треба ось так» — це
+        # найцінніший урок, і він має потрапити в пам'ять наприкінці ходу.
+        # Прапорець скидається щоразу: він описує САМЕ цей хід.
+        self._user_corrected = selflearning.looks_like_correction(text)
+        self._user_correction = " ".join(str(text or "").split())[:300] \
+            if self._user_corrected else ""
+        # Мережа й факти цього ходу теж скидаються: інакше урок поніс би
+        # знання з ПОПЕРЕДНЬОГО запиту.
+        self._web_query = ""
+        self._web_digest = ""
+        self._web_facts = 0
+        self._web_context_cache = None
         # ── Самовідновлення адреси сервера ────────────────────────────────
         # Реальний випадок із логу користувача: рушій піднявся на 8081 (бо
         # 8080 тримав Steam), а в налаштуваннях лишився 8080. Агент стукав у
@@ -4425,7 +4784,30 @@ class AgentRunner:
             self._web_rule_hint(text)
             if self._pending_hint:
                 names = ", ".join(hint.describe() for hint in self._pending_hint[:4])
-                self._emit("status", f"Зрозумів як дію: {names}")
+                # ── ПОРАДА, А НЕ НАКАЗ ────────────────────────────────────
+                # Коли вирішує модель (``model_decides``), підказка йде в
+                # ПРОМПТ, а не виконується сама: «схоже, тут просять список
+                # файлів». Вона бачить увесь запит і контекст, тож «давай
+                # грати в гру» відрізнить від «зроби гру» краще за список
+                # слів. Примусове виконання лишається для слабких моделей,
+                # які взагалі не вміють викликати інструменти.
+                if getattr(self.agent_settings, "model_decides", True):
+                    self._emit("status", f"Підказка моделі: {names}")
+                    # ── Виклик через ``getattr`` ─────────────────────────
+                    # Заміряно 21.11.2026: під час редагування файлу запущена
+                    # IDE прочитала версію, де виклик уже був, а методу ще
+                    # не було — і КОЖЕН хід падав з
+                    # ``AttributeError: ... no attribute '_hint_advice'``.
+                    # Підказка — допоміжна річ; її відсутність не має зривати
+                    # роботу агента.
+                    advice = getattr(self, "_hint_advice", None)
+                    try:
+                        self.session.hint_prompt = advice() if callable(advice) else ""
+                    except Exception:                # noqa: BLE001
+                        LOG.debug("Порада моделі не сформована", exc_info=True)
+                        self.session.hint_prompt = ""
+                else:
+                    self._emit("status", f"Зрозумів як дію: {names}")
             # ── Одне уточнення замість вгадування ─────────────────────────
             # Питаємо ЛИШЕ тоді, коли без відповіді можна зіпсувати дані
             # або коли справді незрозуміло, що робити
@@ -4566,21 +4948,163 @@ class AgentRunner:
     def _reset_context_after_turn(self) -> int:
         """Перенести хід у пам'ять і лишити свіже вікно (якщо ввімкнено).
 
-        Налаштування ``agent.fresh_context`` — типово УВІМКНЕНО (вимога
-        21.11.2026). Вимкнене — працює старий механізм: контекст
-        накопичується й звільняється лише при 85% заповнення.
+        Три режими (``agent.context_mode``, типово ``auto``):
+
+        * ``auto`` — АДАПТИВНО: глибина вибирається під запит
+          (:mod:`context_flow`). «Продовж» → лишаємо більше, питання-факт →
+          мінімум, правка → середина. Це типовий режим: обидві крайнощі
+          («тримати все» і «чистити все») ламають роботу в різних випадках.
+        * ``fresh`` — завжди мінімум (лише останній обмін).
+        * ``full`` — не чистити нічого, працює лише звільнення при 85%.
 
         Помилка тут не має зривати хід: відповідь користувачу вже віддана,
-        а втрата архіву означала б втрату контексту — тому
-        ``turn_reset`` лишає історію на місці, якщо архів не вдався.
+        а втрата архіву означала б втрату контексту — тому ``turn_reset``
+        лишає історію на місці, якщо архів не вдався.
         """
-        if not getattr(self.agent_settings, "fresh_context", True):
+        mode = str(getattr(self.agent_settings, "context_mode", "auto") or "auto")
+        if mode == "off":
             return 0
         try:
-            return self.turn_reset()
+            plan = self.context_plan()
+        except Exception:                            # noqa: BLE001
+            LOG.debug("План контексту не пораховано", exc_info=True)
+            return 0
+        if plan.depth.keep == 0 and not plan.depth.is_deep():
+            # Режим ``full``: історію не чіпаємо.
+            return 0
+        try:
+            return self.turn_reset(keep=-1 if plan.depth.is_deep()
+                                   else plan.depth.keep)
         except Exception:                            # noqa: BLE001
             LOG.debug("Свіжий контекст не застосовано", exc_info=True)
             return 0
+
+    def context_plan(self) -> Any:
+        """План контексту на ЦЕЙ хід (глибина, пошук, запис у пам'ять).
+
+        Джерела, від найточнішого:
+
+        1. **прохання МОДЕЛІ** — інструмент ``request_context``. Вона бачить
+           своє завдання зсередини й знає, скільки минулого їй треба;
+        2. **адаптивна евристика** (:func:`context_flow.choose`) — коли
+           модель не попросила нічого;
+        3. **режим людини** (``context_mode``) — звужує або розширює обидва.
+
+        Кешується за текстом запиту: викликається двічі за хід (перед дією й
+        після), і між цими моментами відповідь не змінюється.
+        """
+        text = self._current_user_text()
+        cached = getattr(self, "_context_plan_cache", None)
+        if cached is not None and cached[0] == text:
+            return cached[1]
+        mode = str(getattr(self.agent_settings, "context_mode", "auto") or "auto")
+        # Прохання моделі має найвищий пріоритет: вона знає краще.
+        asked = getattr(self, "_asked_context", None)
+        if asked is not None and getattr(asked, "text", "") == text:
+            plan = context_flow.plan_from_request(
+                asked.depth, query=asked.query, mode=mode)
+            LOG.info("Контекст за проханням моделі: %s",
+                     context_flow.describe_request(asked.depth))
+        else:
+            plan = context_flow.choose(
+                text, mode=mode,
+                intent_type=str(getattr(getattr(self, "intent", None),
+                                        "intent_type", "") or ""),
+                steps_used=int(getattr(self, "_steps_used", 0) or 0),
+                has_files=bool(self._touched_files),
+            )
+        # Режим людини звужує/розширює те, що вирішила модель.
+        human = context_flow.mode_for(mode)
+        if human.key == "fresh" and plan.depth.keep > context_flow.DEPTH_KEEP[
+                context_flow.DEPTH_SHALLOW]:
+            plan.depth.keep = context_flow.DEPTH_KEEP[context_flow.DEPTH_SHALLOW]
+        elif human.key == "full":
+            plan.depth.keep = 0
+            plan.depth.level = context_flow.DEPTH_DEEP
+        self._context_plan_cache = (text, plan)
+        return plan
+
+    def _on_context_request(self, depth: Any, query: str) -> None:
+        """Модель попросила контекст — запам'ятати на цей хід."""
+        text = self._current_user_text()
+        self._asked_context = _ContextAsk(text=text, depth=depth, query=query)
+        # Скидаємо кеш: наступний ``context_plan`` урахує прохання.
+        self._context_plan_cache = None
+        self._emit("status",
+                   "Модель попросила контекст: "
+                   + context_flow.describe_request(depth) + ".")
+
+    def _current_user_text(self) -> str:
+        """Остання репліка користувача (для плану контексту й пошуку)."""
+        try:
+            for message in reversed(self.session.messages):
+                if str(message.get("role") or "") == "user":
+                    content = message.get("content")
+                    return content if isinstance(content, str) else str(content or "")
+        except (AttributeError, TypeError):
+            return ""
+        return ""
+
+    def _narrate_results(self, produced: list[str]) -> str:
+        """Переказати зібрані дані ЛЮДСЬКОЮ мовою — силами моделі.
+
+        Вимога користувача (21.11.2026): «мені потрібно відповідь не кодом а
+        текстом з реальною обробкою моделью перед видачею користувачу!».
+
+        Навіщо окремий запит. Дані з ``search_web`` чи ``read_file`` — це
+        машинний вивід: URL, JSON, поля. Людині потрібне речення: «Солана
+        зараз коштує 70.66 USD (+2.9% за добу), джерело CoinGecko».
+        Переказати це може сама модель — і саме вона має це робити, а не
+        шаблон у коді.
+
+        Коли НЕ викликаємо:
+
+        * немає жодних даних — нема чого переказувати;
+        * модель недоступна (``LLMError``) — тоді лишається структурований
+          звіт: краще чесний список, ніж порожнеча.
+
+        Повертає готовий текст (порожній рядок — переказ не вдався).
+        """
+        body = "\n\n".join(part for part in produced if part.strip())
+        if not body.strip():
+            return ""
+        client = getattr(self, "_last_client", None)
+        if client is None:
+            return ""
+        goal = self._current_user_text()[:300]
+        prompt = (
+            "Ось дані, які я щойно зібрав інструментами:\n\n"
+            + body[:3000]
+            + "\n\nЗавдання користувача: " + (goal or "дай відповідь")
+            + "\n\nПерекажи це ЛЮДИНІ своїми словами: коротко, по суті, "
+              "звичайним текстом (без JSON і без блоків коду). Назви "
+              "конкретні числа й посилання, які є в даних. Не вигадуй "
+              "нічого, чого в даних немає. Не переказуй цю інструкцію."
+        )
+        self._emit("status", "Формую відповідь із зібраних даних…")
+        try:
+            result = client.chat(
+                [{"role": "user", "content": prompt}],
+                tools=None, temperature=0.2)
+        except Exception:                            # noqa: BLE001
+            LOG.info("Переказ даних не вдався — лишаю структурований звіт",
+                     exc_info=True)
+            return ""
+        text = str(getattr(result, "content", "") or "").strip()
+        # Порожній або службовий текст не вважаємо відповіддю.
+        if len(text) < 20:
+            return ""
+        if text.startswith(("Ось дані", "Завдання користувача")):
+            return ""
+        # ── Модель пообіцяла замість переказу ─────────────────────────────
+        # Заміряно 21.11.2026: на прохання переказати список файлів модель
+        # відповідала «Звісно! Зараз покажу файли.» — і людина не бачила
+        # ЖОДНОГО результату, хоч дані вже були зібрані. Ознака обіцянки
+        # без змісту: короткий текст із майбутнім часом і без конкретики.
+        if _is_bare_promise(text) and not _shares_terms(text, body):
+            LOG.info("Переказ вийшов обіцянкою — лишаю структурований звіт")
+            return ""
+        return text
 
     def _answers_git_offer(self, text: str) -> bool:
         """Чи це ствердна відповідь на питання «оновити файли на GitHub?».
@@ -5324,7 +5848,8 @@ class AgentRunner:
                     #   2) ще один хід із прямою вимогою діяти;
                     # і лише потім — чесна причина з поясненням.
                     if (self._pending_hint and not self._observations
-                            and step < budget - 1):
+                            and step < budget - 1
+                            and self._may_override_model(result)):
                         self._emit("status",
                                    "Модель мовчить — пробую виконати дію напряму.")
                         if self._run_hints():
@@ -5395,7 +5920,8 @@ class AgentRunner:
                 # і файл лишився без змін.
                 if self._pending_hint and (
                         len(result.content.strip()) < 300
-                        or self._wrote_code_in_chat(result.content)):
+                        or self._wrote_code_in_chat(result.content)) \
+                        and self._may_override_model(result):
                     if self._run_hints():
                         return
                 # ── Роутер прочитав файл, але правку ще НЕ зробив ───────────
