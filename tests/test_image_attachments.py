@@ -218,5 +218,87 @@ class TestAttachmentStripShowsThumbs(unittest.TestCase):
         self.assertEqual(self.panel._attachment_chips, [])
 
 
+class TestReplyTextIsNotClipped(unittest.TestCase):
+    """Відповідь показується ПОВНІСТЮ — жодного обрізаного слова.
+
+    Дефект зі скріншота користувача: відповідь «Привіт! Я в режимі «Чат» —
+    тому лише підказую…» обривалась на півслові. Причина: оцінка рядків
+    метриками шрифту занижувала висоту (4 замість 5), а власну прокрутку
+    віджета вимкнено — п'ятий рядок просто зникав.
+    """
+
+    def setUp(self) -> None:
+        import tkinter as tk
+
+        from blackchpok_ide import theme
+        from blackchpok_ide.agent_tools import ToolRegistry
+        from blackchpok_ide.chat_panel import ChatPanel
+        from blackchpok_ide.config import Settings
+
+        self.root = tk.Tk()
+        self.root.geometry("1000x700+40+40")
+        fonts = theme.Theme(self.root)
+        fonts.apply()
+        self.folder = Path(tempfile.mkdtemp(prefix="bchp-clip-"))
+        host = tk.Frame(self.root)
+        host.pack(fill="both", expand=True)
+        self.panel = ChatPanel(host, fonts, Settings(),
+                              ToolRegistry(self.folder), composer_parent=host)
+        self.panel.pack(fill="both", expand=True)
+
+    def tearDown(self) -> None:
+        import gc
+
+        self.panel = None
+        gc.collect()
+        try:
+            self.root.destroy()
+        except Exception:  # noqa: BLE001 - вікно могло закритись
+            pass
+
+    def _last_char_visible(self, widget) -> bool:
+        """Чи видно останній непорожній символ у межах висоти віджета."""
+        content = widget.get("1.0", "end-1c").rstrip("\n")
+        if not content:
+            return True
+        index = widget.index(f"1.0 + {len(content) - 1} chars")
+        info = widget.dlineinfo(index)
+        if info is None:
+            return False
+        return info[1] + info[3] <= widget.winfo_height()
+
+    def test_long_reply_is_fully_visible(self) -> None:
+        text = ("Привіт! Я в режимі «Чат» — тому лише підказую, файли не змінюю "
+                "й команди не запускаю. Ось що видно з історії роботи: у проєкті "
+                "досі є декоративний текст — tests/test_greeting.py очікує "
+                "«hello», а greeting.py повертає «привіт» (лапки): це ймовірно та "
+                "різниця, через яку тест падає. Про що мусить бути, якщо "
+                "перемкнемо режим на Агент: 1) підправити виклик у greeting.py, "
+                "щоб він повертав «Привіт!»; 2) запустити python -m unittest "
+                "discover tests і показати зелений результат. Далі — кінець.")
+        self.panel._add_assistant(text, final=True)
+        self.root.update_idletasks()
+        for _ in range(8):
+            self.root.update()
+        widget = self.panel._cards[-1].text_widget
+        self.assertFalse(
+            self._last_char_visible(widget) is False,
+            "останній рядок відповіді обрізаний — текст показується не повністю")
+        # Власна прокрутка віджета не має бути увімкнена: інакше текст
+        # «ховається» всередині картки замість того, щоб бути видимим.
+        self.assertEqual(str(widget.cget("yscrollcommand")), "")
+
+    def test_short_reply_has_no_extra_blank_space(self) -> None:
+        """Коротка відповідь не розтягує картку на пів-екрана."""
+        self.panel._add_assistant("Дякую, зрозумів.", final=True)
+        self.root.update_idletasks()
+        for _ in range(8):
+            self.root.update()
+        widget = self.panel._cards[-1].text_widget
+        self.assertLessEqual(
+            int(widget.cget("height")), 3,
+            "під короткою відповіддю лишилась порожнеча")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

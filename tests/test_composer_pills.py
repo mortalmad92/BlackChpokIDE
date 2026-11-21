@@ -65,8 +65,13 @@ class TestComposerPills(unittest.TestCase):
         panel, host = self._panel()
         try:
             self.assertTrue(panel.workspace_btn.winfo_exists())
-            self.assertTrue(panel.mode_btn.winfo_exists())
-            # Обидві пігулки стоять вище за поле вводу в СВОЇЙ сітці.
+            # Пігулка режиму прибрана 20.11.2026 на прохання користувача:
+            # «модель має працювати в режимі агента та чату і використання
+            # будь-яких інструментів на розсуд самої моделі». Її підпис
+            # читався як заборона працювати з файлами.
+            self.assertIsNone(panel.mode_btn,
+                              "пігулки режиму в композері більше немає")
+            # Робочий простір стоїть вище за поле вводу в СВОЇЙ сітці.
             self.assertLess(panel.space_row.grid_info().get("row"),
                             panel.input_box.grid_info().get("row"))
         finally:
@@ -83,11 +88,19 @@ class TestComposerPills(unittest.TestCase):
             host.destroy()
 
     def test_mode_pill_shows_mode(self) -> None:
+        """Режим більше не малюється — але його стан лишається доступним.
+
+        Раніше тут перевірялись підписи пігулки («Код») і підпису-опису.
+        Обидва прибрано 20.11.2026: користувач просив максимальне
+        самовирішування моделі й прибрати пункт, що читався як заборона.
+        Вимога, що лишилась: ``set_mode`` приймає виклик вікна й не падає.
+        """
         panel, host = self._panel()
         try:
             panel.set_mode("Код", icon="⟨⟩")
-            self.assertEqual(panel.mode_btn.label.cget("text"), "Код")
-            self.assertEqual(panel.mode_btn.icon.cget("text"), "⟨⟩")
+            self.assertEqual(panel._mode_label, "Код")
+            self.assertIsNone(panel.mode_btn)
+            self.assertIsNone(panel.mode_caption)
         finally:
             host.destroy()
 
@@ -99,14 +112,16 @@ class TestComposerPills(unittest.TestCase):
         try:
             panel.workspace_btn.event_generate("<Button-1>")
             self.root.update()
-            panel.mode_btn.event_generate("<Button-1>")
+            # Пігулки режиму немає — меню викликають програмно (слэш-команда
+            # чи меню програм), і колбек вікна мусить лишатись робочим.
+            panel._open_mode_menu()
             self.root.update()
-            if not calls:
+            if "workspace" not in calls:
                 # event_generate у прихованому вікні може не дійти —
                 # викликаємо той самий обробник явно (він і є бізнес-логікою).
                 panel._open_workspace_menu()
-                panel._open_mode_menu()
-            self.assertEqual(calls, ["workspace", "mode"])
+            # Кожен колбек спрацював рівно один раз.
+            self.assertEqual(sorted(calls), ["mode", "workspace"])
         finally:
             host.destroy()
 

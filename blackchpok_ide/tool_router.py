@@ -197,16 +197,34 @@ _ROUTER_AVAILABLE_INTENTS: frozenset[str] = frozenset(
     name for name, _when, _example in MCP_CATALOG)
 
 
-def catalog_text(include_mcp: bool = True) -> str:
-    """Текстовий каталог для системного промпта."""
+def catalog_text(include_mcp: bool = True,
+                 only: "Iterable[str] | None" = None) -> str:
+    """Текстовий каталог для системного промпта.
+
+    ``only`` — обмежити каталог назвами, які модель СПРАВДІ бачить цього
+    ходу (див. :mod:`tool_select` та ``AgentRunner._select_schemas``).
+
+    Навіщо. Каталог — це ≈5 000 символів описів. Коли модель отримує
+    6 схем, а в промпті поруч лежить перелік 56 інструментів, виходить
+    гірше за будь-яку економію: модель бачить назви, яких не може
+    викликати, і або вигадує виклик, або обіцяє дію замість неї. Заміряно
+    на скріншоті: агент відповідав «у мене 56 інструментів», хоч роутер
+    дав йому 6.
+    """
+    allowed = {str(name) for name in only} if only is not None else None
     lines = ["Доступні дії IDE:"]
     for name, when, example in TOOL_CATALOG:
+        if allowed is not None and name not in allowed:
+            continue
         lines.append(f"- {name} — {when} (напр. «{example}»)")
     if include_mcp:
-        lines.append("")
-        lines.append("Додаткові дії MCP-сервера (через master_agent_router):")
-        for name, when, example in MCP_CATALOG:
-            lines.append(f"- {name} — {when} (напр. «{example}»)")
+        extra = [row for row in MCP_CATALOG
+                 if allowed is None or row[0] in allowed]
+        if extra:
+            lines.append("")
+            lines.append("Додаткові дії MCP-сервера (через master_agent_router):")
+            for name, when, example in extra:
+                lines.append(f"- {name} — {when} (напр. «{example}»)")
     return "\n".join(lines)
 
 

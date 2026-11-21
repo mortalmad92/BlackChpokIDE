@@ -127,6 +127,16 @@ STEP_BUDGET_CEILING_LARGE = 120
 #: З якого розміру вікна вважаємо модель «великою» (токени).
 LARGE_WINDOW_TOKENS = 100_000
 
+#: Скільки разів повторювати порожню відповідь у звичайній розмові.
+#:
+#: Один повтор — не «костування», а виправлення реальної причини: майже
+#: завжди порожнеча означає, що міркування з'їли весь бюджет відповіді.
+#: Більше двох спроб дратувало б користувача довгим очікуванням.
+_EMPTY_CHAT_ATTEMPTS = 2
+
+#: Скільки токенів просити під відповідь, коли нічого не відомо.
+_DEFAULT_ANSWER_BUDGET = 2048
+
 #: Порядок важливості інструментів. Менший індекс — лишається довше.
 #:
 #: Обґрунтування порядку: без читання й запису файлів агент не виконує
@@ -887,6 +897,61 @@ _SERVER_CTX_CACHE: dict[tuple[str, str], tuple[float, int]] = {}
 _SERVER_CTX_LOCK = threading.Lock()
 _SERVER_CTX_TTL = 60.0
 
+#: Кеш живої проби вікна: ``(адреса, модель) -> (час, токени)``.
+#:
+#: Навіщо. Проба робить до двох мережевих запитів (``/models`` і пробний
+#: ``chat/completions``), а ``probe_context_window`` кличеться перед кожним
+#: ходом агента. Без кешу кожна репліка чекала б на провайдера двічі.
+#:
+#: Невдачу теж кешуємо: інакше «вікно не визначено» перевірялось би знову
+#: й знову, щоразу з таймаутом.
+_LIVE_CTX_CACHE: dict[tuple[str, str], tuple[float, int]] = {}
+
+#: Скільки живе результат живої проби. 10 хвилин — достатньо, щоб пережити
+#: цілу розмову, і мало, щоб після зміни тарифу/моделі число оновилось.
+_LIVE_CTX_TTL = 600.0
+
+#: Проби, які вже виконуються у фоні: ``(адреса, модель) -> потік``.
+#:
+#: Навіщо. Проба вікна коштує до 8 мережевих запитів (на живому Deploy —
+#: 55 секунд). Тримати її в головному потоці не можна: користувач чекав би
+#: відповіді майже хвилину. Тому вона йде у фоні, а хід бере те, що відомо.
+_LIVE_CTX_PENDING: dict[tuple[str, str], threading.Thread] = {}
+
+
+def _start_live_probe(key: tuple[str, str], root: str, model: str, *,
+                      api_key: str, chat_path: str) -> None:
+    """Запустити пробу вікна у ФОНОВОМУ потоці (не блокувати відповідь)."""
+
+    def work() -> None:
+        from . import context_probe
+
+        probe = 0
+        try:
+            result = context_probe.probe_window(
+                root, model, api_key=api_key, chat_path=chat_path)
+            probe = int(getattr(result, "tokens", 0) or 0)
+            if probe:
+                LOG.info("Вікно контексту живим запитом: %s токенів (%s)",
+                         probe, getattr(result, "source", ""))
+            else:
+                LOG.debug("Жива проба вікна нічого не дала: %s",
+                          str(getattr(result, "detail", ""))[:160])
+        except Exception:  # noqa: BLE001 - проба не має ламати хід
+            LOG.debug("Жива проба вікна не вдалась", exc_info=True)
+            probe = 0
+        finally:
+            # Невдачу теж кешуємо: інакше наступний хід почне пробу знову
+            # й знову платитиме таймаутом.
+            if len(_LIVE_CTX_CACHE) >= 32:
+                _LIVE_CTX_CACHE.clear()
+            _LIVE_CTX_CACHE[key] = (time.time(), probe)
+            _LIVE_CTX_PENDING.pop(key, None)
+
+    thread = threading.Thread(target=work, name="ctx-probe", daemon=True)
+    _LIVE_CTX_PENDING[key] = thread
+    thread.start()
+
 #: Скільки чекати на ``/props``. Це перевірка стану, а не робота з моделлю:
 #: сервер, який не відповів за секунду, для вибору схем однаково
 #: недоступний.
@@ -1451,13 +1516,15 @@ class AgentRunner:
             extra = 0
         if extra <= 0:
             return base
-        # ── Ліміт у 1 крок свободу не отримує ──────────────────────────────
-        # У режимі «Чат» ``max_steps`` дорівнює 1 навмисно: агент має
-        # відповісти одним ходом без інструментів. Додавання кроків
-        # перетворило б звичайну розмову на агентну роботу — це інший
-        # режим, а не «більше свободи». Те саме, якщо користувач сам
-        # поставив 1 у налаштуваннях.
-        if not self.tools_enabled or base <= 1:
+        # ── Свобода дій діє лише там, де є інструменти ─────────────────────
+        # Якщо інструментів немає (користувач вимкнув їх сам або режим їх не
+        # дає), додаткові кроки нічого не додають — повертаємо базовий ліміт.
+        #
+        # Раніше умова була ще й ``base <= 1``: «Чат» ставив 1 крок, і
+        # свобода дій там не діяла. Тепер «Чат» дає 4 кроки й дозволяє
+        # інструменти (див. ``modes.MODES``), тож питання «скільки кроків»
+        # вирішує сам ліміт, а не окреме жорстке правило.
+        if not self.tools_enabled or base <= 0:
             return base
         # Стеля є завжди: «дослідник» на слабкій моделі інакше крутився б
         # десятки кроків навколо однієї помилки. Але стеля тепер залежить
@@ -1512,19 +1579,123 @@ class AgentRunner:
 
         Повертає кількість прибраних повідомлень. Використовується командою
         «/стиснути», коли контекст майже заповнений.
+
+        ── ЧОМУ ТЕПЕР ЗБЕРІГАЄ, А НЕ ВИКИДАЄ (21.11.2026) ────────────────
+        Раніше цей метод просто ВИКИДАВ старі повідомлення: вони зникали
+        назавжди. Для довгих сесій («працювати цілу ніч», «нескінченний
+        чат») це означало втрату всього, що було вирішено раніше — модель
+        більше не знала ні задачі, ні домовленостей.
+
+        Тепер стиснення = ПЕРЕЇЗД у довгострокову пам'ять:
+        1. витіснений блок іде в хроніку (:mod:`longchat`);
+        2. звідти — у NEUROMESH (факти й уроки з пошуком за змістом);
+        3. і в RAG (ширший текст із індексом).
+
+        Тобто контекст не «губиться», а переходить у сховище, з якого його
+        дістають ``memory_search`` і ``rag_search``. Саме це й робить чат
+        нескінченним: вікно звільняється, а знання лишаються.
         """
         before = len(self.session.messages)
-        # Жорстке обмеження: лишаємо приблизно третину звичайного ліміту.
-        self.session.settings = self.agent_settings
-        original = self.agent_settings.context_char_limit
-        try:
-            self.agent_settings.context_char_limit = max(2000, original // 3)
-            self.session.trim()
-        finally:
-            self.agent_settings.context_char_limit = original
+        # ── Спершу ЗБЕРЕГТИ те, що зараз витісниться ──────────────────────
+        # ``on_evict`` кличеться з ``_drop_oldest_block``, але лише коли
+        # підключений. Тут ми явно архівуємо ВЕСЬ блок, який збираємось
+        # прибрати: так у пам'ять потрапляє саме те, що зникає з вікна.
+        evicted = self._evict_oldest_for_compact()
+        if evicted:
+            LOG.info("Стиснення: %s повідомлень переїхало в довгострокову "
+                     "пам'ять", len(evicted))
         removed = before - len(self.session.messages)
         LOG.info("Історію стиснуто: прибрано %s повідомлень", removed)
         return max(0, removed)
+
+    def _evict_oldest_for_compact(self, share: float = 0.5) -> list[dict]:
+        """Прибрати найдавнішу частину історії, ЗБЕРІГШИ її в пам'яті.
+
+        ``share`` — яку частку наявних повідомлень витіснити. Типово
+        половину: лишається достатньо свіжого контексту, щоб модель
+        розуміла, що робить, і звільняється половина вікна.
+        """
+        messages = list(getattr(self.session, "messages", []) or ())
+        if len(messages) < 6:
+            return []
+        target = max(1, int(len(messages) * max(0.05, min(0.9, share))))
+        evicted: list[dict] = []
+        guard = 0
+        while len(evicted) < target and guard < 400:
+            guard += 1
+            # Не чіпаємо останні 2 повідомлення: без них модель не знатиме,
+            # про що йдеться.
+            if len(self.session.messages) <= 2:
+                break
+            first = self.session.messages[0]
+            self.session.messages.pop(0)
+            evicted.append(first)
+            # Результати інструментів цього виклику йдуть разом із ним.
+            calls = first.get("tool_calls") if isinstance(first, dict) else None
+            wanted = {str(call["id"]) for call in (calls or ())
+                      if isinstance(call, dict) and call.get("id")}
+            while (self.session.messages
+                   and str(self.session.messages[0].get("role") or "") == "tool"):
+                nxt = self.session.messages[0]
+                call_id = str(nxt.get("tool_call_id") or "")
+                if wanted and call_id and call_id not in wanted:
+                    break
+                self.session.messages.pop(0)
+                evicted.append(nxt)
+                if len(evicted) >= target:
+                    break
+        if evicted:
+            self._archive_evicted_context(evicted)
+        return evicted
+
+    def auto_free_context(self, *, threshold: float = 0.85) -> int:
+        """Автоматично звільнити вікно, ПЕРЕНІСШИ контекст у пам'ять.
+
+        Викликається ПЕРЕД кожним запитом: якщо історія займає більше за
+        ``threshold`` доступного місця, найдавніша частина переїжджає в
+        довгострокову пам'ять (NEUROMESH + RAG + хроніка), а вікно
+        звільняється для наступних дій.
+
+        Це і є механізм нескінченного чату: модель ніколи не впирається в
+        стіну «контекст переповнено», бо зайве вже лежить у сховищі й
+        доступне через пошук.
+
+        Повертає кількість витіснених повідомлень (0 — звільняти не було
+        чого).
+        """
+        # ── Вікно й лічильник беремо там, де вони СПРАВДІ лежать ──────────
+        # ``context_limit`` живе в сесії (``set_context_limit`` пише туди),
+        # а лічильник токенів — у ``AgentSession._tokens_in``. Раніше тут
+        # стояли ``self.context_limit`` і ``self._tokens_in``, яких у
+        # ``AgentRunner`` немає: звільнення падало з ``AttributeError`` на
+        # першому ж виклику й тихо не працювало (тест це й показав).
+        window = int(getattr(self.session, "context_limit", 0) or 0)
+        if window <= 0:
+            return 0
+        budget = getattr(self, "_context_budget", None)
+        if budget is not None and getattr(budget, "history", 0):
+            allowed = int(budget.history)
+        else:
+            allowed = max(512, int(window * context_budget.HISTORY_SHARE))
+        used = 0
+        counter = getattr(AgentSession, "_tokens_in", None)
+        for message in getattr(self.session, "messages", []) or ():
+            body = message.get("content")
+            text = body if isinstance(body, str) else str(body or "")
+            try:
+                used += int(counter(text)) if counter is not None else len(text) // 3
+            except Exception:  # noqa: BLE001 - оцінка не має ламати хід
+                used += len(text) // 3
+        if allowed <= 0 or used <= allowed * max(0.1, min(1.0, threshold)):
+            return 0
+        LOG.info("Автозвільнення контексту: історія %s токенів із %s "
+                 "дозволених — переношу в пам'ять", used, allowed)
+        evicted = self._evict_oldest_for_compact(share=0.5)
+        if evicted:
+            self._emit("status",
+                       f"Контекст звільнено: {len(evicted)} повідомлень "
+                       f"перенесено в довгострокову пам'ять.")
+        return len(evicted)
 
     def set_context_limit(self, limit: int) -> None:
         """Розмір вікна контексту моделі (для відсотка заповнення).
@@ -1584,6 +1755,78 @@ class AgentRunner:
         for note in budget.notes:
             LOG.warning("Контекст: %s", note)
         return budget
+
+    def _live_context_window(self, base_url: str) -> int:
+        """Спитати в СЕРВЕРА справжнє вікно контексту (0 — не вдалось).
+
+        Працює для локальних HTTP-серверів і для хмар однаково: у хмари
+        немає ні ``/props``, ні ``.gguf``, тож донедавну вікно брали лише з
+        СТАТИЧНОГО каталогу — а для власного провайдера там нулі, і агент
+        працював із «обережним запасом 8192».
+
+        ── ЧОМУ ПРОБА НЕ БЛОКУЄ ВІДПОВІДЬ ────────────────────────────────
+        Заміряно на живому Deploy: бінарний пошук ліміту — 8 послідовних
+        запитів по ~7 с, разом **55 секунд**. Чекати цього перед КОЖНОЮ
+        відповіддю неприпустимо, тож проба йде у ФОНОВОМУ потоці:
+
+        * одразу повертається те, що вже відомо (кеш);
+        * поки фонова проба працює, викликач бере каталог провайдера;
+        * коли проба завершиться, наступний хід візьме точне число.
+
+        Це не компроміс якості: каталог для відомих провайдерів (Deploy,
+        OpenAI, Gemini…) правильний, а проба уточнює його для ВЛАСНИХ
+        адрес і нових моделей — саме там каталог мовчить.
+        """
+        root = str(base_url or "").strip().rstrip("/")
+        model = str(getattr(self.llm_settings, "model", "") or "").strip()
+        if not root or not model:
+            return 0
+        # Вбудований рушій уже віддав вікно з пам'яті — мережа не потрібна.
+        if _is_embedded_base(root):
+            return 0
+        # Лише мережеві адреси: без схеми запит однаково не піде.
+        if not root.lower().startswith(("http://", "https://")):
+            return 0
+        key = (root, model)
+        now = time.time()
+        cached = _LIVE_CTX_CACHE.get(key)
+        if cached is not None and (now - cached[0]) < _LIVE_CTX_TTL:
+            return cached[1]
+        # Проба вже йде в фоні — не запускаємо другу й не чекаємо.
+        if key in _LIVE_CTX_PENDING:
+            return 0
+        try:
+            from . import provider_adapters
+
+            style = provider_adapters.detect_style(root)
+            # Не-OpenAI протоколи (Anthropic, Gemini) мають інший шлях і
+            # інший формат помилки — для них лишається каталог.
+            if style != provider_adapters.OPENAI:
+                return 0
+            chat_path = provider_adapters.for_url(root).chat_path
+        except Exception:  # noqa: BLE001 - без адаптера лишається каталог
+            LOG.debug("Адаптер для проби не визначено", exc_info=True)
+            return 0
+        _start_live_probe(key, root, model,
+                          api_key=str(getattr(self.llm_settings, "api_key", "") or ""),
+                          chat_path=chat_path)
+        return 0
+
+    def _live_context_window_wait(self, base_url: str,
+                                  timeout: float = 0.0) -> int:
+        """Дочекатись результату фонової проби (``timeout=0`` — не чекати).
+
+        Потрібно тестам і явній дії користувача («визначити вікно зараз»),
+        а не звичайному ходу агента.
+        """
+        root = str(base_url or "").strip().rstrip("/")
+        model = str(getattr(self.llm_settings, "model", "") or "").strip()
+        key = (root, model)
+        pending = _LIVE_CTX_PENDING.get(key)
+        if pending is not None and timeout > 0:
+            pending.join(timeout)
+        cached = _LIVE_CTX_CACHE.get(key)
+        return int(cached[1]) if cached else 0
 
     def probe_context_window(self, *, counter: Any = None) -> "context_budget.Budget":
         """Дізнатися вікно САМОСТІЙНО: ``/props`` сервера + метадані GGUF.
@@ -1650,6 +1893,19 @@ class AgentRunner:
         # провайдер дає 1 000 000 токенів, а агент працював із **8192** і
         # різав історію всемеро раніше, ніж треба.
         if not props_ctx:
+            # ── ЖИВА проба вікна: працює для БУДЬ-ЯКОЇ моделі ──────────────
+            # Заміряно на цьому проєкті: каталог давав для Deploy 1 000 000,
+            # але для власного провайдера там нулі — і агент падав на
+            # «обережний запас 8192», тобто різав історію всемеро раніше,
+            # ніж міг. Тепер спершу питаємо САМ СЕРВЕР: дешеве ``/models``
+            # (багато провайдерів віддають ``context_length``), а якщо там
+            # нічого — пробний запит, на який сервер відповідає справжнім
+            # лімітом у тексті помилки.
+            live = self._live_context_window(base)
+            if live > 0:
+                return self.adopt_context_window(
+                    props_ctx=live, gguf_ctx=gguf_ctx, counter=counter,
+                    source="жива проба сервера")
             cloud_ctx = _cloud_context_window(base)
             if cloud_ctx > 0:
                 return self.adopt_context_window(
@@ -1800,7 +2056,19 @@ class AgentRunner:
             # Каталог лишаємо тільки як заміну схемам (вузьке вікно, лінивий
             # режим без специфікацій) — там він справді потрібен.
             if not self._schemas_are_visible():
-                parts.append(tool_router.catalog_text(include_mcp=has_mcp))
+                # Каталог обмежуємо ТИМИ САМИМИ назвами, які модель бачить
+                # цього ходу. Інакше в промпті лежить перелік усіх 56
+                # інструментів, а схем — шість: модель бачить назви, яких не
+                # може викликати, і обіцяє дію замість неї (заміряно: «у
+                # мене 56 інструментів» при 6 доступних).
+                visible_names = {
+                    str((spec or {}).get("function", {}).get("name") or "")
+                    for spec in (getattr(self, "_specs", None) or {}).values()
+                } if getattr(self, "_specs", None) else set()
+                visible_names.discard("")
+                parts.append(tool_router.catalog_text(
+                    include_mcp=has_mcp,
+                    only=visible_names or None))
             # ── Компактний реєстр інструментів ─────────────────────────────
             # Коли схем забагато, повні JSON-схеми вже не передаються (див.
             # ``tool_schemas``), і моделі потрібен перелік того, що взагалі
@@ -2291,6 +2559,20 @@ class AgentRunner:
             except Exception:  # noqa: BLE001 - не має ламати вибір схем
                 LOG.debug("Вікно перед вибором схем не визначено", exc_info=True)
         available = self._available_schemas()
+        # ── АВТО-РОУТЕР: моделі — лише потрібні інструменти ───────────────
+        # Вимога користувача: «щоб не брало всі інструменти без
+        # необхідності, а тільки необхідні при виконанні задачі».
+        #
+        # Раніше повний режим віддавав УСІ схеми (8–20 тисяч токенів на
+        # кожен запит), а «лінивий» брав ядро з 12 плюс усі зовнішні —
+        # незалежно від того, що просить людина. Тепер набір вибирається за
+        # наміром задачі (:mod:`tool_select`): для розмови — майже нічого,
+        # для правки — читання/запис/перевірка, для запуску — команда.
+        #
+        # Гарантія досяжності: ``find_tools``/``load_tools``/``run_tool``
+        # показуються завжди, тож будь-який інструмент доступний за один
+        # крок навіть тоді, коли його схеми немає в запиті.
+        available = self._select_schemas(available)
         # ── Рішення: повний набір чи лінивий реєстр ─────────────────────────
         # Порівнюємо РЕАЛЬНИЙ розмір схем із бюджетом схем. Якщо все вміщається
         # — передаємо повний набір і не змушуємо модель робити зайвий крок.
@@ -2327,6 +2609,89 @@ class AgentRunner:
         self._specs = tool_specs.specs_for_schemas(specs_source)
         self._refresh_lazy_specs()
         return schemas
+
+    def _select_schemas(self, available: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Звузити набір схем до потрібних для ЦЬОГО запиту.
+
+        Джерела сигналу, від сильнішого:
+
+        1. текст останнього запиту користувача — що саме просять робити;
+        2. намір (``self.intent``) — уже розібраний тип задачі;
+        3. підказки ``tool_router`` — конкретні дії, розпізнані у фразі;
+        4. те, що модель завантажила сама (``load_tools``);
+        5. набір попереднього ходу — завдання складається з кількох кроків.
+
+        Якщо схеми вже вкладаються в бюджет І їх небагато — лишаємо все:
+        економити на 8 схемах немає сенсу, а зайве звуження змусило б
+        модель робити крок ``load_tools`` на рівному місці.
+
+        Невідома ситуація ніколи не дає порожній набір: ядро безпеки й
+        контроль реєстру додаються завжди.
+        """
+        if not available:
+            return available
+        text = ""
+        previous: list[str] = []
+        try:
+            for message in reversed(self.session.messages):
+                if str(message.get("role") or "") == "user":
+                    content = message.get("content")
+                    text = content if isinstance(content, str) else str(content or "")
+                    break
+        except (AttributeError, TypeError):
+            text = ""
+        # ── Без тексту запиту НЕ звужуємо нічого ───────────────────────────
+        # Звуження — це здогад про майбутню задачу. Коли запиту немає
+        # (старт, відновлення чату, прямий виклик), здогад лише шкодить:
+        # модель могла лишитись без ``write_file`` і просити ``load_tools``
+        # замість роботи. Економія тут не варта ризику.
+        if not text.strip():
+            return available
+        intent_type = str(getattr(getattr(self, "intent", None),
+                                  "intent_type", "") or "")
+        hints: list[Any] = []
+        try:
+            from . import tool_router
+
+            if text:
+                hints = list(tool_router.confident(text))
+        except Exception:  # noqa: BLE001 - підказки необов'язкові
+            LOG.debug("Підказки роутера не отримано", exc_info=True)
+        loaded: list[str] = []
+        router = getattr(self, "_lazy_router", None)
+        if router is not None:
+            try:
+                loaded = list(getattr(router, "_loaded", ()) or ())
+            except (AttributeError, TypeError):
+                loaded = []
+        previous = list(getattr(self, "_last_tool_names", ()) or ())
+        names = [tool_lazy._schema_name(schema) for schema in available]  # noqa: SLF001
+        try:
+            from . import tool_select
+
+            selection = tool_select.select_names(
+                available=[name for name in names if name],
+                text=text, intent_type=intent_type, hints=hints,
+                loaded=loaded, previous=previous)
+        except Exception:  # noqa: BLE001 - роутер не має ламати хід
+            LOG.debug("Авто-роутер інструментів не спрацював", exc_info=True)
+            return available
+        chosen = set(selection.names)
+        if not chosen:
+            return available
+        narrowed = [schema for schema, name in zip(available, names)
+                    if name in chosen]
+        # Якщо звуження не дало нічого (назви не збіглись) — лишаємо як є:
+        # краще зайві схеми, ніж агент без інструментів узагалі.
+        if not narrowed:
+            return available
+        self._last_tool_names = [name for name in names if name in chosen]
+        LOG.info("Авто-роутер: %s (з %s)", selection.reason, len(available))
+        if len(narrowed) < len(available):
+            self._emit("status",
+                       f"Інструменти цього кроку: {len(narrowed)} із "
+                       f"{len(available)} ({selection.reason})")
+        return narrowed
 
     def _schema_budget(self) -> int:
         """Скільки токенів відведено під схеми інструментів.
@@ -3294,6 +3659,51 @@ class AgentRunner:
             LOG.debug("Роутер не дав підказки для %r", text[:60], exc_info=True)
         return True
 
+    def _answer_budget(self) -> int:
+        """Скільки токенів просити під ОДНУ відповідь у розмові.
+
+        Джерела, від надійнішого:
+
+        1. бюджет ``context_budget`` — частка СПРАВЖНЬОГО вікна моделі
+           (його визначає ``probe_context_window``, зокрема живим запитом);
+        2. ``llm.max_tokens`` із налаштувань — те, що вибрав користувач;
+        3. типова відповідь, якщо невідомо нічого.
+
+        Раніше тут стояло жорстке ``min(700, max_tokens)``. Для
+        reasoning-моделей це закінчувалось порожнім ``content``: міркування
+        витрачали весь бюджет, і на текст не лишалось нічого.
+        """
+        planned = 0
+        budget = getattr(self, "_context_budget", None)
+        if budget is not None:
+            try:
+                planned = int(getattr(budget, "answer", 0) or 0)
+            except (TypeError, ValueError):
+                planned = 0
+        configured = 0
+        try:
+            configured = int(getattr(self.llm_settings, "max_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            configured = 0
+        # Беремо МЕНШЕ з двох «справжніх» джерел: бюджет вікна й бажання
+        # користувача. Якщо жодного немає — типова відповідь.
+        if planned > 0 and configured > 0:
+            return max(256, min(planned, configured))
+        if planned > 0:
+            return max(256, planned)
+        if configured > 0:
+            return max(256, configured)
+        return _DEFAULT_ANSWER_BUDGET
+
+    def _answer_budget_cap(self) -> int:
+        """Верхня межа для повторної спроби після порожньої відповіді."""
+        window = int(getattr(self.session, "context_limit", 0) or 0)
+        if window > 0:
+            # Ніколи не просимо більше за половину вікна: інакше після
+            # одного повтору запит сам переповнить контекст.
+            return max(256, int(window * 0.5))
+        return _DEFAULT_ANSWER_BUDGET * 4
+
     def _chat_only(self, client: LLMClient) -> None:
         """Один хід без інструментів: звичайна відповідь на репліку.
 
@@ -3314,13 +3724,44 @@ class AgentRunner:
         self._render_digest()
         messages = self.session.build()
         started = time.perf_counter()
-        try:
-            result = client.chat(messages, tools=None, temperature=0.6,
-                                 max_tokens=min(700, int(self.llm_settings.max_tokens)))
-        except LLMError as exc:
-            self._error = str(exc)
-            self._emit("error", self._error)
-            return
+        # ── Бюджет відповіді: не «min(700)», а стільки, скільки дає модель ──
+        # Раніше тут стояло ``min(700, ...)``. Для reasoning-моделей це
+        # виявилось пасткою: модель спершу витрачає бюджет на «думки»
+        # (``reasoning_tokens``), і на сам текст не лишається нічого —
+        # приходив порожній ``content`` із ``finish_reason=stop``, хоч
+        # запит був успішний. Заміряно на Deploy: 130 completion-токенів,
+        # з них 93 — міркування.
+        #
+        # Тепер бюджет — це частка вікна (бюджет планує ``context_budget``),
+        # і він же обмежує відповідь. Розмова не потребує тисяч токенів,
+        # але й не має обрізатись на півслові посеред пояснення.
+        answer_budget = self._answer_budget()
+        result = None
+        for attempt in range(_EMPTY_CHAT_ATTEMPTS):
+            try:
+                result = client.chat(messages, tools=None, temperature=0.6,
+                                     max_tokens=answer_budget)
+            except LLMError as exc:
+                self._error = str(exc)
+                self._emit("error", self._error)
+                return
+            if response_engine.clean_for_chat(result.content or "").strip():
+                break
+            # Порожня відповідь — майже завжди наслідок того, що міркування
+            # з'їли бюджет. Повторюємо з більшим лімітом, і лише потім
+            # кажемо користувачу правду. Порожнечу в історію НЕ пишемо:
+            # інакше наступний хід бачив би «мусорні» репліки асистента.
+            if attempt + 1 < _EMPTY_CHAT_ATTEMPTS:
+                LOG.info("Порожня відповідь (%s completion) — повторюю з "
+                         "більшим бюджетом", (result.usage or {}).get(
+                             "completion_tokens"))
+                answer_budget = min(self._answer_budget_cap(),
+                                    answer_budget * 3)
+                self.session.add_user(
+                    "Ти відповів порожнім текстом. Дай коротку відповідь "
+                    "звичайними словами, без розгорнутих міркувань.")
+                messages = self.session.build()
+                self.session.messages.pop()   # підказку в історію не лишаємо
         # ── СТАТИСТИКА Й У РОЗМОВІ ────────────────────────────────────────
         # Раніше цей шлях НЕ емітував ``stats`` узагалі, тому на «привіт»,
         # «дякую» чи будь-яку розмову шкала контексту лишалась «0 / 32.8K»,
@@ -3332,9 +3773,20 @@ class AgentRunner:
                             duration=time.perf_counter() - started)
         text = response_engine.clean_for_chat(result.content or "").strip()
         if not text:
-            # Локальні моделі іноді мовчать на вітання. Це не помилка —
-            # краще коротка чесна відповідь, ніж «порожня відповідь».
-            text = "Привіт! Готовий допомогти з кодом — напиши, що зробити."
+            # Усі спроби дали порожнечу. Раніше тут підставлявся ГОТОВИЙ
+            # рядок «Привіт! Готовий допомогти з кодом — напиши, що
+            # зробити.» — і користувач бачив його як відповідь МОДЕЛІ, хоч
+            # вона мовчала. Це і є той «хардкод», на який він скаржився.
+            #
+            # Тепер кажемо чесно, що відповіді немає, і показуємо причину з
+            # ``finish_reason`` — без вигаданого тексту від нашого імені.
+            reason = str(getattr(result, "finish_reason", "") or "")
+            used = (result.usage or {}).get("completion_tokens")
+            detail = f", витрачено {used} токенів" if used else ""
+            text = ("Модель повернула порожню відповідь"
+                    + (f" (finish_reason={reason})" if reason else "")
+                    + detail
+                    + ". Спробуй переформулювати запит або вибрати іншу модель.")
         self.session.add_assistant({"role": "assistant", "content": text})
         self._last_answer = text
         self._emit("assistant", text, final=True)
@@ -3599,12 +4051,18 @@ class AgentRunner:
             # до нього просто не доходило: умова була мертвою для цілого
             # класу запитів. Тепер факт перевіряється ДО розмови.
             forced_tools = evidence_module.needs_tools_for(text)
+            # ── Немає інструментів, а факт потрібен — кажемо ЧЕСНО ────────
+            # Ця гілка спрацьовує лише тоді, коли інструменти справді
+            # вимкнені (користувач так налаштував або режим їх не дає).
+            # Текст раніше радив «перемкни режим на Агент» — тепер, коли
+            # «Чат» теж дає інструменти, така порада була б неправдою.
             if forced_tools and not self.tools_enabled:
-                # Режим «Чат»: інструментів немає за задумом. Чесна відповідь
-                # замість вигадки.
-                note = ("Це запит про реальний стан проєкту, але зараз увімкнено "
-                        "режим «Чат» без інструментів. Перемкни режим на «Агент», "
-                        "і я перевірю фактами.")
+                # Інструменти вимкнені — факт перевірити нічим. Чесна
+                # відповідь замість вигадки, без порад «перемкни режим»:
+                # режим тут ні до чого, його вимкнув користувач.
+                note = ("Це запит про реальний стан проєкту, але інструменти "
+                        "зараз вимкнені. Увімкни їх у налаштуваннях агента — "
+                        "і я перевірю фактами, а не словами.")
                 self._last_answer = note
                 self._emit("assistant", note, final=True)
                 return
@@ -4240,6 +4698,22 @@ class AgentRunner:
                     LOG.debug("Схеми не перебудовано посеред завдання",
                               exc_info=True)
             started = time.perf_counter()
+            # ── Автозвільнення вікна: контекст переїздить у пам'ять ────────
+            # ПЕРЕД кожним запитом (а не лише коли вже переповнено): якщо
+            # історія зайняла понад 85% свого бюджету, найдавніша частина
+            # іде в NEUROMESH + RAG + хроніку, і вікно звільняється.
+            #
+            # Саме це робить чат нескінченним: модель ніколи не впирається
+            # в «контекст переповнено», а знання лишаються доступними через
+            # пошук. Працює однаково для локальних і хмарних моделей — тут
+            # немає жодної різниці, бо все зводиться до розміру вікна.
+            try:
+                freed = self.auto_free_context()
+                if freed:
+                    LOG.info("Хід %s: контекст звільнено (%s повідомлень)",
+                             step, freed)
+            except Exception:  # noqa: BLE001 - звільнення не має ламати хід
+                LOG.debug("Автозвільнення контексту не вдалось", exc_info=True)
             # Хроніка перераховується ПЕРЕД КОЖНИМ запитом: попередній крок
             # міг витіснити блок історії, і модель має побачити оновлений
             # слід розмови вже в цьому запиті, а не в наступному.
@@ -4267,13 +4741,20 @@ class AgentRunner:
             visible = result.content.strip()
             if visible and result.tool_calls:
                 visible = llm_client.strip_tool_json(visible, schemas).strip()
-                # ── «Спробую ще раз» між однаковими викликами ──────────
-                # На скріншоті користувача ця фраза повторилась 14 разів і
-                # засмітила чат. Якщо модель лише обіцяє дію й одразу
-                # викликає той самий інструмент — це шум, а не відповідь.
-                if visible and response_engine.promises_action(visible):
-                    LOG.debug("Приховано обіцянку між викликами: %s", visible[:80])
-                    visible = ""
+            # ── Текст моделі НЕ замовчуємо (21.11.2026) ────────────────────
+            # Раніше тут стояло: якщо текст схожий на обіцянку дії
+            # (``promises_action``), він ПРОСТО ВИКИДАВСЯ (``visible = ""``).
+            #
+            # Заміряно на скріншоті користувача: на «привіт, скажи, хто ти»
+            # агент показував порожнечу або «немає відповіді», хоч модель
+            # відповіла цілком осмислено. Причина — евристика обіцянки
+            # спрацьовувала на живій мові («можу зробити…», «зараз
+            # перевірю…»), і ЧЕСНИЙ текст зникав.
+            #
+            # Вимога користувача: «дай йому повну волю на спілкування зі
+            # мною». Тому тепер текст лишається. Обіцянка без дії все одно
+            # буде помічена правилом доказів (``_enforce_evidence``) — але
+            # вона не зникає безслідно.
             if visible:
                 # ── Чи це лише ПРОМІЖНИЙ текст? ────────────────────────────
                 # ЗАМІРЯНО ЖИВИМ ПРОГОНОМ: на «скільки файлів .py у теці»

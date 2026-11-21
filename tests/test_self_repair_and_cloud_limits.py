@@ -137,24 +137,51 @@ class TestStaleToolCache(unittest.TestCase):
         self.assertTrue(tool_orchestrator._is_transient("503 Service Unavailable"))
 
 
-class TestCloudLimitsScale(unittest.TestCase):
-    """Стелі для хмари мають бути більшими, ніж для локального рушія."""
+class TestNoArtificialTokenCeilings(unittest.TestCase):
+    """Жодних штучних стель ``max_tokens`` — ні для хмари, ні для локальних.
 
-    def test_cloud_ceiling_above_local(self) -> None:
+    ── ЩО ТУТ ЗМІНИЛОСЬ 21.11.2026 ────────────────────────────────────────
+    Раніше перевірялось протилежне: «стеля хмари (200 000) більша за стелю
+    локального рушія (32 000)». Обидві стелі були вигадані НАМИ й обидві
+    зрізали можливості — локальна модель із вікном 262 144 могла видати
+    лише 32 000, а хмара з вікном 2 млн впиралась у 200 000.
+
+    Вимога користувача: «жодних обмежень як для локальних, так і для
+    хмарних моделей; додай автоматичне визначення довжини контексту під
+    будь-яку модель». Тепер ``max_tokens`` обмежує лише санітарна межа
+    :data:`config.MAX_TOKENS_LIMIT`, а справжнє вікно визначає
+    ``context_probe`` живим запитом до сервера.
+    """
+
+    def test_cloud_and_local_get_the_same_ceiling(self) -> None:
         cloud = config.LLMSettings(
             base_url="https://api.deploy.com/api/v1", max_tokens=150_000)
         cloud.normalise()
         local = config.LLMSettings(
             base_url="http://127.0.0.1:1234/v1", max_tokens=150_000)
         local.normalise()
-        self.assertEqual(cloud.max_tokens, 150_000)
-        self.assertEqual(local.max_tokens, config.LOCAL_MAX_TOKENS_CEILING)
-        self.assertGreater(cloud.max_tokens, local.max_tokens)
+        self.assertEqual(cloud.max_tokens, 150_000,
+                         "хмарна модель не має зрізатись штучною стелею")
+        self.assertEqual(local.max_tokens, 150_000,
+                         "локальна модель має ті самі права, що й хмарна")
 
-    def test_embedded_engine_keeps_local_ceiling(self) -> None:
+    def test_embedded_engine_is_not_capped_differently(self) -> None:
         native = config.LLMSettings(
             base_url="native://blackchpok", max_tokens=150_000).normalise()
-        self.assertEqual(native.max_tokens, config.LOCAL_MAX_TOKENS_CEILING)
+        self.assertEqual(native.max_tokens, 150_000,
+                         "вбудований рушій не має окремої меншої стелі")
+
+    def test_sanity_limit_still_exists(self) -> None:
+        """Запобіжник від ``max_tokens: 999999999`` у налаштуваннях."""
+        huge = config.LLMSettings(
+            base_url="https://api.example.com/v1", max_tokens=10**9).normalise()
+        self.assertEqual(huge.max_tokens, config.MAX_TOKENS_LIMIT)
+
+    def test_no_legacy_ceiling_constants(self) -> None:
+        """Старих стель немає — щоб їх не повернули випадково."""
+        for name in ("LOCAL_MAX_TOKENS_CEILING", "CLOUD_MAX_TOKENS_CEILING"):
+            self.assertFalse(hasattr(config, name),
+                             f"{name} повернуто — це знову штучне обмеження")
 
     def test_recall_limit_grows_with_window(self) -> None:
         self.assertEqual(memory_bridge.recall_limit(8_192),

@@ -6,7 +6,7 @@ import queue
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from . import browser_panel, cloud_agents, secrets, social, theme, voice, widgets
 from . import autonomy

@@ -122,13 +122,30 @@ class TestModeLearningSwitches(unittest.TestCase):
                          modes.auto_mode(text))
 
     def test_veto_blocks_tools_off_on_fact_request(self) -> None:
-        """Навчання не має права вимкнути інструменти там, де потрібен факт."""
+        """Навчання не має права вимкнути інструменти там, де потрібен факт.
+
+        ── ЩО ТУТ ЗМІНИЛОСЬ 20.11.2026 ────────────────────────────────────
+        Перевірка раніше звучала ``assertNotEqual(guarded, modes.CHAT)`` —
+        тобто «лише «Чат» небезпечний». Це була перевірка НАЗВИ, а не
+        вимоги. Тепер «Чат» теж дає інструменти (модель сама вирішує, чи
+        кликати — вимога користувача), тож режим «Чат» для запиту про
+        факти ЦІЛКОМ безпечний.
+
+        Вимога та сама: навчання не сміє прибрати інструменти там, де
+        потрібен факт. Перевіряємо саме її — за ``use_tools`` і
+        ``safe_mode``, а не за конкретною назвою режиму.
+        """
         learner = mode_learning.ModeLearner(None)
         text = "скільки файлів у проєкті насправді є"
         learner.record(text, chosen=modes.AGENT, wanted=modes.CHAT,
                        reason="smalltalk")
         guarded = modes.auto_mode(text, learner=learner, veto=modes.safe_mode)
-        self.assertNotEqual(guarded, modes.CHAT)
+        self.assertTrue(
+            modes.get(guarded).use_tools,
+            "навчання вибрало режим без інструментів для запиту про факти")
+        # Сам запобіжник теж має відповідати: жоден наявний режим не
+        # блокується, бо всі дають інструменти.
+        self.assertFalse(modes.safe_mode(guarded, text))
 
     def test_safe_mode_allows_chat_for_smalltalk(self) -> None:
         self.assertFalse(modes.safe_mode(modes.CHAT, "привіт, як справи"))

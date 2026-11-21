@@ -68,6 +68,12 @@ SETTLE_SCROLL_MS = 70
 #: Скільки разів повторювати прокрутку (див. :meth:`ChatPanel._settle_scroll`).
 SETTLE_SCROLL_TRIES = 3
 
+#: Скільки запитів можна додати «на льоту», поки агент працює.
+#:
+#: Без межі випадкові натискання Enter накопичували б десятки задач, і
+#: агент працював би годинами, витрачаючи токени на те, що вже неактуальне.
+HOT_QUEUE_LIMIT = 8
+
 
 class Transcript:
     """Плоский текстовий журнал чату (для експорту, копіювання й тестів)."""
@@ -612,6 +618,38 @@ class ChatPanel(tk.Frame):
         self.feed = self.scroll.inner
         self._feed_host_container = self.scroll
 
+        # 1б. Кнопка «вниз» по центру стрічки (вимога користувача 21.11.2026).
+        #
+        # Навіщо. У довгому чаті користувач читає відповідь вище, а нові
+        # повідомлення приходять знизу. Раніше єдиним способом повернутись
+        # до низу було смикати колесо або тягнути смугу прокрутки — на
+        # 4K-екрані це далеко й незручно.
+        #
+        # Кнопка лежить ПОВЕРХ стрічки (``place``), тому не зсуває текст і
+        # не з'являється, коли прокрутка вже внизу: вона потрібна лише тоді,
+        # коли є що прокручувати.
+        self.scroll_to_bottom_btn = tk.Label(
+            self.scroll, text="⌄", bg=theme.BG_ELEVATED, fg=theme.FG_BRIGHT,
+            font=theme.font(13, "bold"), padx=10, pady=0, cursor="hand2",
+            bd=0, highlightthickness=1, highlightbackground=theme.BORDER,
+        )
+        self.scroll_to_bottom_btn.bind("<Button-1>",
+                                       lambda _e: self._jump_to_bottom())
+        widgets.Tip(self.scroll_to_bottom_btn, "Прокрутити вниз до останнього повідомлення")
+        self._bottom_btn_visible = False
+        # ── Кнопка має з'являтись і при РУЧНІЙ прокрутці ──────────────────
+        # ``ScrollFrame`` кличе ``_on_scroll`` на кожну зміну положення
+        # (колесо, смуга, ``yview_moveto``). Обгортаємо його, щоб кнопка
+        # показувалась саме тоді, коли користувач пішов угору — інакше вона
+        # з'являлась би лише після нової відповіді.
+        original_on_scroll = self.scroll._on_scroll
+
+        def _on_scroll(first: str, last: str) -> None:
+            original_on_scroll(first, last)
+            self._update_bottom_button()
+
+        self.scroll._on_scroll = _on_scroll  # noqa: SLF001 - точка розширення
+
         # 2. Композер знизу — та сама ширина, що й стрічка.
         parent = getattr(self, "_composer_parent", None)
         self._own_composer = parent is None
@@ -703,31 +741,19 @@ class ChatPanel(tk.Frame):
             tip="Робочий простір: тека, у якій агент працює з файлами")
         self.workspace_btn.grid(row=0, column=0, sticky="w")
 
-        #: Пігулка режиму БІЛЬШЕ НЕ КЛІКАЄТЬСЯ й не перемикається вручну.
-        #:
-        #: Вона лишається лише як ІНДИКАТОР: показує, який режим агент
-        #: обрав сам із запиту («Чат» для розмови, «Агент» для роботи з
-        #: файлами, «Код» для правок). Клік по ній нічого не змінює —
-        #: ручний вибір прибрано на прохання користувача: агент має
-        #: визначати режим автоматично й самонавчатися.
-        self.mode_btn = _ComposerPill(
-            self.space_row, self.fonts, icon="◈", text="Агент",
-            command=None,
-            tip="Режим обрано автоматично з вашого запиту")
-        self.mode_btn.grid(row=0, column=1, sticky="w", padx=(theme.SPACE_SM, 0))
-
-        # ── Підпис режиму СЛОВАМИ ──────────────────────────────────────────
-        # Вимога користувача: «щоб писало, який режим зараз вибрано, не
-        # тільки кнопки». Пігулка показує саму назву («◈ Агент»), і з неї не
-        # видно, ЩО цей режим робить: чи агент правитиме файли, чи лише
-        # відповідатиме текстом. Тут — короткий опис простою мовою, який
-        # оновлюється тим самим викликом, що й пігулка.
-        self.mode_caption = tk.Label(
-            self.space_row, text="", bg=theme.BG_INPUT, fg=theme.FG_FAINT,
-            font=theme.font(8), anchor="w",
-        )
-        self.mode_caption.grid(row=0, column=2, sticky="w",
-                               padx=(theme.SPACE_MD, theme.SPACE_MD), pady=4)
+        # ── Пігулки режиму БІЛЬШЕ НЕМАЄ (20.11.2026) ──────────────────────
+        # Вимога користувача: «прибери цей пункт, модель має працювати в
+        # режимі агента та чату і використання будь-яких інструментів на
+        # розсуд самої моделі». Індикатор «◈ Чат · агент відповідає текстом
+        # і не чіпає файли» лишався єдиним місцем, де користувач бачив
+        # обмеження, — і саме воно заважало: агент відмовлявся працювати з
+        # файлами, бо попередня фраза розпізналась як «розмова».
+        #
+        # Тепер режим усередині лишається (він задає дозволи), але НЕ
+        # показується й не обмежує набір інструментів: модель сама вирішує,
+        # чи потрібен їй інструмент.
+        self.mode_btn = None
+        self.mode_caption = None
 
         self.input_box = tk.Text(
             box, height=2, width=30, wrap="word", bd=0, highlightthickness=0,
@@ -811,15 +837,20 @@ class ChatPanel(tk.Frame):
         self.commands_btn.bind("<Button-1>", lambda _e: self.toggle_command_menu())
         widgets.Tip(self.commands_btn, "Команди (/) — файл, ціль, план, дозвіл…")
 
-        # Перемикач режиму дозволів.
-        self.permission_label = tk.Label(
-            tools_row, text="", bg=theme.BG_INPUT, fg=theme.FG_FAINT,
-            font=theme.font(8), padx=theme.SPACE_SM, pady=3, cursor="hand2",
-        )
-        self.permission_label.grid(row=0, column=2, padx=(0, theme.SPACE_SM))
-        self.permission_label.bind("<Button-1>", lambda _e: self.toggle_permission_menu())
-        widgets.Tip(self.permission_label,
-                    "Режим дозволів: лише читання / запис у робочій області / повний доступ")
+        # ── Перемикача режиму дозволів БІЛЬШЕ НЕМАЄ (21.11.2026) ──────────
+        # Вимога користувача: «Зупини всі тести і лиш тільки повний доступ
+        # для агента! Прибери перемикач!»
+        #
+        # Раніше тут стояв клікабельний підпис «🛡 Лише читання» з меню з
+        # трьох режимів. Він обмежував агента: у режимі читання модель не
+        # могла ані створити файл, ані запустити команду — і замість роботи
+        # просила перемкнути режим.
+        #
+        # Тепер агент завжди працює з ПОВНИМ доступом, і жодного
+        # перемикача в інтерфейсі немає. Сам модуль ``permissions``
+        # лишається (ним користуються тести й режим «План»), але вибір для
+        # користувача прибрано.
+        self.permission_label = None
 
         # Кнопка вибору моделі (праворуч, разом із рештою дій).
         self.model_button = tk.Label(
@@ -1267,6 +1298,45 @@ class ChatPanel(tk.Frame):
                 continue
             self._apply_fit(widget, max_lines)
 
+    def _jump_to_bottom(self) -> None:
+        """Прокрутити стрічку в самий низ (кнопка «⌄» по центру)."""
+        try:
+            self.scroll.sync_scrollregion()
+            self.scroll.canvas.update_idletasks()
+            self.scroll.canvas.yview_moveto(1.0)
+        except tk.TclError:
+            return
+        self._update_bottom_button()
+
+    def _update_bottom_button(self) -> None:
+        """Показати кнопку «вниз» лише тоді, коли є що прокручувати.
+
+        ``yview()`` повертає ``(верх, низ)`` як частки: ``(0.0, 1.0)`` —
+        усе видно. Кнопка не потрібна, коли прокручувати нічого, інакше
+        вона висіла б посеред короткої розмови без причини.
+        """
+        button = getattr(self, "scroll_to_bottom_btn", None)
+        if button is None:
+            return
+        try:
+            first, last = self.scroll.canvas.yview()
+        except (tk.TclError, TypeError, ValueError):
+            return
+        # 0.995 — запас: частки округлюються, і низ майже завжди < 1.0.
+        needed = float(last) < 0.995
+        if needed == getattr(self, "_bottom_btn_visible", False):
+            return
+        self._bottom_btn_visible = needed
+        try:
+            if needed:
+                # По центру по горизонталі, над нижнім краєм стрічки.
+                button.place(relx=0.5, rely=1.0, y=-16, anchor="s")
+                button.lift()
+            else:
+                button.place_forget()
+        except tk.TclError:
+            pass
+
     def _scroll_to_end(self) -> None:
         # Прокрутка — це повний перерахунок layout полотна; під час
         # відтворення історії достатньо одного разу в кінці.
@@ -1278,6 +1348,8 @@ class ChatPanel(tk.Frame):
             self.scroll.canvas.yview_moveto(1.0)
         except tk.TclError:
             pass
+        # Ми щойно прокрутили вниз — кнопка «вниз» більше не потрібна.
+        self._update_bottom_button()
 
     def _settle_scroll(self) -> None:
         """Прокрутити вниз ЩЕ РАЗ, коли layout справді дорахувався.
@@ -1435,30 +1507,20 @@ class ChatPanel(tk.Frame):
 
     def set_mode(self, label: str, *, icon: str = "◈", accent: bool = True,
                  hint: str = "") -> None:
-        """Показати режим, який агент обрав САМ (пігулка — лише індикатор).
+        """Режим більше НЕ показується в композері.
 
-        ``set_command(None)`` — принципово: клік по пігулці нічого не
-        перемикає. Ручний вибір режиму прибрано; користувач пише завдання,
-        а режим визначається з його тексту.
+        Метод лишається (його кличе ``main_window.set_agent_mode``), але
+        нічого не малює: пігулку й підпис прибрано на прохання користувача
+        — «модель має працювати в режимі агента та чату і використання
+        будь-яких інструментів на розсуд самої моделі». Підпис «агент
+        відповідає текстом і не чіпає файли» читався як ЗАБОРОНА працювати
+        з файлами.
 
-        ``hint`` — короткий опис простою мовою («править файли й перевіряє
-        результат»). Він ставиться в ``mode_caption`` поруч із пігулкою:
-        сама назва режиму не пояснює, ЩО агент зараз робитиме.
+        Параметри збережено для сумісності викликів і тестів: сам стан
+        режиму (дозволи, ліміт кроків) і далі застосовує ``modes.apply``.
         """
-        button = getattr(self, "mode_btn", None)
-        if button is None:
-            return
-        button.set_icon(icon)
-        button.set_text(label or "Агент", accent=accent)
-        button.set_command(None)
-        caption = getattr(self, "mode_caption", None)
-        if caption is None:
-            return
-        try:
-            caption.configure(text=hint or "",
-                              fg=theme.FG_DIM if hint else theme.FG_FAINT)
-        except tk.TclError:
-            pass
+        self._mode_label = str(label or "")
+        self._mode_hint = str(hint or "")
 
     def _open_workspace_menu(self) -> None:
         callback = self.on_workspace_menu
@@ -1469,12 +1531,16 @@ class ChatPanel(tk.Frame):
         safe.call_quiet(callback, self.workspace_btn, where="меню робочого простору")
 
     def _open_mode_menu(self) -> None:
+        """Меню режимів: пігулки в композері більше немає, тож і меню нікуди
+        прив'язати. Колбек вікна лишається робочим — його кличе меню програм
+        і слэш-команда ``/режим``."""
         callback = self.on_mode_menu
         if callback is None:
             if self.on_status:
                 self.on_status("Меню режимів недоступне.")
             return
-        safe.call_quiet(callback, self.mode_btn, where="меню режимів")
+        safe.call_quiet(callback, getattr(self, "mode_btn", None) or self,
+                        where="меню режимів")
 
     def stop(self) -> None:
         if self.runner and self.runner.busy:
@@ -1877,14 +1943,16 @@ class ChatPanel(tk.Frame):
         self.input_box.focus_set()
 
     def toggle_permission_menu(self) -> None:
-        menu = self._ensure_menu()
-        if menu.visible and self._menu_mode == "permissions":
-            menu.close()
-            return
-        self._menu_mode = "permissions"
-        menu.show_permissions(self.permission_mode)
-        menu.place_above(self.input_box)
-        self.input_box.focus_set()
+        """Меню дозволів прибрано: агент завжди має повний доступ.
+
+        Вимога користувача (21.11.2026): «лиш тільки повний доступ для
+        агента! Прибери перемикач!». Метод лишається (його кличе
+        слэш-команда ``/дозвіл`` і тести), але меню не відкриває — інакше
+        користувач знову міг би випадково вимкнути агенту запис.
+        """
+        if self.on_status:
+            self.on_status("Дозволи: повний доступ (перемикач прибрано).")
+        return
 
     def _on_menu_choice(self, payload) -> None:
         if isinstance(payload, str) and payload in permissions.MODES:
@@ -1895,21 +1963,13 @@ class ChatPanel(tk.Frame):
             self._run_slash_command(command, "")
 
     def _paint_permission_label(self) -> None:
-        """Намалювати поточний режим дозволів у композері.
+        """Нічого не малює — перемикача дозволів у композері більше немає.
 
-        Підпис повний («Запис у робочій області») — він і є джерелом істини
-        для користувача й тестів. Вузький рядок композера не є проблемою:
-        підпис стоїть ліворуч і не стискається.
+        Метод лишається, бо його кличе ``set_permission_mode`` (а той —
+        оболонка вікна й тести). Сам стан режиму працює як раніше, просто
+        користувач його більше не перемикає: діє повний доступ.
         """
-        active = self.permission_mode
-        try:
-            self.permission_label.configure(
-                text=f"{permissions.icon_for(active)} {permissions.label_for(active)}",
-                fg=theme.WARN if active == permissions.FULL else (
-                    theme.FG_DIM if active == permissions.WORKSPACE else theme.FG_FAINT),
-            )
-        except (tk.TclError, AttributeError):
-            pass
+        return
 
     def set_permission_mode(self, mode: str, *,
                             notify: bool | str = True) -> None:
@@ -2349,8 +2409,71 @@ class ChatPanel(tk.Frame):
                    kind="error")
         return False
 
+    def _queue_hot(self, text: str) -> None:
+        """Поставити запит у чергу «на льоту» — він стартує після ходу.
+
+        Навіщо окремо від ``on_queue_task`` (черга задач у сайдбарі): це
+        ЛЕГКА черга самої стрічки. Вона не створює «справу», не планує
+        кроків і не потребує підтверджень — користувач просто дописав
+        уточнення під час роботи, і воно має піти наступним ходом.
+
+        Показуємо картку з цим текстом ОДРАЗУ, щоб було видно, що запит
+        прийнято: інакше натиснутий Enter ніби «нічого не робив».
+        """
+        clean = (text or "").strip()
+        if not clean:
+            return
+        # Обмеження на довжину черги: інакше випадкові натискання Enter
+        # накопичували б десятки задач, і агент працював би годинами.
+        pending = getattr(self, "_hot_queue", None)
+        if pending is None:
+            pending = []
+            self._hot_queue = pending
+        if len(pending) >= HOT_QUEUE_LIMIT:
+            self._note(
+                f"Черга вже має {len(pending)} запитів — дочекайся, поки "
+                f"агент їх виконає.", kind="error")
+            return
+        pending.append(clean)
+        card = self._new_card(ROLE_USER, accent=theme.CHAT_USER, bg=theme.BG_CARD)
+        self._body_text(card, clean, tag_colour=theme.FG_BRIGHT)
+        self._show_card_thumbs(card, self._pending_image_paths())
+        self._last_user_text = clean
+        self.transcript.add(f"\n{ROLE_USER}\n{clean}\n")
+        self._remember("user", clean)
+        self._scroll_to_end()
+        self._note(
+            f"Запит додано в чергу на льоту ({len(pending)}). "
+            f"Він піде одразу після поточного кроку.", kind="info")
+        if self.on_status:
+            self.on_status("Запит у черзі — стартує після поточного кроку.")
+
+    def take_hot_request(self) -> str:
+        """Узяти наступний «гарячий» запит (порожній рядок — черга пуста)."""
+        pending = getattr(self, "_hot_queue", None)
+        if not pending:
+            return ""
+        return pending.pop(0)
+
+    @property
+    def hot_pending(self) -> int:
+        """Скільки запитів чекає в «гарячій» черзі."""
+        return len(getattr(self, "_hot_queue", None) or ())
+
+    def _run_hot_next(self) -> bool:
+        """Запустити наступний гарячий запит (кличе обробник ``done``).
+
+        Повертає ``True``, якщо робота справді почалась — тоді стрічка не
+        показує «готово» передчасно.
+        """
+        text = self.take_hot_request()
+        if not text:
+            return False
+        self._note(f"Беруся за запит із черги: {text[:80]}")
+        return bool(self._send(text, hot=True))
+
     def _send(self, text: str, *, deep: Optional[bool] = None,
-              plan_step: bool = False) -> bool:
+              plan_step: bool = False, hot: bool = False) -> bool:
         """Надіслати запит агенту. Повертає ``True``, якщо робота СПРАВДІ почалась.
 
         ``deep`` керує режимом глибокого аналізу: ``None`` — вирішити
@@ -2376,7 +2499,18 @@ class ChatPanel(tk.Frame):
             self._note("Агент ще не ініціалізований.", kind="error")
             return False
         if self.runner.busy:
-            self._note("Зачекай: агент ще виконує попередній запит.", kind="error")
+            # ── ГАРЯЧЕ ДОДАВАННЯ (21.11.2026) ─────────────────────────────
+            # Раніше тут стояло «Зачекай: агент ще виконує попередній
+            # запит» — і текст ГУБИВСЯ: користувач мусив чекати, а потім
+            # набирати все заново. Це особливо боляче на довгих задачах,
+            # де модель працює хвилинами.
+            #
+            # Вимога користувача: «гаряче додавання завдань в чат на льоту
+            # як для хмарних, так і локальних моделей». Тепер запит стає в
+            # чергу й стартує САМ, щойно поточний хід завершиться. Модель
+            # бачить його наступним кроком — тобто можна додавати
+            # уточнення, не зупиняючи роботу.
+            self._queue_hot(text)
             return False
         if not self._project_ok(text):
             return False
@@ -2775,6 +2909,15 @@ class ChatPanel(tk.Frame):
             # створена, і звичайний _scroll_to_end прокручував до ще старої
             # висоти — користувач лишався всередині останньої відповіді.
             self._settle_scroll()
+            # ── Гаряча черга: запит, доданий під час роботи ───────────────
+            # Користувач дописав уточнення, поки агент працював — воно
+            # стартує ЗАРАЗ, щоб не довелось натискати Enter удруге.
+            # ``_send`` уже виставить зайнятість, тому ``set_busy(False)``
+            # вище не лишає стрічку в стані «готово».
+            try:
+                self._run_hot_next()
+            except Exception:  # noqa: BLE001 - черга не має ламати хід
+                LOG.debug("Гарячий запит не запущено", exc_info=True)
 
     # ── стрімінг ───────────────────────────────────────────────────────────
     def _on_token(self, piece: str) -> None:

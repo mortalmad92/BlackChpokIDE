@@ -198,15 +198,15 @@ def test_live_panel() -> None:
     pump(0.4)
 
     check("кнопка команд є", panel.commands_btn.cget("text") == "/")
-    check("перемикач дозволів показує режим",
-          "робочій" in panel.permission_label.cget("text").lower(),
-          panel.permission_label.cget("text"))
+    # Перемикача дозволів більше немає (вимога користувача 21.11.2026:
+    # «лиш тільки повний доступ для агента! Прибери перемикач!»).
+    check("перемикача дозволів немає", panel.permission_label is None,
+          str(panel.permission_label))
 
-    panel.set_permission_mode(permissions.READ_ONLY)
+    panel.set_permission_mode(permissions.FULL)
     pump(0.2)
-    check("режим змінюється через панель",
-          panel.permission_mode == permissions.READ_ONLY
-          and "читання" in panel.permission_label.cget("text").lower())
+    check("режим застосовується через панель",
+          panel.permission_mode == permissions.FULL)
 
     panel.toggle_command_menu()
     pump(0.5)
@@ -220,14 +220,11 @@ def test_live_panel() -> None:
     pump(0.2)
     check("меню закривається", not menu.visible)
 
+    # Меню дозволів більше немає в інтерфейсі — лишається лише перевірка,
+    # що прямий виклик не падає й не відкриває меню з трьома режимами.
     panel.toggle_permission_menu()
-    pump(0.5)
-    check("меню дозволів відкривається", menu.visible and len(menu.items) == 3,
-          str(len(menu.items)))
-    check("у меню дозволів позначено активний",
-          any("✓" in item[0] for item in menu.items), str([i[0] for i in menu.items]))
-    menu.close()
-    pump(0.2)
+    pump(0.3)
+    check("меню дозволів прибрано з інтерфейсу", not menu.visible)
 
     # Команда /допомога показує довідку
     panel.set_text("/допомога")

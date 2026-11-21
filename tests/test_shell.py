@@ -105,12 +105,19 @@ def test_modes() -> None:
     modes.remember_base_steps(8)
     runner = AgentRunner(ToolRegistry(ROOT), settings.llm, settings.agent, ROOT)
 
-    # «Чат» — без інструментів і один крок.
+    # «Чат» — лише читання, але інструменти ДОСТУПНІ (20.11.2026).
+    #
+    # Раніше тут перевірялось протилежне: «один крок» і «без схем
+    # інструментів». Це і була клітка, через яку на «привіт» агент
+    # вигадував опис проєкту, а не дивився файли. Користувач просив
+    # «максимум самовирішування»: модель сама вирішує, чи потрібен
+    # інструмент. Запобіжник лишився там, де справді потрібен — дозволи.
     modes.apply(settings, runner, modes.CHAT)
     check("чат: лише читання", runner.permission_mode == permissions.READ_ONLY,
           runner.permission_mode)
-    check("чат: один крок", runner.max_steps == 1, str(runner.max_steps))
-    check("чат: без схем інструментів", runner.tool_schemas() == [],
+    check("чат: кілька кроків (не один)", runner.max_steps > 1,
+          str(runner.max_steps))
+    check("чат: інструменти доступні", len(runner.tool_schemas()) > 0,
           str(len(runner.tool_schemas())))
 
     # «Код» — запис у робочій області, більше кроків, інструменти є.

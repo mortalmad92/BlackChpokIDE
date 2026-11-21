@@ -436,18 +436,27 @@ COMPACT_SYSTEM_PROMPT = """Ти — BlackChpok AI, агент усередині
    перевірити."""
 
 
-#: Стеля ``max_tokens`` для локального рушія. Більше за вікно модель однаково
-#: не видасть, тому просити більше немає сенсу — і зайвий резерв з'їдав би
-#: місце під історію.
-LOCAL_MAX_TOKENS_CEILING = 32_000
-
-#: Стеля ``max_tokens`` для ХМАРНОГО провайдера.
+#: Абсолютна стеля ``max_tokens`` — ЗАПОБІЖНИК проти друкарської помилки,
+#: а не «політика провайдера».
 #:
-#: Хмарні моделі мають вікна 64k–1M токенів, і саме стільки вони здатні
-#: віддати в одній відповіді. Колишня стеля 32 000 обрізала довгі відповіді
-#: (цілий модуль, великий diff) посередині — модель отримувала
-#: ``finish_reason=length`` і робота вважалась незавершеною.
-CLOUD_MAX_TOKENS_CEILING = 200_000
+#: ── ЧОМУ БІЛЬШЕ НЕМА ДВОХ РІЗНИХ СТЕЛЬ (21.11.2026) ────────────────────
+#: Раніше їх було дві: 32 000 для локального рушія й 200 000 для хмари.
+#: Обидві були вигадані НАМИ й обидві зрізали можливості:
+#:
+#: * локальна модель із вікном 262 144 отримувала ``max_tokens`` 32 000 —
+#:   тобто могла видати лише восьму частину того, що вміє;
+#: * хмара з вікном 2 млн (а такі бувають) впиралась у 200 000.
+#:
+#: Вимога користувача: «жодних обмежень як для локальних, так і для
+#: хмарних моделей». Скільки модель СПРАВДІ може видати, знає лише вона —
+#: і саме це тепер визначає ``context_probe`` живим запитом. Тут лишається
+#: тільки санітарна межа, щоб ``max_tokens: 999999999`` у налаштуваннях не
+#: зробив запит безглуздим.
+MAX_TOKENS_LIMIT = 2_000_000
+
+#: Скільки токенів просити, якщо користувач не задав нічого конкретного й
+#: вікно моделі невідоме. Не стеля — саме типова відповідь.
+DEFAULT_MAX_TOKENS = 8192
 
 
 @dataclass
@@ -483,35 +492,9 @@ class LLMSettings:
                 url += "/v1"
             self.base_url = url or "http://127.0.0.1:1234/v1"
         self.temperature = max(0.0, min(2.0, float(self.temperature)))
-        self.max_tokens = max(256, min(self._max_tokens_ceiling(), int(self.max_tokens)))
+        self.max_tokens = max(256, min(MAX_TOKENS_LIMIT, int(self.max_tokens)))
         self.timeout = max(10, min(1800, int(self.timeout)))
         return self
-
-    def _max_tokens_ceiling(self) -> int:
-        """Стеля для ``max_tokens`` — залежно від того, ХТО відповідає.
-
-        Раніше стеля була одна на всіх — 32 000. Для локальної моделі це
-        слушно (більше за вікно вона все одно не видасть), але для хмари
-        вона мовчки зрізала можливості в рази: провайдер із вікном
-        1 000 000 токенів отримував ``max_tokens`` 8192 або 32 000, і
-        довга відповідь (цілий модуль, великий diff) обривалась на
-        півслові з ``finish_reason=length``.
-
-        Тепер хмарна адреса дозволяє до :data:`CLOUD_MAX_TOKENS_CEILING`.
-        Локальна лишається на 32 000: там обмеження реально впирається у
-        вікно рушія, і більше просити нема сенсу.
-        """
-        low = (self.base_url or "").lower()
-        if low.startswith(("native://", "inproc://", "blackchpok://")):
-            return LOCAL_MAX_TOKENS_CEILING
-        if low.startswith(("http://", "https://")):
-            host = low.split("//", 1)[-1].split("/", 1)[0]
-            # Локальні адреси (127.0.0.1, localhost, :1234) — це локальний
-            # рушій за HTTP, а не хмара: тримаємо локальну стелю.
-            if host.startswith(("127.0.0.1", "localhost", "0.0.0.0", "[::1]")):
-                return LOCAL_MAX_TOKENS_CEILING
-            return CLOUD_MAX_TOKENS_CEILING
-        return LOCAL_MAX_TOKENS_CEILING
 
 
 @dataclass
@@ -598,7 +581,16 @@ class AgentSettings:
     context_char_limit: int = 24_000
     use_skills: bool = True          # додавати увімкнені скіли в системний промпт
     queue_auto_run: bool = True      # виконувати чергу задач автоматично
-    permission_mode: str = "workspace"   # read_only | workspace | full
+    #: Дозволи агента. Типово — ПОВНИЙ доступ (21.11.2026).
+    #:
+    #: Раніше стояло ``"workspace"``: агент не міг вийти за теку проєкту.
+    #: Вимога користувача: «лиш тільки повний доступ для агента! Прибери
+    #: перемикач!» — бо режим «лише читання» робив агента безпорадним:
+    #: він не міг створити файл і просив перемкнути режим замість роботи.
+    #:
+    #: Самі режими в :mod:`permissions` лишаються (їх використовує «План»
+    #: і тести), але вибір для користувача прибрано з інтерфейсу.
+    permission_mode: str = "full"   # read_only | workspace | full
     mode: str = "agent"              # chat | agent | code | plan | tools
     stream: bool = True              # показувати відповідь у міру генерації
     #: Виконувати незалежні читання паралельно (див. tool_orchestrator).
@@ -1031,7 +1023,9 @@ class Settings:
             base_url=str(cloud_data.get("base_url") or ""),
             model=str(cloud_data.get("model") or ""),
             reasoning=_as_bool(cloud_data.get("reasoning", True), True),
-            max_tokens=max(256, min(200_000, _as_int(cloud_data.get("max_tokens"), 8192))),
+            max_tokens=max(256, min(MAX_TOKENS_LIMIT,
+                                    _as_int(cloud_data.get("max_tokens"),
+                                            DEFAULT_MAX_TOKENS))),
             temperature=max(0.0, min(2.0, _as_float(cloud_data.get("temperature"), 0.3))),
             last_check=str(cloud_data.get("last_check") or ""),
             last_status=secrets.redact(str(cloud_data.get("last_status") or "")),
