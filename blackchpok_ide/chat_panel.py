@@ -2692,6 +2692,35 @@ class ChatPanel(tk.Frame):
         except tk.TclError:
             pass
 
+    def _thought_clear(self) -> None:
+        """Очистити зону думок: новий чат не має показувати старі міркування.
+
+        Викликається з :meth:`reset`, тобто на кожному перемиканні чату.
+        Раніше такого методу не було (``reset`` кликав неіснуючий), і
+        ``/новий`` падав з ``AttributeError`` — новий чат не відкривався.
+        """
+        self._thought_lines = 0
+        widget = getattr(self, "_thought_text", None)
+        if widget is not None:
+            try:
+                widget.configure(state="normal")
+                widget.delete("1.0", "end")
+                widget.configure(state="disabled")
+            except tk.TclError:
+                pass
+        label = getattr(self, "_thought_label", None)
+        if label is not None:
+            try:
+                label.configure(text="")
+            except tk.TclError:
+                pass
+        box = getattr(self, "thought_box", None)
+        if box is not None:
+            try:
+                box.grid_remove()
+            except tk.TclError:
+                pass
+
     def _thought_toggle(self) -> None:
         """Розгорнути/згорнути повний текст думок агента."""
         body = getattr(self, "_thought_body", None)

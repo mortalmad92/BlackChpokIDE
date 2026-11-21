@@ -270,19 +270,27 @@ def hint_for(key: str) -> str:
     return get(key).hint
 
 
-#: Скільки кроків брати, коли режим не задає власного ліміту.
-DEFAULT_MAX_STEPS = 60
+#: Скільки кроків брати, коли ліміт не задано.
+#:
+#: ``0`` = БЕЗ ЛІМІТУ (вимога 21.11.2026: «прибери всі обмеження, щоб агент
+#: міг працювати хоч 24/7»). Режим описує дозволи й підказку, а не бюджет
+#: роботи.
+DEFAULT_MAX_STEPS = 0
 
 #: Ліміт кроків, який користувач задав у налаштуваннях (до застосування
 #: режиму). Режим не має права переписувати це значення назавжди.
-_BASE_STEPS = {"value": 0}
+_BASE_STEPS = {"value": -1}
 
 
 def base_max_steps(settings: Any) -> int:
-    """Ліміт кроків із налаштувань (без урахування поточного режиму)."""
-    if not _BASE_STEPS["value"]:
+    """Ліміт кроків із налаштувань (без урахування поточного режиму).
+
+    ``0`` означає «без ліміту» — саме це тепер типова поведінка. Раніше
+    нуль підмінявся на 60, і агент обривав довгу роботу.
+    """
+    if _BASE_STEPS["value"] < 0:
         try:
-            _BASE_STEPS["value"] = max(1, int(settings.agent.max_steps))
+            _BASE_STEPS["value"] = max(0, int(settings.agent.max_steps))
         except (AttributeError, TypeError, ValueError):
             _BASE_STEPS["value"] = DEFAULT_MAX_STEPS
     return int(_BASE_STEPS["value"])
@@ -291,7 +299,7 @@ def base_max_steps(settings: Any) -> int:
 def remember_base_steps(value: int) -> None:
     """Запам'ятати нове «базове» значення, коли його змінив користувач."""
     try:
-        _BASE_STEPS["value"] = max(1, int(value))
+        _BASE_STEPS["value"] = max(0, int(value))
     except (TypeError, ValueError):
         return
 

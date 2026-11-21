@@ -656,17 +656,36 @@ class SettingsDialog(tk.Toplevel):
 
         options = ttk.Frame(frame)
         options.grid(row=2, column=0, sticky="ew")
-        self.confirm_cmd_var = tk.BooleanVar(value=self.settings.agent.confirm_commands)
-        ttk.Checkbutton(options, text="Питати дозвіл на команди терміналу",
-                        variable=self.confirm_cmd_var).grid(row=0, column=0, sticky="w", pady=2)
+        # ── ПІДТВЕРДЖЕННЯ КОМАНД ПРИБРАНО (21.11.2026) ────────────────────
+        # Тут стояв перемикач «Питати дозвіл на команди терміналу». Вимога:
+        # «прибери всі підтвердження і зроби режим повної автономії без
+        # людини». Діалог посеред роботи зупиняв хід до 10 хвилин, і ніхто
+        # на нього не відповідав.
+        #
+        # Запобіжники лишились там, де вони справді рятують: ``permissions``
+        # усе ще блокує системні теки в режимі «робоча область», а
+        # ``command_guard`` відсікає команди, що чекають вводу, і
+        # перенаправлення у величезний файл.
         self.offline_var = tk.BooleanVar(value=self.settings.agent.offline_fallback)
         ttk.Checkbutton(options, text="Офлайн-роутер, якщо модель недоступна",
                         variable=self.offline_var).grid(row=1, column=0, sticky="w", pady=2)
 
-        ttk.Label(options, text="Максимум кроків агента").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        self.steps_var = tk.IntVar(value=self.settings.agent.max_steps)
-        ttk.Spinbox(options, from_=1, to=500, textvariable=self.steps_var, width=6).grid(
-            row=2, column=1, sticky="w", padx=(10, 0), pady=(8, 0))
+        # ── ЛІМІТ КРОКІВ ПРИБРАНО (21.11.2026) ────────────────────────────
+        # Тут стояло поле «Максимум кроків агента» й збереження
+        # ``s.agent.max_steps``. Саме це число обрізало роботу: користувач
+        # бачив «Досягнуто ліміт кроків» замість результату.
+        #
+        # Вимога: «прибери всі обмеження, щоб агент міг працювати хоч 24/7
+        # без вихідних автономно». Тепер бюджет не задається взагалі:
+        # ``AgentSettings.max_steps = 0`` означає «без ліміту», а кількість
+        # кроків визначає сама робота. Захист від зациклення лишився там,
+        # де він справді потрібен: ``_RepeatGuard`` ловить ПОВТОР того
+        # самого виклику, а не кількість корисних дій.
+        ttk.Label(
+            options,
+            text="↳ Кількість кроків не обмежена: агент працює, доки є робота.",
+            foreground=theme.FG_FAINT,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         self.skills_var = tk.BooleanVar(value=self.settings.agent.use_skills)
         ttk.Checkbutton(options, text="Додавати увімкнені скіли в системний промпт",
@@ -1519,7 +1538,6 @@ class SettingsDialog(tk.Toplevel):
             ("Розмір шрифту", "size_var", "int", "ціле число, напр. 13"),
             ("Масштаб інтерфейсу", "scale_var", "float", "число від 0.85 до 1.75, напр. 1.15"),
             ("Ширина табуляції", "tab_var", "int", "ціле число, напр. 4"),
-            ("Кроків агента", "steps_var", "int", "ціле число, напр. 12"),
             ("Хмарні токени", "cloud_tokens", "int", "ціле число, напр. 8192"),
             ("Температура хмари", "cloud_temp", "float", "число від 0 до 2"),
             ("Секунд запису", "voice_seconds", "float", "число, напр. 5"),
@@ -1588,9 +1606,15 @@ class SettingsDialog(tk.Toplevel):
         s.ui.theme = "light" if "світл" in self.theme_combo.get().lower() else "dark"
 
         s.agent.system_prompt = self.prompt_text.get("1.0", "end-1c").strip()
-        s.agent.confirm_commands = bool(self.confirm_cmd_var.get())
+        # Підтвердження команд прибрано з інтерфейсу (див. розділ «Агент»):
+        # повна автономія без людини. Пишемо явно, щоб старе ``true`` з
+        # ``settings.json`` не повернуло діалог посеред роботи.
+        s.agent.confirm_commands = False
         s.agent.offline_fallback = bool(self.offline_var.get())
-        s.agent.max_steps = int(self._number("steps_var", "int", 60))
+        # Ліміт кроків більше не задається: 0 = без ліміту (див. коментар
+        # біля поля в розділі «Агент»). Записуємо явно, щоб старе значення
+        # з ``settings.json`` не повернуло стелю після збереження.
+        s.agent.max_steps = 0
         s.agent.use_skills = bool(self.skills_var.get())
         s.agent.queue_auto_run = bool(self.autorun_var.get())
         s.agent.stream = bool(self.stream_var.get())

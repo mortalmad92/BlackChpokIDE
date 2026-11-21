@@ -167,6 +167,14 @@ class EditorTabs(tk.Frame):
         self._order: list[str] = []
         self._active: str = ""
         self._closed: list[Path] = []
+        #: Ідентифікатор відкладеного автозбереження (``None`` — не заплановано).
+        #:
+        #: Один таймер на всі вкладки, а не по одному на кожну: правка агента
+        #: чіпає десятки файлів підряд, і окремі таймери дали б сотні
+        #: одночасних записів на диск.
+        self._autosave_job: Optional[str] = None
+        #: Скільки разів автозбереження вже спрацювало (для тестів і статусу).
+        self.autosave_runs: int = 0
         self._build()
 
     # ── побудова ───────────────────────────────────────────────────────────
@@ -470,6 +478,10 @@ class EditorTabs(tk.Frame):
             base = editor.path.name if editor.path else "Без назви"
             tab.set_title(base, bool(editor.modified))
         self._notify_changed()
+        # Кожна зміна (і ручна, і правка агента) планує запис на диск.
+        # Раніше файл лишався зміненим у пам'яті до Ctrl+S.
+        if getattr(editor, "modified", False):
+            self.schedule_autosave()
 
     def rename_tab(self, editor: CodeEditor, title: str) -> None:
         tab = self._tabs.get(str(editor.master))
@@ -570,6 +582,104 @@ class EditorTabs(tk.Frame):
             except ws.WorkspaceError:
                 continue
         self._notify_changed()
+
+    # ── автозбереження ─────────────────────────────────────────────────────
+    @property
+    def _autosave_enabled(self) -> bool:
+        ui = getattr(self.settings, "ui", None)
+        return bool(getattr(ui, "auto_save", True))
+
+    def schedule_autosave(self) -> None:
+        """Запланувати запис змінених файлів на диск.
+
+        Вимога користувача (21.11.2026): «всі файли мають автоматично
+        зберігатися». Раніше зміни жили лише в пам'яті до Ctrl+S: правка
+        агента показувалась у редакторі (``modified = True``), а на диску
+        лишався старий вміст. Після аварійного закриття робота зникала.
+
+        Чому відкладено, а не одразу. Під час стріму правка приходить
+        десятками шматків, і запис на кожен — це сотні операцій із диском
+        на один файл. Таймер скидається на кожну зміну, тож файл пишеться
+        один раз — після паузи в наборі.
+        """
+        if not self._autosave_enabled:
+            return
+        delay_ms = int(max(0.2, float(
+            getattr(getattr(self.settings, "ui", None), "auto_save_delay", 2.0)
+            or 2.0)) * 1000)
+        # Попередній таймер знімаємо: інакше запис спрацює посеред стріму
+        # й запише НЕДОписану правку — саме так на диску опинявся
+        # напівфайл, який потім дописувався ще раз.
+        job = self._autosave_job
+        self._autosave_job = None
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except (tk.TclError, ValueError):
+                pass
+        try:
+            self._autosave_job = self.after(delay_ms, self._run_autosave)
+        except tk.TclError:
+            self._autosave_job = None
+
+    def _run_autosave(self) -> None:
+        """Записати всі змінені вкладки (виклик таймера)."""
+        self._autosave_job = None
+        if not self._autosave_enabled:
+            return
+        saved = self.flush_modified()
+        if saved:
+            self.autosave_runs += 1
+            if self.on_status:
+                self.on_status(f"Автозбережено файлів: {saved}")
+
+    def flush_modified(self) -> int:
+        """Негайно зберегти всі змінені файли; повертає кількість.
+
+        Окремий метод (а не лише таймер), бо його ж кличуть у критичні
+        моменти — перед закриттям вікна, перед стартом правки агента й
+        перед читанням файлу з диска. Там чекати на таймер не можна.
+        """
+        count = 0
+        for frame_id in list(self._order):
+            editor = self.editors.get(frame_id)
+            path = self.paths.get(frame_id)
+            if editor is None or path is None:
+                continue
+            if not getattr(editor, "modified", False):
+                continue
+            # ── ПРАВКА АГЕНТА В ПРОЦЕСІ — НЕ ЗБЕРІГАЄМО ────────────────────
+            # Під час живої правки в буфері лежать ОБИДВІ версії: старий
+            # текст (червоний) і новий (зелений). Запис такого буфера на
+            # диск і був причиною дублів у файлах — саме так у
+            # ``main_window.py``, ``live_edit.py`` і ``night_shift.py``
+            # з'явились копії функцій і блоків. Чекаємо, доки правка
+            # застосується (``accept`` прибере стару версію).
+            if getattr(editor, "live_edit_active", False):
+                continue
+            try:
+                ws.write_text_file(path, editor.get_text())
+            except (ws.WorkspaceError, OSError):
+                continue
+            editor.modified = False
+            tab = self._tabs.get(frame_id)
+            if tab is not None:
+                tab.set_title(path.name, False)
+            count += 1
+        if count:
+            self._notify_changed()
+        return count
+
+    def cancel_autosave(self) -> None:
+        """Зупинити відкладений запис (вікно закривається)."""
+        job = self._autosave_job
+        self._autosave_job = None
+        if job is None:
+            return
+        try:
+            self.after_cancel(job)
+        except (tk.TclError, ValueError):
+            pass
 
     # ── закриття ───────────────────────────────────────────────────────────
     def close_current(self) -> bool:

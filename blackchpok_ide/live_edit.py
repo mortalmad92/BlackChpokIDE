@@ -5,11 +5,22 @@
 
 * старі рядки лишаються на місці з червоним тлом (їх НЕ видаляємо);
 * нові рядки дописуються нижче із зеленим тлом, по кілька символів за тік;
-* угорі блоку з'являються дві кнопки — «Прийняти» і «Відхилити».
+* щойно блок дописано, він застосовується САМ — без кнопок підтвердження.
 
-Чому не видаляємо старе одразу. Якщо замінити рядки відразу, людина
-втрачає можливість порівняти й не бачить, що саме було. Тому спершу
-показуємо обидві версії, а видалення робить «Прийняти».
+Чому без підтвердження. Вимога користувача (21.11.2026): «повністю прибери
+ці підтвердження при редагуванні агента». Кнопки «Прийняти / Відхилити»
+змушували натискати їх після кожної правки, хоч файл на диску інструмент
+уже записав. Тепер правка застосовується автоматично, а діф лишається
+видимим лише на час показу.
+
+Чому не видаляємо старе одразу. Якщо замінити рядки відразу, людина не
+бачить, що саме було. Тому під час стріму показуємо обидві версії, а старий
+фрагмент прибирає автозастосування після завершення блоку.
+
+Ручний режим лишився для тестів і викликів із коду:
+``feed_block(...)`` типово показує кнопки (``auto_accept=False``) — правку
+закриває ``accept()`` або ``reject()``. Вікно IDE передає
+``auto_accept=True``, тому правки агента застосовуються самі.
 
 Чому одна група undo. Під час стріму текст вставляється десятками
 дрібних шматків. Без об'єднання ``Ctrl+Z`` скасовував би по одному
@@ -26,7 +37,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from . import stream_apply, theme, widgets
+# ── ПРЯМИЙ ЗАПУСК ФАЙЛУ ────────────────────────────────────────────────────
+# Відносні імпорти працюють лише всередині пакета: коли файл запускають як
+# скрипт (``python blackchpok_ide/live_edit.py``), ``__package__`` порожній і
+# Python падає з
+#     ImportError: attempted relative import with no known parent package
+# Це не помилка логіки, а спосіб запуску. Тому для прямого запуску додаємо
+# корінь проєкту в ``sys.path`` і беремо ТІ САМІ модулі абсолютними іменами —
+# так само, як це вже зроблено в ``tabs.py``.
+if __package__ in (None, ""):                        # pragma: no cover
+    import sys as _sys
+
+    _root = Path(__file__).resolve().parent.parent
+    if str(_root) not in _sys.path:
+        _sys.path.insert(0, str(_root))
+    from blackchpok_ide import stream_apply, theme, widgets
+else:
+    from . import stream_apply, theme, widgets
 
 LOG = logging.getLogger("blackchpok.stream_apply.ui")
 
@@ -81,6 +108,12 @@ class LiveEdit:
     #: переписує файл. Без цього прапорця новий вміст дописувався в кінець,
     #: і після «Прийняти» у файлі лишався ще й старий код.
     whole_file: bool = False
+    #: Застосувати правку САМОМУ, щойно блок дописано (без кнопок).
+    #:
+    #: Вікно IDE вмикає це: вимога користувача — жодних підтверджень при
+    #: редагуванні агента. ``False`` (типово) лишає ручний режим для тестів
+    #: і викликів із коду.
+    auto_accept: bool = False
 
     # ── показ ──────────────────────────────────────────────────────────────
     def start(self) -> bool:
@@ -134,6 +167,9 @@ class LiveEdit:
         except tk.TclError:
             return False
         self._stream.push(self.block.replace)
+        # Буфер тепер містить обидві версії — з цієї миті й до ``accept``
+        # його не можна писати на диск (див. ``_set_active``).
+        self._set_active(True)
         self._tick()
         return True
 
@@ -196,7 +232,16 @@ class LiveEdit:
             # ``urn`` у двох рядках.
             if self.block.complete:
                 self._ensure_trailing_newline()
-            # Усе віддано: лишаємо кнопки й чекаємо рішення людини.
+                if self.auto_accept:
+                    # ── Без підтвердження ──────────────────────────────────
+                    # Блок дописано — застосовуємо правку самі: прибираємо
+                    # старий фрагмент і підсвітку. Кнопок не показуємо.
+                    self.accept()
+                    return
+            if self.auto_accept:
+                # Пауза в стрімі: кнопок немає, чекаємо наступного шматка.
+                return
+            # Ручний режим: лишаємо кнопки й чекаємо рішення людини.
             self._ensure_row()
             self._retitle()
             return
@@ -232,6 +277,22 @@ class LiveEdit:
             self._newline_added = True
         except tk.TclError:
             return
+
+    def _set_active(self, active: bool) -> None:
+        """Позначити редактор як «у ньому йде жива правка» (або навпаки).
+
+        Навіщо прапорець. Поки правка показується, буфер редактора містить
+        ДВІ версії тексту: стару (червону) і нову (зелену). Якщо в цей
+        момент записати буфер на диск (Ctrl+S, автозбереження, збереження
+        всіх вкладок), у файлі опиняються обидві — так і з'являлись дублі
+        функцій і блоків. Автозбереження бачить прапорець і чекає, доки
+        правка застосується.
+        """
+        editor = self.editor
+        try:
+            editor.live_edit_active = bool(active)   # type: ignore[attr-defined]
+        except AttributeError:
+            pass
 
     def _widget(self):
         try:
@@ -330,6 +391,8 @@ class LiveEdit:
             self._clear_tags(text)
             self._close_group()
         self.settled = True
+        # Старої версії в буфері більше немає — файл можна зберігати.
+        self._set_active(False)
         self._drop_row()
         self._finish(True)
 
@@ -349,12 +412,34 @@ class LiveEdit:
             self._clear_tags(text)
             self._close_group()
         self.settled = True
+        # Нова версія прибрана — у буфері знову рівно те, що було на диску.
+        self._set_active(False)
         self._drop_row()
         self._finish(False)
 
     def cancel_timer(self) -> None:
         """Зупинити таймер (вікно закривається або почалась нова правка)."""
         self.settled = True
+        # ── НЕ ЛИШАЄМО БУФЕР ІЗ ДВОМА ВЕРСІЯМИ ────────────────────────────
+        # Раніше цей метод лише спиняв таймер. Якщо правка обривалась
+        # посередині (модель прислала новий файл, хід скасували, вікно
+        # закрили), у редакторі лишались стара І нова версії. Наступне
+        # збереження писало обидві у файл — звідси дублі блоків і функцій
+        # у ``main_window.py``, ``live_edit.py`` та ``night_shift.py``.
+        # Тепер недописаний блок ВІДХИЛЯЄТЬСЯ: у буфері лишається рівно те,
+        # що вже є на диску.
+        try:
+            text = self._widget()
+            if text is not None:
+                ranges = text.tag_ranges(TAG_NEW)
+                if len(ranges) >= 2:
+                    for start, stop in reversed(
+                            list(zip(ranges[::2], ranges[1::2]))):
+                        text.delete(start, stop)
+                self._clear_tags(text)
+        except tk.TclError:
+            pass
+        self._set_active(False)
         self._close_group()
         job = self._job
         self._job = None
@@ -452,11 +537,15 @@ def feed_block(
     on_done=None,
     on_status=None,
     whole_file: bool = False,
+    auto_accept: bool = False,
 ) -> Optional[LiveEdit]:
     """Показати один блок правки в редакторі (зручна обгортка для вікна).
 
     ``whole_file=True`` — блок замінює вміст файлу цілком (так працює
     ``write_file``). Інакше шукається старий фрагмент ``block.search``.
+
+    ``auto_accept=True`` — застосувати правку самому, щойно блок дописано,
+    без кнопок «Прийняти / Відхилити». Так працює вікно IDE.
     """
     if editor is None or not block.replace:
         return None
@@ -465,7 +554,8 @@ def feed_block(
         return None
     LiveEdit.configure_tags(text)
     live = LiveEdit(editor=editor, block=block, on_done=on_done,
-                    on_status=on_status, whole_file=whole_file)
+                    on_status=on_status, whole_file=whole_file,
+                    auto_accept=auto_accept)
     if not live.start():
         return None
     return live

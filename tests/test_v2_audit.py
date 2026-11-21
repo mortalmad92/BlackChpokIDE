@@ -1161,13 +1161,20 @@ class TestRepeatGuard(unittest.TestCase):
         from blackchpok_ide.agent import HARD_REPEAT_LIMIT, REPEAT_LIMIT
 
         guard = self._guard()
-        prints = [guard.observe("search|{}|fail|помилка") for _ in range(6)]
+        # ── СКІЛЬКИ РАЗІВ СТУКАТИ ─────────────────────────────────────────
+        # Раніше тут було 6 спроб, хоч ``HARD_REPEAT_LIMIT`` дорівнює 8:
+        # «критично» не могло настати НІКОЛИ, і тест падав з
+        # ``hopeless_at is None``. Це помилка самого тесту, не логіки:
+        # поріг у коді — 8, тож і стукати треба щонайменше 8 разів.
+        attempts = max(HARD_REPEAT_LIMIT, REPEAT_LIMIT) + 2
+        prints = [guard.observe("search|{}|fail|помилка")
+                  for _ in range(attempts)]
         tired_at = next((index + 1 for index, item in enumerate(prints) if item[1]), None)
         hopeless_at = next((index + 1 for index, item in enumerate(prints) if item[2]), None)
         self.assertEqual(tired_at, REPEAT_LIMIT,
                          "вказівку моделі даємо на другому повторі")
         self.assertEqual(hopeless_at, HARD_REPEAT_LIMIT,
-                         "припиняємо на четвертому повторі")
+                         f"припиняємо на повторі {HARD_REPEAT_LIMIT}")
 
     def test_different_results_are_not_a_loop(self) -> None:
         """Той самий інструмент із РІЗНИМ результатом — це робота."""

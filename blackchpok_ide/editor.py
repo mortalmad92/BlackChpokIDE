@@ -47,6 +47,15 @@ class CodeEditor(tk.Frame):
         self.on_cursor = on_cursor
         self.path: Optional[Path] = None
         self.modified = False
+        #: Чи зараз показується жива правка агента (стара + нова версії).
+        #:
+        #: Поки це True, у буфері лежать ОБИДВІ версії тексту: стара
+        #: (червона) і нова (зелена). Записувати такий буфер на диск не
+        #: можна — саме це й давало дублі функцій і блоків у файлах
+        #: (``main_window.py``, ``live_edit.py``, ``night_shift.py``).
+        #: Прапорець ставить :class:`live_edit.LiveEdit`, а перевіряє
+        #: автозбереження (``tabs.flush_modified``).
+        self.live_edit_active = False
         self._highlight_job: Optional[str] = None
         self._last_line_count = -1
         self._readonly = False

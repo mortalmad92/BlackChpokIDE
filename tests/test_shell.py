@@ -101,45 +101,33 @@ def test_modes() -> None:
           all(m.permission in permissions.MODES for m in modes.MODES))
 
     settings = Settings()
-    settings.agent.max_steps = 8
-    modes.remember_base_steps(8)
+    settings.agent.max_steps = 0
+    modes.remember_base_steps(0)
     runner = AgentRunner(ToolRegistry(ROOT), settings.llm, settings.agent, ROOT)
 
-    # «Чат» — лише читання, але інструменти ДОСТУПНІ (20.11.2026).
-    #
-    # Раніше тут перевірялось протилежне: «один крок» і «без схем
-    # інструментів». Це і була клітка, через яку на «привіт» агент
-    # вигадував опис проєкту, а не дивився файли. Користувач просив
-    # «максимум самовирішування»: модель сама вирішує, чи потрібен
-    # інструмент. Запобіжник лишився там, де справді потрібен — дозволи.
+    # ── ОНОВЛЕНО 21.11.2026: ПОВНИЙ ДОСТУП І БЕЗ ЛІМІТУ КРОКІВ ───────────
+    # Раніше тут перевірялось «чат — лише читання», «код — 12 кроків»,
+    # «план — лише читання». Ці очікування описували світ, якого більше
+    # немає: користувач вимагав «лиш тільки повний доступ для агента» і
+    # «прибери всі обмеження, щоб агент міг працювати хоч 24/7».
+    # Тепер режим задає ДОЗВІЛ (повний) і підказку, а кількість кроків
+    # визначає сама робота (0 = без ліміту).
+    for mode in modes.MODES:
+        modes.apply(settings, runner, mode.key)
+        check(f"{mode.label}: повний доступ",
+              runner.permission_mode == permissions.FULL, runner.permission_mode)
+        check(f"{mode.label}: без ліміту кроків", mode.max_steps == 0,
+              str(mode.max_steps))
+        check(f"{mode.label}: інструменти доступні",
+              len(runner.tool_schemas()) > 0, str(len(runner.tool_schemas())))
+
+    # «Чат» більше не клітка: інструменти й повний доступ.
     modes.apply(settings, runner, modes.CHAT)
-    check("чат: лише читання", runner.permission_mode == permissions.READ_ONLY,
-          runner.permission_mode)
-    check("чат: кілька кроків (не один)", runner.max_steps > 1,
-          str(runner.max_steps))
-    check("чат: інструменти доступні", len(runner.tool_schemas()) > 0,
-          str(len(runner.tool_schemas())))
-
-    # «Код» — запис у робочій області, більше кроків, інструменти є.
-    modes.apply(settings, runner, modes.CODE)
-    check("код: запис у робочій області",
-          runner.permission_mode == permissions.WORKSPACE, runner.permission_mode)
-    check("код: дванадцять кроків", runner.max_steps == 12, str(runner.max_steps))
-    check("код: інструменти доступні", len(runner.tool_schemas()) > 0,
-          str(len(runner.tool_schemas())))
-
-    # «План» — лише читання.
-    modes.apply(settings, runner, modes.PLAN)
-    check("план: лише читання", runner.permission_mode == permissions.READ_ONLY,
-          runner.permission_mode)
-
-    # Повернення до «Агент» має відновити базовий ліміт кроків.
-    modes.apply(settings, runner, modes.AGENT)
-    check("агент: базовий ліміт кроків", runner.max_steps == 8, str(runner.max_steps))
+    check("чат: не один крок", runner.max_steps > 1, str(runner.max_steps))
 
     # Режим НЕ має переписувати налаштування користувача.
     check("режим не змінює max_steps у налаштуваннях",
-          settings.agent.max_steps == 8, str(settings.agent.max_steps))
+          settings.agent.max_steps == 0, str(settings.agent.max_steps))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -305,13 +293,23 @@ def _run_window_checks(Settings, BlackChpokIDE) -> None:
         pump(app, 0.2)
 
         # 7. Меню режимів перемикає режим по-справжньому.
+        #
+        # ── ОНОВЛЕНО 21.11.2026 ───────────────────────────────────────────
+        # Раніше «план» давав ``read_only``, а «агент» — ``workspace``.
+        # Користувач вимагав «лиш тільки повний доступ для агента! Прибери
+        # перемикач!»: у режимі читання модель не могла створити файл і
+        # просила перемкнути режим замість роботи. Тепер режим змінює
+        # ПІДКАЗКУ моделі, а дозволи лишаються повними в усіх режимах.
         app.set_agent_mode("plan")
         pump(app, 0.2)
-        check("режим «план» застосовано", app.agent.permission_mode == "read_only",
+        check("режим «план» застосовано", app.agent.permission_mode == "full",
               app.agent.permission_mode)
+        check("режим «план» дійшов до агента",
+              getattr(app.agent, "mode_prompt", "").startswith("Режим «План»"),
+              (getattr(app.agent, "mode_prompt", "") or "")[:40])
         app.set_agent_mode("agent")
         pump(app, 0.2)
-        check("режим «агент» застосовано", app.agent.permission_mode == "workspace",
+        check("режим «агент» застосовано", app.agent.permission_mode == "full",
               app.agent.permission_mode)
 
         # 8. Панель навігації згортається до рейки.

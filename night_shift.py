@@ -8,14 +8,12 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
 import re
 import shutil
 import sqlite3
 import subprocess
 import sys
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,11 +27,18 @@ TRIGGERS = (
     "працюй до ранку",
 )
 ALLOWED_SUFFIXES = {".py", ".html", ".css", ".js", ".md", ".txt", ".json"}
+#: Скільки годин триває одна нічна зміна (стеля для «до ранку»).
+#:
+#: 8 год — це саме «ніч». Для безперервної роботи є ``MAX_HOURS_UNLIMITED``:
+#: вимога користувача (21.11.2026) — «щоб агент міг працювати хоч 24/7 без
+#: вихідних автономно».
 MAX_HOURS = 8
+#: Значення «працюй без кінця» (24/7). Не ``inf``: ``timedelta`` приймає
+#: лише скінченні числа, а десять років — це і є «безкінечно» на практиці.
+MAX_HOURS_UNLIMITED = 24 * 365 * 10
 DEFAULT_HOURS = 6
 MAX_ATTEMPTS = 4
 MAX_TASKS = 12
-
 
 @dataclass
 class CheckResult:
@@ -80,8 +85,19 @@ def parse_hours(phrase: str) -> int:
 
     Розуміє «на 4 год», «4 години», «3 год», «2 hours». Раніше шаблон вимагав
     саме слово «на», тому «попрацюй 4 години» тихо давало типовий час.
+
+    ── БЕЗ КІНЦЯ (21.11.2026) ────────────────────────────────────────────
+    «24/7», «без вихідних», «постійно», «без кінця», «поки не зупиню»
+    дають :data:`MAX_HOURS_UNLIMITED`. Раніше будь-яке прохання все одно
+    обрізалось вісьмома годинами (``MAX_HOURS``), і агент засинав посеред
+    роботи.
     """
     text = phrase or ""
+    endless = ("24/7", "цілодобово", "без вихідних", "постійно", "без кінця",
+               "нескінченн", "безкінечн", "поки не зупин", "завжди")
+    low = text.lower()
+    if any(marker in low for marker in endless):
+        return MAX_HOURS_UNLIMITED
     patterns = (
         r"на\s+(\d+)\s*год",
         r"(\d+)\s*годин",
@@ -393,12 +409,20 @@ class NightRunner:
 
     def run(self, hours: int = DEFAULT_HOURS) -> str:
         started = self.now()
-        deadline = started + timedelta(hours=max(1, min(hours, MAX_HOURS)))
+        # ── БЮДЖЕТ ЧАСУ ────────────────────────────────────────────────────
+        # ``MAX_HOURS_UNLIMITED`` (24/7) не обрізається: саме на ньому
+        # раніше стояв ``min(hours, MAX_HOURS)``, і режим «без вихідних»
+        # тихо ставав восьмигодинним.
+        endless = hours >= MAX_HOURS_UNLIMITED
+        budget_hours = MAX_HOURS_UNLIMITED if endless else max(1, min(hours, MAX_HOURS))
+        deadline = started + timedelta(hours=budget_hours)
         self.journal.parent.mkdir(parents=True, exist_ok=True)
         self.lock_path.write_text(f"{os.getpid()}\n{started.isoformat(timespec='seconds')}\n", encoding="utf-8")
+        budget_text = "без обмеження в часі (24/7)" if endless else f"{budget_hours} год"
         blocks = [
             f"# Нічна зміна {started.strftime('%Y-%m-%d %H:%M')}",
-            f"Бюджет: {hours} год, до {MAX_ATTEMPTS} спроб на задачу. "
+            f"Бюджет: {budget_text}, до {MAX_ATTEMPTS} спроб на задачу. "
+            "Рушій — власний (native), без сторонніх сервісів. "
             "Кожен крок читає контекст з диска, після запису скидає кеш і ганяє перевірки в командному рядку.",
         ]
         try:
@@ -485,26 +509,60 @@ def start_or_status(workspace: Path, db_path: Path, phrase: str) -> str:
     )
 
 
-def lmstudio_complete(prompt: str) -> str:
-    url = os.environ.get("MCP_LMSTUDIO_URL", "http://127.0.0.1:1235/v1").rstrip("/") + "/chat/completions"
-    model = os.environ.get("MCP_LMSTUDIO_MODEL", "qwen/qwen3-vl-8b")
-    payload = {
-        "model": model,
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": "Ти лагодиш локальний проєкт. Відповідай лише секціями ### FILE."},
+def own_engine_complete(prompt: str) -> str:
+    """Відповідь від ВЛАСНОГО рушія IDE (``llama.dll`` у нашому процесі).
+
+    ── ЧОМУ НЕ LM STUDIO (21.11.2026) ─────────────────────────────────────
+    Тут стояв ``lmstudio_complete``: він стукав у ``http://127.0.0.1:1235/v1``
+    і вимагав запущеного LM Studio з моделлю ``qwen/qwen3-vl-8b``. Але
+    продукт будується навколо СВОГО рушія: ``native.bridge`` уже вміє
+    генерувати без жодного HTTP і без сторонніх сервісів. Вимога
+    користувача: «night_shift.py нічний режим має працювати на власному
+    рушії».
+
+    Нічна зміна працює в ОКРЕМОМУ процесі (щоб жити, коли чат закрито),
+    тому модель завантажується тут-таки: рушій один на процес, і
+    успадкувати завантажену модель із вікна IDE неможливо.
+    """
+    from blackchpok_ide.native import bridge
+
+    engine = _engine_settings()
+    path = str(getattr(engine, "model_path", "") or "").strip()
+    if not path:
+        raise RuntimeError(
+            "Власний рушій не має моделі: вибери її в «Налаштування → "
+            "AI Runtime» (поле «Модель»).")
+    if not bridge.runtime().engine.loaded:
+        # ``ctx`` із налаштувань — орієнтир, а не вимога: рушій сам
+        # підбере безпечне значення, якщо воно не влізе в пам'ять.
+        options = {"ctx": int(getattr(engine, "ctx_size", 0) or 0)}
+        bridge.load(path, **options)
+    payload = bridge.chat(
+        [
+            {"role": "system",
+             "content": "Ти лагодиш локальний проєкт. Відповідай лише секціями ### FILE."},
             {"role": "user", "content": prompt},
         ],
-    }
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        temperature=0.2,
+        max_tokens=4096,
+        # Ніч довга, але один хід не має висіти вічно: тайм-аут рушія
+        # перериває обчислення, і цикл переходить до наступної спроби.
+        timeout=900.0,
     )
-    with urllib.request.urlopen(request, timeout=180) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    return data["choices"][0]["message"]["content"] or ""
+    try:
+        return str(payload["choices"][0]["message"]["content"] or "")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Рушій повернув несподівану відповідь: {exc}") from exc
+
+
+def _engine_settings():
+    """Налаштування рушія з ``settings.json`` (модель, контекст)."""
+    from blackchpok_ide import config
+
+    try:
+        return config.Settings.load().engine
+    except Exception:                      # noqa: BLE001 - без налаштувань теж працюємо
+        return config.EngineSettings()
 
 
 def run_command(command: list[str], workspace: Path, timeout: int = 180) -> CheckResult:
@@ -614,7 +672,7 @@ def main() -> None:
     runner = NightRunner(
         workspace,
         db_path,
-        complete=lmstudio_complete,
+        complete=own_engine_complete,
         run_check=lambda command: suite_check(workspace, command),
     )
     print(runner.run(hours=args.hours))

@@ -4807,6 +4807,12 @@ class BlackChpokIDE(tk.Tk):
         tabs = getattr(self, "tabs", None)
         if tabs is None:
             return 0
+        # Спершу скасовуємо відкладений таймер автозбереження: інакше він
+        # спрацює після нашої роботи й запише те саме ще раз.
+        try:
+            tabs.cancel_autosave()
+        except (AttributeError, tk.TclError):
+            pass
         count = 0
         for frame_id in list(getattr(tabs, "_order", [])):
             editor = tabs.editors.get(frame_id)
@@ -4814,6 +4820,12 @@ class BlackChpokIDE(tk.Tk):
             if editor is None or path is None:
                 continue
             if not getattr(editor, "modified", False):
+                continue
+            # ── ПРАВКА АГЕНТА В ПРОЦЕСІ — ПРОПУСКАЄМО ──────────────────────
+            # У буфері зараз стара І нова версії одночасно. Запис такого
+            # буфера й давав дублі блоків у файлах. Правку застосує
+            # ``LiveEdit.accept``, і тоді файл запишеться наступного разу.
+            if getattr(editor, "live_edit_active", False):
                 continue
             try:
                 ws.write_text_file(path, editor.get_text())
@@ -6607,6 +6619,19 @@ class BlackChpokIDE(tk.Tk):
                 self.case_book.add_step(text or "Помилка", status=cases_panel.FAILED)
             elif kind == "done":
                 ok = bool(data.get("ok", True))
+                # ── НЕЗАВЕРШЕНА ЖИВА ПРАВКА НЕ МАЄ ЛИШАТИСЬ ─────────────────
+                # Хід скінчився, а правка могла не дійти до ``accept``:
+                # модель обірвала стрім, інструмент упав, користувач
+                # скасував. Тоді в редакторі лежали б стара І нова версії,
+                # і будь-яке збереження записало б обидві у файл — саме так
+                # у ``main_window.py``, ``live_edit.py`` і ``night_shift.py``
+                # з'явились дублі блоків і функцій.
+                #
+                # ``getattr`` потрібен, бо метод викликають і тести на
+                # «заглушці» без повного стану вікна.
+                settle = getattr(self, "_ui_call", None)
+                if settle is not None and getattr(self, "_live_edit", None) is not None:
+                    settle(self._settle_live_edit)
                 summary = getattr(self.chat.runner, "last_answer", "") if self.chat.runner else ""
                 error = getattr(self.chat.runner, "last_error", "") if self.chat.runner else ""
                 self.case_book.end(ok=ok, summary=summary, error=error)
@@ -7414,6 +7439,12 @@ class BlackChpokIDE(tk.Tk):
                 # б показати в одному файлі дві правки накладкою.
                 if live is not None:
                     live.cancel_timer()
+                # ── ПЕРЕД НОВОЮ ПРАВКОЮ — ЗБЕРЕГТИ ТЕ, ЩО ВЖЕ Є ──────────
+                # Правка починається з ЧИТАННЯ файлу з диска (``open_file``).
+                # Якщо попередня зміна ще лежала в пам'яті, читання повертало
+                # старий вміст, і нова правка накладалась на нього. Тепер
+                # пам'ять і диск збігаються до початку показу.
+                self._flush_editors()
                 live = self._start_live_edit(target, content, search, replaces,
                                              whole_file)
                 self._live_edit = live
@@ -7422,6 +7453,46 @@ class BlackChpokIDE(tk.Tk):
             live.append(content, final=final)
         except Exception:  # noqa: BLE001 - показ правки не має зривати хід
             LOG.debug("Живу правку не показано", exc_info=True)
+
+    def _settle_live_edit(self) -> None:
+        """Закрити живу правку, що лишилась відкритою після ходу агента.
+
+        Її могло не закрити з трьох причин: стрім обірвався, інструмент
+        упав, користувач скасував хід. У всіх випадках у редакторі лежать
+        ДВІ версії тексту, і збереження записало б обидві у файл — звідси
+        й бралися дублі функцій у файлах проєкту.
+
+        Завершена правка сама кличе ``accept`` і ставить ``settled``, тому
+        сюди потрапляють лише «завислі» блоки — їх і відхиляємо.
+        """
+        live = getattr(self, "_live_edit", None)
+        if live is None:
+            return
+        self._live_edit = None
+        self._live_edit_path = ""
+        try:
+            if not getattr(live, "settled", False):
+                live.cancel_timer()
+        except Exception:  # noqa: BLE001 - прибирання не має зривати хід
+            LOG.debug("Живу правку не закрито", exc_info=True)
+        # Після закриття правки буфер редактора знову відповідає диску —
+        # тепер його можна зберегти.
+        self._flush_editors()
+
+    def _flush_editors(self) -> int:
+        """Негайно зберегти всі змінені вкладки (без чекання таймера).
+
+        Використовується там, де гаяти час не можна: перед стартом правки
+        агента (вона читає файл з диска) і перед закриттям вікна.
+        """
+        tabs = getattr(self, "tabs", None)
+        if tabs is None or not hasattr(tabs, "flush_modified"):
+            return 0
+        try:
+            return int(tabs.flush_modified())
+        except Exception:  # noqa: BLE001 - збереження не має зривати хід
+            LOG.debug("Не вдалось зберегти вкладки", exc_info=True)
+            return 0
 
     def _start_live_edit(self, target: Path, content: str, search: str,
                          replaces: bool, whole_file: bool = False):
@@ -7448,6 +7519,8 @@ class BlackChpokIDE(tk.Tk):
             on_done=lambda item, ok: self._live_edit_done(item, ok, target),
             on_status=lambda text: self.set_status(f"{target.name}: {text}"),
             whole_file=whole_file,
+            # Правку агента застосовуємо САМІ: жодних «Прийняти / Відхилити».
+            auto_accept=True,
         )
         if live is None:
             return None
@@ -9802,6 +9875,25 @@ class BlackChpokIDE(tk.Tk):
         if getattr(self, "_closing", False):
             return
         self._closing = True
+        # ── ПЕРЕД ВИХОДОМ — ЗБЕРЕГТИ ВСЕ ──────────────────────────────────
+        # Вимога: «всі файли мають автоматично зберігатися». Спершу
+        # зупиняємо відкладений таймер, потім закриваємо незавершену живу
+        # правку й лише тоді пишемо на диск: інакше записався б буфер із
+        # двома версіями тексту (саме звідси брались дублі блоків).
+        tabs = getattr(self, "tabs", None)
+        if tabs is not None:
+            try:
+                tabs.cancel_autosave()
+            except (AttributeError, tk.TclError):
+                pass
+        try:
+            self._settle_live_edit()
+        except Exception:  # noqa: BLE001 - вихід не має падати
+            LOG.debug("Живу правку не закрито перед виходом", exc_info=True)
+        try:
+            self._flush_editors()
+        except Exception:  # noqa: BLE001
+            LOG.debug("Вкладки не збережено перед виходом", exc_info=True)
         self._remember_layout()
         # Контекст активної розмови зберігаємо на диск: інакше після
         # перезапуску чат відкривався б із повідомленнями, але агент не

@@ -427,17 +427,34 @@ def project_context(root: Any, *, limit: int = PROJECT_CONTEXT_FILES) -> str:
             parts.append(f"Точки входу: {names}")
     except Exception:  # noqa: BLE001
         pass
-    # Список файлів — найважливіше: модель бачить реальні назви модулів.
+    service_dirs = {
+        ".venv", "venv", "node_modules", "__pycache__", ".git", ".buildtmp",
+        "userdata", "dist", "build", ".agents", ".cursor", ".github",
+        ".teststate", ".quarantine", ".mcp_rag", ".pytest_cache", ".ruff_cache",
+        "logs", "research", "assets",
+    }
+    code_suffixes = {".py", ".js", ".ts", ".jsx", ".tsx"}
+    wanted_suffixes = code_suffixes | {".html", ".css", ".md", ".json"}
     try:
-        files = sorted(
-            p.relative_to(folder).as_posix()
-            for p in folder.rglob("*")
-            if p.is_file()
-            and p.suffix in {".py", ".js", ".ts", ".html", ".css", ".md", ".json"}
-            and not any(part in {".venv", "node_modules", "__pycache__", ".git",
-                                 ".buildtmp", "userdata", "dist", "build"}
-                        for part in p.parts)
-        )[:limit]
+        found: list[tuple[int, int, str]] = []
+        for p in folder.rglob("*"):
+            try:
+                if not p.is_file():
+                    continue
+                relative = p.relative_to(folder)
+            except (OSError, ValueError):
+                continue
+            pieces = relative.parts
+            if any(piece in service_dirs for piece in pieces):
+                continue
+            suffix = p.suffix.lower()
+            if suffix not in wanted_suffixes:
+                continue
+            # Менший ключ — вищий пріоритет: спершу код, потім менша
+            # глибина (головні модулі важливіші за вкладені).
+            found.append((0 if suffix in code_suffixes else 1,
+                          len(pieces), relative.as_posix()))
+        files = [name for _kind, _depth, name in sorted(found)[:limit]]
         if files:
             parts.append("Файли проєкту: " + ", ".join(files))
     except Exception:  # noqa: BLE001

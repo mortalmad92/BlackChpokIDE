@@ -314,16 +314,17 @@ class TestStepBudget(unittest.TestCase):
         self.assertEqual(self.runner.permission_mode, permissions.WORKSPACE)
 
     def test_chat_mode_keeps_one_step(self) -> None:
-        """У «Чаті» ліміт 1 — свобода не робить із розмови агентну роботу."""
+        """Явно заданий режимом ліміт усе ще діє на бюджет."""
         self.runner.tools_enabled = False
         self.runner.max_steps_override = 1
         self.runner.set_autonomy(autonomy.EXPLORER)
         self.assertEqual(self.runner.step_budget, 1)
 
-    def test_ceiling_is_enforced(self) -> None:
+    def test_ceiling_does_not_cut_normal_limit(self) -> None:
+        """Стеля не ріже звичайний ліміт: 35 + 16 = 51, а не 300."""
         self.runner.max_steps_override = 35
         self.runner.set_autonomy(autonomy.EXPLORER)
-        self.assertEqual(self.runner.step_budget, 51)  # 35 + 16 («Дослідник»); стеля більше не ріже нормальний ліміт
+        self.assertEqual(self.runner.step_budget, 51)
 
     def test_autonomy_prompt_reaches_the_context(self) -> None:
         self.runner.set_autonomy(autonomy.EXPLORER)
@@ -532,15 +533,24 @@ class TestAgentWiresLearningAndAutonomy(unittest.TestCase):
         self.runner._learn_from_turn(ok=True)     # не має кинути
 
     def test_autonomy_survives_mode_switch(self) -> None:
+        """Свобода дій діє й після перемикання режиму.
+
+        ── ОНОВЛЕНО 21.11.2026 ───────────────────────────────────────────
+        Раніше тут перевірялось ``16`` і ``20``: базові 8 кроків плюс 8 від
+        «Автономно», а «Код» додавав свої 12. Тепер ліміту немає взагалі
+        (``max_steps = 0`` = без ліміту), тож обидва бюджети — безлімітні.
+        Перевіряємо саме те, що лишилось важливим: перемикання режиму НЕ
+        скасовує свободу дій і не повертає стелю.
+        """
         from blackchpok_ide import modes
 
-        self.runner.agent_settings.max_steps = 8
+        self.runner.agent_settings.max_steps = 0
         self.runner.set_autonomy(autonomy.AUTONOMOUS)
-        self.assertEqual(self.runner.step_budget, 16)
-        # Режим «Код» задає свій ліміт — свобода додається ПОВЕРХ нього.
+        self.assertGreater(self.runner.step_budget, 10_000)
         modes.apply(self.runner.agent_settings, self.runner, modes.CODE)
         self.runner.set_autonomy(autonomy.AUTONOMOUS)
-        self.assertEqual(self.runner.step_budget, 20)
+        self.assertGreater(self.runner.step_budget, 10_000,
+                           "режим «Код» повернув ліміт кроків")
 
 
 if __name__ == "__main__":
