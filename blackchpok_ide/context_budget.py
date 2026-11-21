@@ -40,6 +40,36 @@ LOG = logging.getLogger("blackchpok.context_budget")
 #: схеми інструментів самі займають тисячі токенів.
 MIN_USABLE_WINDOW = 2048
 
+#: Розмір, до якого варто ЗАПОВНЮВАТИ вікно (а не лише мати).
+#:
+#: Різниця принципова, і вона заміряна 21.11.2026 на RTX 3060 + 64 ГБ RAM
+#: (кеш KV у RAM, q8_0):
+#:
+#:   токенів   час першої відповіді   швидкість
+#:      2 000            3.6 с          560 т/с
+#:      8 000           12.2 с          654 т/с
+#:     16 000           23.0 с          695 т/с
+#:     32 000           68.7 с          466 т/с
+#:     64 000          229.5 с          279 т/с
+#:
+#: Тобто вікно 131 072 СПРАВДІ працює й ніколи не переповнюється — але
+#: заповнювати його повністю означало б чекати майже 4 хвилини на кожен
+#: запит. Тому:
+#:
+#: * **вікно** (скільки модель може) — уся доступна пам'ять (131k+);
+#: * **бюджет заповнення** (скільки реально тримаємо) — до 32 768.
+#:
+#: Решта не «втрачається»: вона переїжджає в довгострокову пам'ять
+#: (NEUROMESH + RAG + хроніка) і повертається пошуком. Саме це й робить
+#: роботу швидкою, не втрачаючи знань.
+WORKING_WINDOW = 32_768
+
+#: Вимкнути обмеження робочого бюджету (заповнювати все вікно).
+#:
+#: Типово ``False``: швидкість важливіша. ``True`` — для випадків, коли
+#: людина свідомо хоче «все в контексті» й готова чекати хвилини.
+WORKING_LIMIT_OFF = False
+
 #: Частка вікна під ВІДПОВІДЬ моделі. 25% — компроміс: локальні моделі
 #: люблять довгі відповіді з кодом, і замалий резерв обрізав би їх посередині.
 ANSWER_SHARE = 0.25
@@ -165,21 +195,32 @@ def plan(window: Window | int, *, system_tokens: int = 0,
     total = int(window.tokens if isinstance(window, Window) else window) or 0
     if total <= 0:
         return Budget()
-    answer = max(256, int(total * ANSWER_SHARE))
-    safety = max(128, int(total * SAFETY_SHARE))
+    # ── ВІКНО vs БЮДЖЕТ ЗАПОВНЕННЯ ────────────────────────────────────────
+    # ``total`` — скільки модель МОЖЕ тримати (до 131 072 на цій машині).
+    # ``effective`` — скільки ми реально ЗАПОВНЮЄМО. Друге менше, бо
+    # заповнений контекст різко сповільнює відповідь (заміряно: 64k токенів
+    # → 229 с на кожен запит). Решта знань живе в довгостроковій пам'яті.
+    effective = min(total, WORKING_WINDOW) if not WORKING_LIMIT_OFF else total
+    answer = max(256, int(effective * ANSWER_SHARE))
+    safety = max(128, int(effective * SAFETY_SHARE))
     system = max(0, int(system_tokens))
     tools = max(0, int(tools_tokens))
     fixed = answer + safety + system + tools
-    room = total - fixed
+    room = effective - fixed
     if room < 256:
         # Схеми й система самі з'їли вікно: це чесна діагностика, а не
         # мовчазний збій. Викликач має зменшити набір інструментів.
-        LOG.warning("Контекст переповнений службовими даними: вікно %s, "
-                    "система %s, схеми %s", total, system, tools)
-    history = max(0, min(int(total * HISTORY_SHARE), max(0, room)))
+        LOG.warning("Контекст переповнений службовими даними: вікно %s "
+                    "(робоче %s), система %s, схеми %s",
+                    total, effective, system, tools)
+    history = max(0, min(int(effective * HISTORY_SHARE), max(0, room)))
     payload = max(0, room - history)
     budget = Budget(window=total, answer=answer, history=history,
                     tools=tools, system=system, safety=safety, payload=payload)
+    if effective < total:
+        budget.notes.append(
+            f"робочий бюджет {effective} із вікна {total}: більший контекст "
+            f"сповільнює відповідь, решта знань — у пам'яті")
     if room < 256:
         budget.notes.append(
             f"службові дані ({system + tools} токенів) майже з'їли вікно "
