@@ -283,6 +283,21 @@ class Retriever:
     def _semantic(self, query: str, kinds: Sequence[str] | None,
                   candidates: dict[str, dict[str, float]],
                   memories: dict[str, Memory]) -> None:
+        """Векторний канал — ЛИШЕ у просторі поточної embedding-моделі.
+
+        ── ЧОМУ ФІЛЬТР ЗА МОДЕЛЛЮ КРИТИЧНИЙ (перевірено 21.11.2026) ───────
+        Вектори різних моделей живуть у РІЗНИХ просторах: «схожість» між
+        вектором запиту моделі B і спогадом, порахованим моделлю A, — це
+        випадкове число, а не зміст. Раніше тут перевірялась лише довжина
+        вектора, тож після перемикання локальної моделі на хмарну (або на
+        іншу локальну тієї самої розмірності) пошук підмішував сміття в
+        топ результатів — і людина бачила «пам'ять зламалась».
+
+        Тепер спогади без ``embed_model`` (старі записи) і спогади з ІНШИМ
+        підписом моделі не беруть участі в семантиці. Вони не зникають:
+        лексемний канал, граф і час їх і далі знаходять. Це навмисний
+        компроміс — краще чесний BM25, ніж випадкова схожість.
+        """
         if self.embedder is None:
             return
         try:
@@ -292,13 +307,20 @@ class Retriever:
             return
         if not query_vector:
             return
+        tag = str(getattr(self.embedder, "model_tag", "") or "")
         rows = self.store.query(
             "SELECT * FROM memories WHERE embedding != '' AND superseded_by = '' "
             "LIMIT 5000")
         scored: list[tuple[float, sqlite3.Row]] = []
         import json
 
+        skipped_other = 0
         for row in rows:
+            # Чужий простір векторів: інша модель або взагалі без підпису.
+            owner = str(row["embed_model"] or "") if "embed_model" in row.keys() else ""
+            if tag and owner != tag:
+                skipped_other += 1
+                continue
             try:
                 vector = json.loads(row["embedding"])
             except (json.JSONDecodeError, TypeError):
@@ -307,6 +329,9 @@ class Retriever:
                 continue
             dot = sum(a * b for a, b in zip(query_vector, vector))
             scored.append((dot, row))
+        if skipped_other:
+            LOG.debug("Семантика: пропущено %d спогадів іншої embedding-моделі",
+                      skipped_other)
         scored.sort(key=lambda item: item[0], reverse=True)
         for dot, row in scored[:CHANNEL_LIMIT]:
             memory = Memory.from_row(row)

@@ -22,6 +22,7 @@ from . import context_budget
 from . import context_stats
 from . import conversation
 from . import evidence as evidence_module
+from . import extensions as extensions_module
 from . import intent_engine
 from . import language
 from . import llm_client
@@ -1406,6 +1407,9 @@ class AgentRunner:
         self.planner = OfflinePlanner(self.workspace, registry)
         self.mcp_manager: Any = None
         self.skill_book: Optional[skills_module.SkillBook] = None
+        #: Саморозширення: скіли й інструменти, які агент створює сам
+        #: (див. :mod:`extensions`). Живе в робочій теці проєкту.
+        self.extensions = extensions_module.ExtensionStore(self.workspace)
         self.on_finished: Optional[Callable[[bool, str], None]] = None
         self._last_answer: str = ""
         self._error: str = ""
@@ -2766,6 +2770,15 @@ class AgentRunner:
         # Пам'ять NEUROMESH: інструменти додаються лише якщо її підключено.
         schemas.extend(self.registry_memory_schemas())
         schemas.extend(skills_module.tool_schemas())
+        # Саморозширення: агент створює власні скіли й інструменти з діалогу
+        # та з інтернету, і наступного разу користується ними сам.
+        schemas.extend(extensions_module.TOOL_SCHEMAS)
+        # Уже створені саморобні інструменти — теж повноцінні дії.
+        try:
+            schemas.extend(extensions_module.custom_tool_schemas(
+                self.workspace, limit=extensions_module.MAX_TOOLS))
+        except Exception:                            # noqa: BLE001 - не ламаємо хід
+            LOG.debug("Схеми саморобних інструментів недоступні", exc_info=True)
         if self.settings_ref is not None:
             schemas.extend(social.tool_schemas())
         manager = self.mcp_manager
@@ -3161,6 +3174,14 @@ class AgentRunner:
             if skill is None:
                 return ToolResult(False, f"Скіла «{data.get('name')}» не знайдено.")
             return ToolResult(True, f"# {skill.name}\n{skill.description}\n\n{skill.body}")
+        # ── Саморозширення: власні скіли й інструменти ─────────────────────
+        # Агент закріплює знання з діалогу та з інтернету у ВЛАСНІ файли
+        # проєкту. Наступного разу він користується ними сам — без того, щоб
+        # людина щоразу пояснювала той самий порядок дій заново.
+        if name in (extensions_module.EXTENSION_TOOLS):
+            return self._extend(name, data)
+        if name.startswith(extensions_module.CUSTOM_PREFIX):
+            return self._run_custom_tool(name, data)
         if name.startswith("router:"):
             return self._call_router_intent(name[len("router:"):], _arguments_dict(arguments))
         # ── Саморемонт: агент перевіряє Й ВИПРАВЛЯЄ себе ────────────────────

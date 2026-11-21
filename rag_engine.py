@@ -132,6 +132,22 @@ class LocalRAG:
                 )
             except sqlite3.OperationalError as exc:
                 log.warning("FTS для довгої пам'яті недоступний: %s", exc)
+
+            # ── ПІДПИС EMBEDDING-МОДЕЛІ (21.11.2026) ────────────────────────
+            # Вектори в цій таблиці рахує ЗОВНІШНІЙ endpoint (``MCP_RAG_
+            # EMBEDDINGS_URL``). Коли endpoint або модель змінюються, старі
+            # вектори лишаються в базі, і схожість із новим запитом стає
+            # випадковим числом — а «гібридний» пошук підмішує сміття в топ.
+            # Колонка з підписом дозволяє відрізняти простори й не змішувати.
+            for table in ("rag_chunks", "rag_memory"):
+                try:
+                    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                    if "embedding_model" not in columns:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''"
+                        )
+                except sqlite3.Error as exc:
+                    log.debug("Колонку embedding_model у %s не додано: %s", table, exc)
             try:
                 conn.execute(
                     "CREATE VIRTUAL TABLE IF NOT EXISTS rag_fts USING fts5(path UNINDEXED, content, tokenize='unicode61 remove_diacritics 2')"
@@ -279,6 +295,23 @@ class LocalRAG:
         self._embedding_disabled = False
         return True
 
+    def _embedding_tag(self) -> str:
+        """Підпис простору векторів: endpoint + модель.
+
+        Саме цей рядок пишеться разом із кожним вектором і саме з ним
+        порівнюється пошук. Порожній рядок означає «модель невідома»
+        (старі записи): такі вектори НЕ використовуються в семантиці, бо
+        порівнювати їх із новою моделлю означає рахувати випадкові числа.
+        """
+        url = os.environ.get("MCP_RAG_EMBEDDINGS_URL", "").strip()
+        model = os.environ.get("MCP_RAG_EMBEDDINGS_MODEL", "").strip()
+        if not url:
+            return ""
+        if not model:
+            # Endpoint без моделі: підпис лишається за адресою.
+            return url
+        return f"{model}@{url}"
+
     @staticmethod
     def _repair_text(text: str) -> str:
         """Чинить текст, який колись прочитали як cp1251 замість UTF-8."""
@@ -423,8 +456,10 @@ class LocalRAG:
                     removed += 1
                 if vector is not None:
                     conn.execute(
-                        "UPDATE rag_memory SET content=?, content_hash=?, embedding=?, created_at=? WHERE id=?",
-                        (clean, digest, json.dumps(vector), self._utc_now(), keep),
+                        "UPDATE rag_memory SET content=?, content_hash=?, embedding=?, "
+                        "embedding_model=?, created_at=? WHERE id=?",
+                        (clean, digest, json.dumps(vector), self._embedding_tag(),
+                         self._utc_now(), keep),
                     )
                 else:
                     conn.execute(
@@ -436,8 +471,12 @@ class LocalRAG:
         if owner:
             return "same", int(owner["id"]), removed
         cursor = conn.execute(
-            "INSERT INTO rag_memory(kind, content, content_hash, embedding, created_at) VALUES(?,?,?,?,?)",
-            (kind, clean, digest, json.dumps(vector) if vector is not None else None, self._utc_now()),
+            "INSERT INTO rag_memory(kind, content, content_hash, embedding, "
+            "embedding_model, created_at) VALUES(?,?,?,?,?,?)",
+            (kind, clean, digest,
+             json.dumps(vector) if vector is not None else None,
+             self._embedding_tag() if vector is not None else "",
+             self._utc_now()),
         )
         memory_id = int(cursor.lastrowid)
         self._write_memory_fts(conn, memory_id, clean)
@@ -568,8 +607,21 @@ class LocalRAG:
                 query_vectors = self._embed_batch([query]) if self._embedding_configured() else None
                 if query_vectors:
                     query_vector = query_vectors[0]
+                    tag = self._embedding_tag()
+                    # Та сама вимога, що й для фрагментів: вектори різних
+                    # моделей не порівнюються між собою.
+                    if tag:
+                        memory_rows = conn.execute(
+                            "SELECT id, embedding FROM rag_memory "
+                            "WHERE embedding IS NOT NULL AND embedding_model = ?",
+                            (tag,)).fetchall()
+                    else:
+                        memory_rows = conn.execute(
+                            "SELECT id, embedding FROM rag_memory "
+                            "WHERE embedding IS NOT NULL AND embedding_model = ''"
+                        ).fetchall()
                     scored = []
-                    for row in conn.execute("SELECT id, embedding FROM rag_memory WHERE embedding IS NOT NULL"):
+                    for row in memory_rows:
                         try:
                             score = self._cosine(query_vector, json.loads(row["embedding"]))
                         except (TypeError, ValueError, json.JSONDecodeError):
@@ -793,9 +845,20 @@ class LocalRAG:
                             # If an embedding endpoint was configured after initial indexing, refresh
                             # documents which still have chunks without vectors.
                             if self._embedding_configured():
-                                missing_vectors = conn.execute(
-                                    "SELECT COUNT(*) FROM rag_chunks WHERE path=? AND embedding IS NULL", (rel,)
-                                ).fetchone()[0]
+                                # «Немає вектора» — це і NULL, і вектор ІНШОЇ
+                                # моделі: після зміни endpoint/моделі старі
+                                # вектори треба перерахувати, інакше документ
+                                # назавжди лишиться поза семантичним пошуком.
+                                tag = self._embedding_tag()
+                                if tag:
+                                    missing_vectors = conn.execute(
+                                        "SELECT COUNT(*) FROM rag_chunks WHERE path=? "
+                                        "AND (embedding IS NULL OR embedding_model != ?)",
+                                        (rel, tag)).fetchone()[0]
+                                else:
+                                    missing_vectors = conn.execute(
+                                        "SELECT COUNT(*) FROM rag_chunks WHERE path=? "
+                                        "AND embedding IS NULL", (rel,)).fetchone()[0]
                             sample = conn.execute(
                                 "SELECT content FROM rag_chunks WHERE path=? ORDER BY chunk_index LIMIT 1", (rel,)
                             ).fetchone()
@@ -835,11 +898,14 @@ class LocalRAG:
                                     vectors[start + offset] = vector
                         conn.execute("DELETE FROM rag_fts WHERE rowid IN (SELECT id FROM rag_chunks WHERE path=?)", (rel,)) if self._fts5_available else None
                         conn.execute("DELETE FROM rag_chunks WHERE path=?", (rel,))
+                        tag = self._embedding_tag()
                         for index, (line_start, line_end, content) in enumerate(chunks):
                             vector = vectors[index]
                             cursor = conn.execute(
-                                "INSERT INTO rag_chunks(path, chunk_index, start_line, end_line, content, embedding) VALUES(?,?,?,?,?,?)",
-                                (rel, index, line_start, line_end, content, json.dumps(vector) if vector is not None else None),
+                                "INSERT INTO rag_chunks(path, chunk_index, start_line, end_line, content, embedding, embedding_model) VALUES(?,?,?,?,?,?,?)",
+                                (rel, index, line_start, line_end, content,
+                                 json.dumps(vector) if vector is not None else None,
+                                 tag if vector is not None else ""),
                             )
                             chunk_id = cursor.lastrowid
                             if self._fts5_available:
@@ -1005,7 +1071,21 @@ class LocalRAG:
                 query_vectors = self._embed_batch([query]) if self._embedding_configured() else None
                 if query_vectors:
                     query_vector = query_vectors[0]
-                    vectors = conn.execute("SELECT id, embedding FROM rag_chunks WHERE embedding IS NOT NULL").fetchall()
+                    tag = self._embedding_tag()
+                    # ЛИШЕ вектори ЦЬОГО простору: після зміни endpoint або
+                    # моделі схожість із чужою геометрією — випадкове число,
+                    # і воно підмішувало сміття в топ результатів.
+                    if tag:
+                        vectors = conn.execute(
+                            "SELECT id, embedding FROM rag_chunks "
+                            "WHERE embedding IS NOT NULL AND embedding_model = ?",
+                            (tag,),
+                        ).fetchall()
+                    else:
+                        vectors = conn.execute(
+                            "SELECT id, embedding FROM rag_chunks "
+                            "WHERE embedding IS NOT NULL AND embedding_model = ''"
+                        ).fetchall()
                     scored_vectors = []
                     for row in vectors:
                         try:

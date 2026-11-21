@@ -107,14 +107,22 @@ class _MessageCard(tk.Frame):
     Підписи ролі повернено на прохання користувача: без них у довгій
     розмові не видно, де закінчилась відповідь і почався новий запит.
 
-    Кнопки дій («копіювати», «вставити код», «повторити») НЕ додаються в
-    компонування при наведенні — вони лежать поверх картки (``place``).
-    Раніше рядок дій пакувався ``pack``-ом і зсував текст: пункти
-    «підстрибували» від найменшого руху миші.
+    Кнопки дій («копіювати», «вставити код», «повторити») стоять постійно в
+    рядку підпису праворуч — їх НЕ ховаємо й не показуємо на наведення.
+
+    ── ЧОМУ САМЕ ТАК (вимога користувача 21.11.2026) ──────────────────────
+    Раніше рядок дій лежав ПОВЕРХ картки (``place``) і з'являвся лише під
+    курсором. Через це іконки «дьоргались»: вони вискакували при найменшому
+    русі миші, а в момент появи перекривали текст відповіді. Користувач
+    просив збільшити їх і прикріпити жорстко — тому вони тепер звичайний
+    елемент рядка підпису, з власним місцем у розкладці.
     """
 
     #: Відступ під карткою (px): розділяє повідомлення, не роблячи дірок.
     GAP = 14
+
+    #: Розмір іконок дій (pt). Було 8 — на 4K-екрані цілитись мишею важко.
+    ACTION_FONT_SIZE = 12
 
     def __init__(self, master: tk.Misc, fonts: theme.Theme, role: str, *, accent: str = theme.FG_DIM,
                  bg: str = theme.BG_CARD) -> None:
@@ -140,9 +148,17 @@ class _MessageCard(tk.Frame):
         self.role_label = tk.Label(head, text=role, bg=bg, fg=accent,
                                    font=theme.font(8, "bold"))
         self.role_label.pack(side="left")
+
+        #: Рядок дій — постійна частина підпису, праворуч. Він ЗАВЖДИ на
+        #: місці: жодного ``place``/``grid_remove`` на наведення, тому
+        #: іконки не дьоргаються й не перекривають текст.
+        self.extra = tk.Frame(head, bg=bg)
+        self.extra.pack(side="right")
+        self._actions_visible = True
+
         self.time_label = tk.Label(head, text=time.strftime("%H:%M"), bg=bg,
                                    fg=theme.FG_FAINT, font=theme.font(8))
-        self.time_label.pack(side="right")
+        self.time_label.pack(side="right", padx=(0, theme.SPACE_SM))
         if not role:
             # Службові картки (журнал, diff) мають власний заголовок.
             head.pack_forget()
@@ -153,34 +169,20 @@ class _MessageCard(tk.Frame):
         self.content = tk.Frame(body, bg=bg)
         self.content.pack(fill="both", expand=True)
 
-        #: Рядок дій лежить ПОВЕРХ картки у правому верхньому куті, тому
-        #: його поява не змінює розкладку й нічого не зсуває.
-        self.extra = tk.Frame(self, bg=bg)
-        self._actions_visible = False
-        self.bind("<Enter>", lambda _e: self._show_actions(True), add="+")
-        self.bind("<Leave>", lambda _e: self._show_actions(False), add="+")
-
     def _show_actions(self, visible: bool) -> None:
-        """Показати кнопки дій поверх картки (без зсуву тексту)."""
-        if not getattr(self, "head_allowed", False):
-            return
-        if visible == self._actions_visible:
-            return
-        self._actions_visible = visible
-        try:
-            if visible:
-                self.extra.place(relx=1.0, x=-4, y=2, anchor="ne")
-                self.extra.lift()
-            else:
-                self.extra.place_forget()
-        except tk.TclError:
-            pass
+        """Сумісність: кнопки дій тепер видимі постійно.
+
+        Метод лишається, бо його кличуть старі місця й тести; ховати рядок
+        більше не треба — саме приховування й було причиною «дьоргання».
+        """
+        return
 
     def add_action(self, text: str, command: Callable[[], None], tooltip: str = "") -> tk.Label:
         label = widgets.HoverLabel(self.extra, text=text, command=command, bg=self._bg,
-                                   fg=theme.FG_FAINT, hover_fg=theme.FG,
-                                   font=theme.font(8), padx=4, pady=0)
-        label.pack(side="right")
+                                   fg=theme.FG_FAINT, hover_fg=theme.FG_BRIGHT,
+                                   font=theme.font(self.ACTION_FONT_SIZE),
+                                   padx=6, pady=2, anchor="center")
+        label.pack(side="left")
         if tooltip:
             widgets.Tip(label, tooltip)
         return label
@@ -743,10 +745,19 @@ class ChatPanel(tk.Frame):
 
         # 2b. Сам композер: одна компактна картка, без «стіни» на весь екран.
         composer = widgets.Card(self.bottom_box, bg=theme.BG_INPUT, border=theme.BORDER_SOFT)
-        composer.grid(row=4, column=0, sticky="ew", padx=theme.SPACE_SM, pady=(0, 0))
+        composer.grid(row=4, column=0, sticky="nsew", padx=theme.SPACE_SM, pady=(0, 0))
         self.composer_card = composer
         box = composer.inner
         box.columnconfigure(0, weight=1)
+        #: Поле вводу росте разом із композером.
+        #:
+        #: Раніше всі ряди картки мали ``weight=0``, поле вводу було рівно
+        #: два рядки, а вся висота, яку користувач витягнув сашем, лишалась
+        #: ПОРОЖНЬОЮ смугою під формою (вимога 21.11.2026: «внизу під цим
+        #: вікном є пустий не задіяний корисний простір»). Тепер зайвий
+        #: простір забирає саме поле вводу — тягнеш межу, і пишеш у більшому
+        #: полі, а не дивишся на пусте тло.
+        box.rowconfigure(1, weight=1)
 
         # 2b0. Дві пігулки над полем — робочий простір і режим роботи агента.
         #
@@ -792,7 +803,10 @@ class ChatPanel(tk.Frame):
             font=self.fonts.chat, padx=theme.SPACE_LG, pady=theme.SPACE_MD,
             spacing1=1, spacing3=2,
         )
-        self.input_box.grid(row=1, column=0, sticky="ew", padx=1, pady=(2, 0))
+        # ``sticky="nsew"``, а не лише ``ew``: поле вводу мусить забирати
+        # залишок висоти композера. З ``ew`` воно лишалось рівно два рядки,
+        # а вся витягнута сашем висота ставала порожньою смугою під формою.
+        self.input_box.grid(row=1, column=0, sticky="nsew", padx=1, pady=(2, 0))
         self.input_box.bind("<Return>", self._on_return)
         self.input_box.bind("<Shift-Return>", lambda _e: None)
         self.input_box.bind("<Control-Return>", lambda _e: (self._send_from_box(), "break")[1])
@@ -929,12 +943,23 @@ class ChatPanel(tk.Frame):
                            pady=(2, theme.SPACE_LG))
 
         # Композер у зовнішньому контейнері (для тестів і вбудовування).
+        #
+        # ``expand=True`` + ``pack_propagate(False)``: контейнер композера має
+        # власну висоту (її задає вертикальний саш вікна), і картка
+        # композера мусить зайняти ЇЇ ВСЮ. Раніше стояло ``expand=False``, а
+        # потім ``pack_propagate(True)`` — контейнер стискався до висоти
+        # вмісту, тож під формою лишалась мертва смуга: простір був, а поле
+        # вводу не росло (скарга користувача 21.11.2026 про пустий простір
+        # під полем вводу).
         if not self._own_composer:
-            self.bottom_box.pack(fill="x", expand=False)
+            self.bottom_box.pack(fill="both", expand=True)
             try:
-                self.bottom_box.pack_propagate(True)
+                self.bottom_box.pack_propagate(False)
             except tk.TclError:
                 pass
+
+        #: Рядок, який забирає весь залишок висоти композера.
+        self.bottom_box.rowconfigure(4, weight=1)
 
         # Показати поточний режим дозволів і модель одразу після побудови.
         self._paint_permission_label()
@@ -1121,7 +1146,37 @@ class ChatPanel(tk.Frame):
             card.text_widget = widget  # type: ignore[attr-defined]
             card.max_lines = max_lines  # type: ignore[attr-defined]
         except tk.TclError:
-            pass
+            return
+        self._bind_text_wheel(widget)
+
+    def _bind_text_wheel(self, widget: tk.Text) -> None:
+        """Колесо миші над текстом картки прокручує СТРІЧКУ, а не текст.
+
+        ── ЩО БУЛО НЕ ТАК (скарга користувача 21.11.2026) ──────────────────
+        «Коли наводжу на відповідь агента і прокручую колесом, відповідь
+        зсувається». Причина: у кожному ``tk.Text`` картки є власне
+        ``yview``, і класова прив'язка Tk ``<MouseWheel>`` крутить саме
+        його. Висота віджета підганяється під вміст, але поки вона менша за
+        текст (стрімінг, перерахунок переносу, великі відповіді), колесо
+        зсувало рядки ВСЕРЕДИНІ картки — текст «їхав» і обрізався.
+
+        Тепер ``<MouseWheel>`` на тексті картки перехоплюється й повертає
+        ``"break"``: подія не доходить до класової прив'язки ``Text``, а
+        прокручується спільна стрічка. Колесо працює однаково будь-де над
+        розмовою.
+        """
+        def _wheel(event) -> str:
+            try:
+                self.scroll._on_wheel(event)      # noqa: SLF001 - спільна логіка
+            except (tk.TclError, AttributeError):
+                return "break"
+            return "break"
+
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            try:
+                widget.bind(sequence, _wheel, add="+")
+            except tk.TclError:
+                continue
 
     def _measure_width(self, widget: tk.Text | None = None) -> int:
         """Ширина в пікселях, за якою рахувати перенос рядків.
@@ -1690,6 +1745,9 @@ class ChatPanel(tk.Frame):
         self._tool_rows.clear()
         self._pending_fits.clear()
         self._thought_clear()
+        #: Останній показаний статус — скидаємо разом із чатом, інакше
+        #: у новій розмові перший статус міг збігтись зі старим і зникнути.
+        self._last_status = ""
         for card in self._cards:
             try:
                 card.destroy()
@@ -2986,8 +3044,14 @@ class ChatPanel(tk.Frame):
             self._add_status(event.text)
             if self.on_status:
                 self.on_status(event.text)
-            # «Працює…» — короткий стан у зоні мислення над формою.
-            self._arrow_thought(event.text, show=bool(event.text))
+            # ── «ДУМКИ АГЕНТА» — ЛИШЕ ДУМКИ ────────────────────────────────
+            # Раніше сюди писались і статуси агента, і вони ж лягали рядком
+            # у журнал «Аналіз запиту». Через це той самий рядок («Інструменти
+            # цього кроку: 14 із 83…») було видно ДВІЧІ — у журналі й над
+            # формою вводу (скарга користувача 21.11.2026). Статус — це крок
+            # роботи, його місце в журналі; у зоні думок лишаються думки
+            # моделі (гілка ``reasoning`` вище).
+            pass
         elif event.kind == "llm_retry":
             # Повторна спроба запиту до моделі: окремий рядок журналу, щоб
             # людина бачила, що робота йде, а не «зависло».
@@ -3114,6 +3178,7 @@ class ChatPanel(tk.Frame):
             )
             widget.pack(fill="x")
             widget.configure(state="normal")
+            self._bind_text_wheel(widget)
             self._stream_widget = widget
             self._stream_card = card
             self._stream_renderer = markdown_view.MarkdownRenderer(
@@ -3667,6 +3732,14 @@ class ChatPanel(tk.Frame):
         «Запит до <модель>…» не показуємо: це дублює заголовок журналу,
         який і так пульсує «міркую…». Решта статусів (офлайн-режим,
         скасування) лишаються корисними.
+
+        ── ПОВТОРИ ПОСПІЛЬ ПРИБРАНО (21.11.2026) ─────────────────────────
+        Агент вибирає набір інструментів на КОЖНОМУ кроці, і кожен крок
+        повідомляв одне й те саме: «Інструменти цього кроку: 14 із 83
+        (профіль «розмова»)». У журналі це давало два однакові рядки поспіль
+        (користувач бачив «навіщо це дублювання»), а разом із копією в зоні
+        думок — ще й третій. Тепер той самий статус, що вже стоїть останнім,
+        не додається вдруге.
         """
         clean = (text or "").strip()
         if not clean:
@@ -3674,6 +3747,9 @@ class ChatPanel(tk.Frame):
         if clean.startswith("Запит до ") and clean.endswith("…"):
             self.transcript.add(f"· {clean}\n")
             return
+        if clean == getattr(self, "_last_status", ""):
+            return
+        self._last_status = clean
         log = self._work_log()
         if log is None:
             self._note(clean)

@@ -309,6 +309,13 @@ class CenteredColumn(tk.Frame):
         self.gutter = int(gutter or 0)
         self.anchor = anchor
         self.columnconfigure(0, weight=1)
+        # Рядки теж вагові: інакше ``rowspan=3`` у grid розтягує внутрішній
+        # контейнер лише на ``reqheight`` вмісту, і високий батько (композер
+        # під сашем) віддає порожнечу замість висоти. Саме через це поле
+        # вводу лишалось два рядки, а під формою висіла мертва смуга.
+        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        self.rowconfigure(2, weight=1)
         #: Внутрішній контейнер — саме в ньому живе вміст.
         self.inner = tk.Frame(self, bg=bg, bd=0, highlightthickness=0)
         self.inner.grid(row=0, column=0, rowspan=3, sticky="nsew")
@@ -394,27 +401,76 @@ class ScrollFrame(ttk.Frame):
         self._window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", self._on_inner_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
-        self.canvas.bind("<Enter>", lambda _e: self._bind_wheel(True))
-        self.canvas.bind("<Leave>", lambda _e: self._bind_wheel(False))
+        # Прив'язка до полотна — коли курсор просто над ним.
+        self.canvas.bind("<MouseWheel>", self._on_wheel, add="+")
+        self.canvas.bind("<Button-4>", self._on_wheel, add="+")
+        self.canvas.bind("<Button-5>", self._on_wheel, add="+")
+        # Підписи, картки й інші віджети всередині теж мають крутити стрічку.
+        # ``bind_all`` тут безпечний, бо обробник сам перевіряє, чи подія
+        # належить ЦЬОМУ полотну (див. :meth:`_owns`).
+        self.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        self.bind_all("<Button-4>", self._on_wheel, add="+")
+        self.bind_all("<Button-5>", self._on_wheel, add="+")
         self.hide_scrollbar_when_needed = True
         #: 0 = без обмеження; інакше максимальна ширина вмісту в пікселях.
         self.max_content_width = int(max_content_width or 0)
         #: Мінімальні поля з боків, коли вміст уже вужчий за полотно.
         self.gutter = int(gutter or 0)
 
-    def _bind_wheel(self, active: bool) -> None:
-        if active:
-            self.canvas.bind_all("<MouseWheel>", self._on_wheel)
-        else:
-            self.canvas.unbind_all("<MouseWheel>")
+    def _owns(self, widget) -> bool:
+        """Чи віджет належить цьому полотну (тоді колесо — наше)."""
+        current = widget
+        while current is not None:
+            if current is self:
+                return True
+            try:
+                current = current.master
+            except (AttributeError, tk.TclError):
+                return False
+        return False
 
-    def _on_wheel(self, event) -> None:
+    def _bind_wheel(self, active: bool) -> None:
+        """Сумісність зі старим API: прив'язка тепер стала постійною.
+
+        Раніше колесо вмикалось на ``<Enter>`` полотна й вимикалось на
+        ``<Leave>``. Через це при переході на картку всередині стрічки
+        прив'язку знімало, і наступний прокрут губився.
+        """
+        self._wheel_active = bool(active)
+
+    def _on_wheel(self, event) -> Optional[str]:
+        """Прокрутити стрічку на крок колеса.
+
+        Обробник спільний для полотна й ``bind_all``, тому спершу
+        перевіряємо, чи подія справді з цієї стрічки. ``tk.Text`` усередині
+        перехоплює колесо власною прив'язкою (він теж крутить стрічку), тож
+        подвійної прокрутки не буває.
+        """
+        if not self._owns(getattr(event, "widget", None)):
+            return None
+        step = self._wheel_step(event)
+        if not step:
+            return "break"
         try:
             if self.inner.winfo_height() <= self.canvas.winfo_height():
-                return
-            self.canvas.yview_scroll(int(-event.delta / 120) or -1, "units")
+                return "break"
+            self.canvas.yview_scroll(step, "units")
         except tk.TclError:
-            return
+            return "break"
+        return "break"
+
+    @staticmethod
+    def _wheel_step(event) -> int:
+        """Крок прокрутки з події (Windows ``delta`` / X11 ``Button-4/5``)."""
+        delta = int(getattr(event, "delta", 0) or 0)
+        if delta:
+            return -int(delta / 120) or (-1 if delta > 0 else 1)
+        number = int(getattr(event, "num", 0) or 0)
+        if number == 4:
+            return -1
+        if number == 5:
+            return 1
+        return 0
 
     def _on_inner_configure(self, _event=None) -> None:
         """Вміст змінив розмір — перерахувати область прокрутки.
