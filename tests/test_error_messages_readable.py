@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
 
@@ -79,9 +79,16 @@ class TestRealHttpErrorIsReadable(unittest.TestCase):
     """Наскрізна перевірка: справжній HTTP-сервер віддає 500."""
 
     def test_http_500_message_is_human(self) -> None:
-        server = HTTPServer(("127.0.0.1", 0), _EscapedErrorHandler)
+        # ``ThreadingHTTPServer`` + ``daemon_threads``: звичайний
+        # ``HTTPServer`` обслуговує по одному з'єднанню й лишає сокет у
+        # TIME_WAIT. У повному прогоні це давало плаваючу помилку
+        # ``ConnectionAbortedError [WinError 10053]`` приблизно у 2 випадках
+        # із 8 (заміряно повторними запусками) — тест «падав» без зміни коду.
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _EscapedErrorHandler)
+        server.daemon_threads = True
         port = server.server_address[1]
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
         try:
             client = llm_client.LLMClient(
                 base_url=f"http://127.0.0.1:{port}/v1", api_key="x", model="m")
@@ -96,6 +103,8 @@ class TestRealHttpErrorIsReadable(unittest.TestCase):
             self.assertNotIn("\\u043c", text)
         finally:
             server.shutdown()
+            server.server_close()   # звільнити порт, а не лише зупинити цикл
+            thread.join(timeout=5.0)
 
 
 if __name__ == "__main__":
