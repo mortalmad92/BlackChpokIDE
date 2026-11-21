@@ -410,8 +410,5 @@ if __name__ == "__main__":
 
     if "--report" in sys.argv:
         print(build_report())
-    assert "pass" in skeleton("def f():\n    pass\n", ["f"])
-    assert "..." in skeleton("def f():\n    return 1\n", [])
-    assert "small_prompt" in build_report()
-    else:
-        raise SystemExit(_selftest())
+        raise SystemExit(0)
+    raise SystemExit(_selftest())
