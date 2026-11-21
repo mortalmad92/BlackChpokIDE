@@ -2230,6 +2230,131 @@ class AgentRunner:
         self._thread.start()
         return True
 
+    def turn_reset(self) -> int:
+        """Режим «один запит — один контекст»: увесь хід → у пам'ять.
+
+        Вимога користувача (21.11.2026): «не обов'язково тримати все в
+        контексті постійно! Треба зробити на один запит весь контекст, потім
+        передача в довгострокову пам'ять і новий контекст і так далі».
+
+        Чим це відрізняється від :meth:`auto_free_context`. Той спрацьовує
+        лише коли історія заповнилась на 85% — тобто контекст усе одно
+        накопичується, просто повільніше. Тут вікно звільняється ПІСЛЯ
+        КОЖНОГО завершеного запиту: наступний запит починається з чистої
+        історії, а все, що було, вже лежить у довгостроковій пам'яті
+        (NEUROMESH + RAG + хроніка) і повертається пошуком.
+
+        Що лишається у вікні:
+
+        * системний промпт (він не в ``messages``, тож не чіпається);
+        * ОСТАННІЙ обмін — питання й відповідь. Без нього модель узагалі не
+          знатиме, про що йшлося, і доведеться покладатись лише на пошук.
+
+        Що НЕ робиться:
+
+        * нічого не пишеться в приватному режимі;
+        * порожній/короткий хід не чіпаємо — нема чого архівувати;
+        * якщо архів не вдався, історія ЛИШАЄТЬСЯ: краще повне вікно, ніж
+          втрачений контекст (див. ``_archive_evicted_context``).
+
+        Повертає кількість повідомлень, перенесених у пам'ять.
+        """
+        if getattr(self.state, "private", False):
+            return 0
+        messages = list(getattr(self.session, "messages", []) or ())
+        # Лишаємо останній обмін: щонайменше одну репліку користувача й одну
+        # відповідь. Решта — в пам'ять.
+        keep = self._keep_for_reset(messages)
+        to_archive = messages[:max(0, len(messages) - keep)]
+        if not to_archive:
+            return 0
+        # У пам'ять іде РІВНО те, що зникає з вікна — і лише після того, як
+        # архів справді прийняв дані. Інакше контекст губився б назавжди.
+        try:
+            self._archive_turn_context(to_archive)
+        except Exception:                            # noqa: BLE001
+            LOG.warning("Хід не перенесено в пам'ять — лишаю контекст",
+                        exc_info=True)
+            return 0
+        del self.session.messages[:len(to_archive)]
+        LOG.info("Свіжий контекст: %s повідомлень перенесено в довгострокову "
+                 "пам'ять, у вікні лишилось %s", len(to_archive),
+                 len(self.session.messages))
+        self._emit("status",
+                   f"Хід завершено: {len(to_archive)} повідомлень у "
+                   f"довгострокову пам'ять, контекст свіжий.")
+        return len(to_archive)
+
+    @staticmethod
+    def _keep_for_reset(messages: list) -> int:
+        """Скільки останніх повідомлень лишити у вікні після ходу.
+
+        Беремо останню пару «репліка користувача + відповідь». Якщо в кінці
+        висять результати інструментів (``role="tool"``), вони йдуть РАЗОМ зі
+        своїм викликом: обірваний ``tool`` без ``assistant`` ламає протокол і
+        сервер відповідає помилкою 400.
+        """
+        if not messages:
+            return 0
+        keep = 1
+        # Останній блок результатів інструментів чіпляємо до його виклику.
+        while (keep < len(messages)
+               and str(messages[-keep].get("role") or "") == "tool"):
+            keep += 1
+        # Плюс сама репліка користувача, що почала цей хід.
+        index = len(messages) - keep - 1
+        while index >= 0:
+            if str(messages[index].get("role") or "") == "user":
+                keep += 1
+                break
+            if str(messages[index].get("role") or "") == "tool":
+                keep += 1
+                index -= 1
+                continue
+            keep += 1
+            break
+        return min(keep, len(messages))
+
+    def _archive_turn_context(self, messages: list) -> None:
+        """Перенести ЗАВЕРШЕНИЙ хід: хроніка + пам'ять + RAG.
+
+        Відмінність від :meth:`_archive_evicted_context` — компактність.
+        Той робить «зліпок» вікна з першими рядками результатів інструментів
+        (доречно, коли історія переповнилась). Тут перенесення йде ПІСЛЯ
+        КОЖНОГО запиту, тому сирі дампи писали б шум: за 50 ходів — 50
+        записів дампів, і пошук почав би знаходити сміття.
+
+        Хроніка й RAG отримують ті самі дані, що й раніше: вони вміють
+        зберігати довгий текст, і саме звідти його дістають ``memory_search``
+        та ``rag_search``.
+        """
+        if getattr(self.state, "private", False):
+            return
+        goal = str(getattr(self.state, "goal", "") or "")
+        # 1. Хроніка — зв'язний слід розмови (він іде в КОЖЕН промпт).
+        digest = getattr(self, "digest", None)
+        if digest is not None and getattr(self.agent_settings, "long_chat", True):
+            try:
+                digest.absorb(messages)
+            except Exception:                        # noqa: BLE001
+                LOG.debug("Хроніку не оновлено", exc_info=True)
+        # 2. Пам'ять: компактний запис ходу, а не дамп.
+        bridge = getattr(self, "memory_bridge", None)
+        archive_turn = getattr(bridge, "archive_turn", None)
+        if callable(archive_turn):
+            try:
+                archive_turn(messages, task=goal)
+            except Exception:                        # noqa: BLE001
+                LOG.debug("Хід не записано в пам'ять", exc_info=True)
+        elif bridge is not None and hasattr(bridge, "archive_messages"):
+            # Старіший міст без ``archive_turn`` — не вважаємо це збоєм.
+            try:
+                bridge.archive_messages(messages, task=goal)
+            except Exception:                        # noqa: BLE001
+                LOG.debug("Архів контексту не записано", exc_info=True)
+        # 3. RAG: ширший текст із індексом.
+        self._archive_to_rag(messages, task=goal)
+
     def _archive_evicted_context(self, messages: list) -> None:
         """Витіснений блок історії: у хроніку, NEUROMESH і RAG.
 
@@ -4415,6 +4540,13 @@ class AgentRunner:
             # Стоїть ПЕРЕД ``done``: якщо агент щось вивчив, людина має
             # побачити це одразу, а не шукати в панелі пам'яті.
             self._learn_from_turn(ok=ok and not self._error)
+            # ── СВІЖИЙ КОНТЕКСТ ПІСЛЯ ХОДУ ────────────────────────────────
+            # Вимога користувача: «не обов'язково тримати все в контексті
+            # постійно — на один запит весь контекст, потім у довгострокову
+            # пам'ять і новий контекст». Стоїть ПІСЛЯ ``_learn_from_turn``:
+            # уроки робляться з фактів ходу, і вони мають бути записані до
+            # того, як історія зникне з вікна.
+            self._reset_context_after_turn()
             # ── «Оновити файли на GitHub?» — ЛИШЕ після успішної роботи ────
             # Питаємо тут, у ``finally``: до цього моменту вже відомо, чи
             # робота справді відбулась, і чи є що відправляти. Питання перед
@@ -4430,6 +4562,25 @@ class AgentRunner:
                                      self._last_answer or self._error)
                 except Exception:  # noqa: BLE001
                     LOG.debug("on_finished впав", exc_info=True)
+
+    def _reset_context_after_turn(self) -> int:
+        """Перенести хід у пам'ять і лишити свіже вікно (якщо ввімкнено).
+
+        Налаштування ``agent.fresh_context`` — типово УВІМКНЕНО (вимога
+        21.11.2026). Вимкнене — працює старий механізм: контекст
+        накопичується й звільняється лише при 85% заповнення.
+
+        Помилка тут не має зривати хід: відповідь користувачу вже віддана,
+        а втрата архіву означала б втрату контексту — тому
+        ``turn_reset`` лишає історію на місці, якщо архів не вдався.
+        """
+        if not getattr(self.agent_settings, "fresh_context", True):
+            return 0
+        try:
+            return self.turn_reset()
+        except Exception:                            # noqa: BLE001
+            LOG.debug("Свіжий контекст не застосовано", exc_info=True)
+            return 0
 
     def _answers_git_offer(self, text: str) -> bool:
         """Чи це ствердна відповідь на питання «оновити файли на GitHub?».

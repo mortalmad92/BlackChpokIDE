@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 __all__ = [
+    "ARCHIVE_PREFIX",
     "MemoryBridge",
     "MemorySnapshot",
     "describe_snapshot",
@@ -42,6 +43,30 @@ __all__ = [
 ]
 
 LOG = logging.getLogger("blackchpok.memory_bridge")
+
+#: Початок запису «історія розмови» (а не «знання про проєкт»).
+#:
+#: Такі записи повертаються ПОШУКОМ («що ми вирішили тоді?»), але не йдуть
+#: у промпт кожного запиту: інакше вони витісняли б правила й факти. Той
+#: самий префікс перевіряє ``pcmm.service.ARCHIVE_PREFIX``.
+ARCHIVE_PREFIX = "Вивільнено з контексту"
+
+
+def _first_sentences(text: str, limit: int) -> str:
+    """Стиснути текст до перших речень у межах ``limit`` символів.
+
+    Навіщо не простий зріз: обірване посеред слова речення модель читає як
+    зламаний текст. Ріжемо на межі речення, якщо вона є.
+    """
+    body = " ".join(str(text or "").split())
+    if len(body) <= limit:
+        return body
+    cut = body[:limit]
+    for separator in (". ", "! ", "? ", "; "):
+        position = cut.rfind(separator)
+        if position > limit // 2:
+            return cut[:position + 1].strip()
+    return cut.rstrip(" .,;—-") + "…"
 
 #: Скільки спогадів максимум підкладаємо в промпт (для МАЛОГО вікна).
 #:
@@ -371,6 +396,21 @@ class MemoryBridge:
         У вікні лишається кінець розмови. Сюди йде короткий зміст того,
         що вже не вміщається: репліки людини й агента та перший рядок
         результату інструмента. Сирий дамп файлу в пам'ять не кладемо.
+
+        ── ЧОМУ ЦЕ «ІСТОРІЯ», А НЕ «ЗНАННЯ» ──────────────────────────────
+        Запис має тип ``task`` і починається з :data:`ARCHIVE_PREFIX`. Це
+        навмисно: такий текст повертається пошуком («що ми вирішили тоді?»),
+        але НЕ підкладається в промпт кожного запиту — інакше він витісняв
+        би правила й факти (див. ``pcmm.service.PROMPT_KINDS``).
+
+        ── ПЕРЕНЕСЕННЯ КОЖНОГО ХОДУ (21.11.2026) ──────────────────────────
+        Коли працює режим «свіжий контекст», ця функція викликається після
+        КОЖНОГО запиту. Тоді писати повний дамп щоразу — марнотратство й
+        шум. Тому тут є два рівні:
+
+        * **бесіда** — репліки людини й агента (коротко, без дампів файлів);
+        * **результати інструментів** — лише перший рядок кожного, і лише
+          якщо він справді щось каже (а не «0 байт»).
         """
         lines: list[str] = []
         for message in messages or ():
@@ -379,7 +419,7 @@ class MemoryBridge:
             role = str(message.get("role") or "")
             body = " ".join(str(message.get("content") or "").split())
             if role == "tool":
-                if not body:
+                if not body or len(body) < 12:
                     continue
                 name = str(message.get("name") or "tool")
                 lines.append(f"{name}: {body[:180]}")
@@ -389,12 +429,62 @@ class MemoryBridge:
             lines.append(f"{role}: {body[:360]}")
         if not lines:
             return False
-        text = "Вивільнено з контексту. " + " | ".join(lines)
+        text = ARCHIVE_PREFIX + ". " + " | ".join(lines)
         if len(text) > 900:
             text = text[:899] + "…"
         return self.remember_fact(
             text, kind="task", source="контекст: вивільнено з вікна",
             task=task, confidence=0.45)
+
+    def archive_turn(self, messages: Sequence[Mapping[str, Any]], *,
+                     task: str = "") -> bool:
+        """Перенести ЗАВЕРШЕНИЙ хід у пам'ять — компактно й без сміття.
+
+        Відмінність від :meth:`archive_messages`. Той робить «зліпок» вікна
+        (для випадку, коли історія переповнилась). Тут — один завершений
+        хід: питання людини, підсумок агента й назви інструментів.
+
+        Навіщо окремо. У режимі «свіжий контекст» перенесення йде після
+        КОЖНОГО запиту, тому в пам'ять не можна писати сирі результати
+        інструментів: за 50 ходів це 50 записів по 900 символів дампів, і
+        пошук починає знаходити сміття. Тут лишається лише те, за чим
+        справді можна згадати хід.
+        """
+        parts: list[str] = []
+        tools: list[str] = []
+        for message in messages or ():
+            if not isinstance(message, Mapping):
+                continue
+            role = str(message.get("role") or "")
+            body = " ".join(str(message.get("content") or "").split())
+            if role == "user" and body:
+                parts.append(f"запит: {body[:300]}")
+            elif role == "assistant":
+                # Порожній ``assistant`` без тексту — це обгортка виклику.
+                if body:
+                    parts.append(f"результат: {_first_sentences(body, 400)}")
+                for call in (message.get("tool_calls") or []):
+                    if not isinstance(call, Mapping):
+                        continue
+                    name = str((call.get("function") or {}).get("name") or "")
+                    if name and name not in tools:
+                        tools.append(name)
+        if not parts:
+            return False
+        if tools:
+            parts.append("інструменти: " + ", ".join(tools[:12]))
+        text = "Хід розмови. " + " | ".join(parts)
+        if len(text) > 700:
+            text = text[:699] + "…"
+        saved = self.remember_fact(
+            text, kind="task", source="контекст: хід завершено",
+            task=task, confidence=0.5)
+        # Історія задач: щоб ``memory_task_history`` бачив, що було зроблено.
+        if saved:
+            self.record_turn(task=task or parts[0][:120],
+                             action=_first_sentences(parts[-1], 200),
+                             status="ok", tools=tools[:8])
+        return saved
 
     def record_turn(self, *, task: str, action: str, status: str = "ok",
                     detail: str = "", files: Sequence[str] = (),
