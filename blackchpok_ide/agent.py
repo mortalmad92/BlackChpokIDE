@@ -4487,6 +4487,12 @@ class AgentRunner:
                 f"Збій інструмента: {problem}",
                 kind="error", source="агент: результат інструмента",
                 files=changed, task=task)
+        # ── ЗНАННЯ З ІНТЕРНЕТУ → ДОВГОСТРОКОВА ПАМ'ЯТЬ ────────────────────
+        # Залізне правило: усе, що агент дізнався з мережі, лягає в пам'ять
+        # проєкту. Пам'ять СПІЛЬНА для всіх чатів, тож знання, отримане в
+        # одному чаті, підкладається в контекст іншого — і локальна модель
+        # не шукає те саме вдруге.
+        self._learn_from_web(observations)
         # Історія задач: потрібна інструменту ``memory_task_history``.
         bridge.record_turn(
             task=task or "поточне завдання",
@@ -4494,6 +4500,71 @@ class AgentRunner:
             status="ok" if ok else "error",
             files=changed,
             tools=[item.name for item in observations if item.name])
+
+    def _learn_from_web(self, observations: list[Any]) -> None:
+        """Зберегти знання з результатів ``search_web``/``fetch_url``.
+
+        Чому окремим кроком. Раніше результати інтернету жили лише в історії
+        одного ходу: наступна розмова починалась з нуля й шукала те саме
+        знову. Тепер кожен змістовний результат стає фактами в NEUROMESH із
+        посиланням на джерело (``provenance="web:<url>"``).
+
+        Що НЕ зберігаємо: помилки, порожні результати, приватний режим і
+        сирий шум сторінки (див. ``web_learning.extract``).
+        """
+        bridge = self.memory_bridge
+        if not getattr(self.agent_settings, "memory_participates", True):
+            return
+        if bridge is None or not bridge.ready() or self.state.private:
+            return
+        service = getattr(bridge, "service", None)
+        if service is None:
+            return
+        query = ""
+        for message in reversed(self.session.messages):
+            if str(message.get("role") or "") == "user":
+                content = message.get("content")
+                query = content if isinstance(content, str) else str(content or "")
+                break
+        saved = 0
+        for item in observations:
+            if not item.ok or item.duplicate:
+                continue
+            if item.name not in web_learning.WEB_TOOLS:
+                continue
+            body = str(item.output or "")
+            if not web_learning.looks_like_web_result(body):
+                continue
+            facts = web_learning.extract(body, query=query[:160])
+            if not facts:
+                continue
+            saved += web_learning.remember(service, facts)
+        if saved:
+            self._emit("status",
+                       f"Знання з інтернету записано в пам'ять: {saved}.")
+
+    def _web_rule_hint(self, text: str) -> None:
+        """Вимога піти в інтернет, коли питання про свіжі дані.
+
+        Залізне правило (вимога користувача): про ціну, курс, погоду, новини
+        чи версію агент не має відповідати з пам'яті моделі — тільки з
+        мережі. Тут ми лише КАЖЕМО про це моделі до дії; саму відповідь вона
+        будує далі своїми інструментами.
+        """
+        if not getattr(self.agent_settings, "memory_participates", True):
+            return
+        if not self.tools_enabled or self.state.private:
+            return
+        used = [str(getattr(item, "name", "") or "")
+                for item in (self._observations or [])]
+        memory_gave = bool(getattr(self, "_memory_snapshot", None) is not None
+                           and not self._memory_snapshot.empty)
+        if not web_learning.needs_web(text, used=used, memory_gave=memory_gave):
+            return
+        self._pending_hint = list(getattr(self, "_pending_hint", []) or [])
+        self._pending_hint.append(web_learning.format_for_prompt(text))
+        self._emit("status",
+                   "Питання про свіжі дані — спершу шукаю в інтернеті.")
 
     def _record_trace(self, *, ok: bool) -> None:
         """Зберегти хід для вимірювання якості (якщо сховище підключене).
