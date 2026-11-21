@@ -376,7 +376,6 @@ class Retriever:
         decay = math.exp(-age_days / TIME_HALF_LIFE_DAYS)
         recency = memory.accessed_at / now if memory.accessed_at and now else 0.0
         return max(0.0, min(1.0, 0.7 * decay + 0.3 * recency))
-
     @staticmethod
     def _explain(hit: Hit, policy: SearchPolicy) -> str:
         """Пояснити, чому спогад потрапив у контекст."""

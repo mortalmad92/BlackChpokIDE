@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from .budget import BudgetGovernor, BudgetReport, ContextPiece
+from .budget import (ERROR_FRESH_DAYS, BudgetGovernor, BudgetReport,
+                     ContextPiece)
 from .models import KINDS, Memory, make_summary
 from .repository import MemoryRepository
 from .retrieval import ContextPredictor, Hit, Prediction, Retriever, choose_policy
@@ -32,6 +33,32 @@ LOG = logging.getLogger("blackchpok.pcmm.service")
 STARTUP_RECENT = 5
 #: Частка вікна, яку дозволяємо віддати пам'яті (решта — завдання й історія).
 MEMORY_WINDOW_SHARE = 0.38
+
+#: Типи спогадів, які мають сенс у ПРОМПТІ (перед дією агента).
+#:
+#: Навіщо окремий список. У пам'яті лежить і ЗНАННЯ (факти, правила, уроки), і
+#: ЖУРНАЛ АКТИВНОСТІ (``task`` — «Вивільнено з контексту. read_file: # файл…»,
+#: ``change`` — «Зроблено: …», ``tool`` — результат інструмента). Журнал
+#: потрібен для історії задач, але в промпті він ШКОДИТЬ: заміряно на живій
+#: базі (822 спогади, з них 631 ``task``) — на запит «як запускати тести»
+#: перші чотири результати були дампами файлів, а справжнє правило проєкту
+#: стояло п'ятим. Модель отримувала сміття замість інструкції.
+#:
+#: Тому в промпт ідуть лише типи, які відповідають на питання «що я маю
+#: знати?», а не «що я робив?». Історія доступна окремо —
+#: ``memory_task_history``.
+PROMPT_KINDS: tuple[str, ...] = (
+    "constraint", "lesson", "fix", "decision", "fact", "preference",
+    "dependency", "error",
+)
+
+#: Префікс архівного дампу («Вивільнено з контексту. read_file: …»).
+#:
+#: Такі записи створює :meth:`memory_bridge.MemoryBridge.archive_messages`,
+#: коли історія виходить із вікна. Вони мають тип ``task`` і саме тому не
+#: потрапляють у промпт за типом — але перевірка за змістом лишається як
+#: другий замок: старі записи могли отримати інший тип.
+ARCHIVE_PREFIX = "Вивільнено з контексту"
 
 
 @dataclass
@@ -57,6 +84,44 @@ class ContextBundle:
             "tokens_saved": self.tokens_saved,
             "note": self.note,
         }
+
+
+def _is_archive_dump(memory: Any) -> bool:
+    """Чи це архівний дамп розмови, а не знання про проєкт.
+
+    Такі записи створює ``memory_bridge.archive_messages``, коли історія
+    виходить із вікна моделі. Вони потрібні для пошуку «що ми вирішили
+    тоді», але в ПРОМПТІ вони шкідливі: заміряно на живій базі — перші
+    місця в контексті займали саме вони, а справжні правила стояли нижче.
+    """
+    body = str(getattr(memory, "content", "") or "")
+    return body.startswith(ARCHIVE_PREFIX)
+
+
+#: Скільки спогадів типу ``error`` максимум у промпті за один хід.
+#:
+#: Навіщо обмеження. Помилки збігаються за словами з будь-яким запитом
+#: («Файл не знайдено: …social.py» — на «як запускати тести»), бо містять
+#: назви файлів і команд. Заміряно на живій базі (75 таких записів): вони
+#: займали 4 місця з 6, витісняючи правила й уроки. Один свіжий збій —
+#: корисне попередження; чотири — це шум.
+MAX_ERROR_PIECES = 1
+
+
+def _is_stale_error(memory: Any, *, now: float | None = None) -> bool:
+    """Чи це ДАВНЯ помилка, яка вже не допомагає, а лише займає місце.
+
+    Свіжі збої корисні: вони попереджають про граблі. Старі — це історія:
+    заміряно на живій базі, що давні записи «Файл не знайдено» витісняли з
+    промпту справжнє правило проєкту, бо збігалися за словами запиту.
+    """
+    if str(getattr(memory, "kind", "") or "") != "error":
+        return False
+    created = float(getattr(memory, "created_at", 0) or 0)
+    if created <= 0:
+        return False
+    current = float(now if now is not None else time.time())
+    return (current - created) / 86400.0 > ERROR_FRESH_DAYS
 
 
 class Neuromesh:
@@ -262,11 +327,21 @@ class Neuromesh:
                         files: Sequence[str] = (),
                         kinds: Sequence[str] | None = None,
                         max_share: float = MEMORY_WINDOW_SHARE) -> ContextBundle:
-        """Зібрати контекст зі спогадів під бюджет вікна моделі."""
+        """Зібрати контекст зі спогадів під бюджет вікна моделі.
+
+        ``kinds`` типово — :data:`PROMPT_KINDS`, тобто ЗНАННЯ без журналу
+        активності. Раніше типи не фільтрувались, і в промпт потрапляли
+        архівні дампи («Вивільнено з контексту. read_file: …»), витісняючи
+        правила й уроки. Передай ``kinds=()``, щоб узяти все (для огляду
+        пам'яті в панелі).
+        """
         governor = self.governor()
         policy = choose_policy(query, vectors_ready=self.retriever.vectors_ready)
-        hits = self.retriever.search(query, limit=24, kinds=kinds, task=task,
-                                     files=files, policy=policy)
+        # ``None`` — типове значення «лише знання»; ``()`` — «усе».
+        effective_kinds: Sequence[str] | None = (
+            PROMPT_KINDS if kinds is None else (list(kinds) or None))
+        hits = self.retriever.search(query, limit=24, kinds=effective_kinds,
+                                     task=task, files=files, policy=policy)
         prediction = self.predictor.predict(current_files=files, task=task,
                                            query=query, limit=6)
         known = {hit.memory.id for hit in hits}
@@ -280,11 +355,37 @@ class Neuromesh:
             pieces.append(BudgetGovernor.memory_piece(
                 memory, score=max(0.5, memory.confidence),
                 reason="обов'язкове обмеження проєкту"))
+        # ── Спільний відсів для ОБОХ каналів ───────────────────────────────
+        # Раніше перевірки стояли двома окремими копіями (пошук і прогноз), і
+        # лічильник помилок діяв лише в одній — тому чотири збої однаково
+        # потрапляли в промпт через прогноз. Тепер правило одне: передаємо
+        # його обом каналам через цей замикач.
+        state = {"errors": 0}
+
+        def accept(memory: Any) -> bool:
+            if _is_archive_dump(memory):
+                # Архівний дамп («Вивільнено з контексту. read_file: …») — це
+                # слід розмови, а не знання. У промпті він витісняє правила
+                # й уроки, тому в контекст не йде взагалі.
+                return False
+            if _is_stale_error(memory):
+                # Давня помилка — історія, а не знання (див. ERROR_FRESH_DAYS).
+                return False
+            if str(getattr(memory, "kind", "") or "") == "error":
+                # Помилки корисні, але вони збігаються з будь-яким запитом,
+                # де згадано файл чи команду (див. MAX_ERROR_PIECES).
+                if state["errors"] >= MAX_ERROR_PIECES:
+                    return False
+                state["errors"] += 1
+            return True
+
         for hit in hits:
+            if not accept(hit.memory):
+                continue
             pieces.append(BudgetGovernor.memory_piece(
                 hit.memory, score=hit.score, reason=hit.explanation))
         for hit in prediction.memories:
-            if hit.memory.id in known:
+            if hit.memory.id in known or not accept(hit.memory):
                 continue
             pieces.append(BudgetGovernor.memory_piece(
                 hit.memory, score=hit.score * 0.8, reason=hit.explanation))
