@@ -44,6 +44,7 @@ from . import tool_router
 from . import tool_specs
 from . import trace_store
 from . import autonomy
+from . import web_learning
 from .agent_tools import TOOL_SCHEMAS, ToolRegistry, ToolResult
 from .config import (
     DEFAULT_SYSTEM_PROMPT,
@@ -137,11 +138,22 @@ LARGE_WINDOW_TOKENS = 100_000
 #: Найменше вікно, у якому показуємо ПОВНИЙ набір схем інструментів.
 #:
 #: Вимога користувача (21.11.2026): «ніяких режимів лінивий, тільки повний
-#: режим». Повний набір (87 схем) — це ~12 тисяч токенів, тож у вікно 8k він
-#: фізично не влазить і запит обривається помилкою контексту. Межа стоїть
-#: там, де повний набір справді вміщається разом із системою, історією та
-#: відповіддю. Нижче — звуження як запобіжник, а не як «економія».
+#: режим». Повний набір важить тисячі токенів, тож у вікно 8k він фізично не
+#: влазить і запит обривається помилкою контексту. Межа стоїть там, де повний
+#: набір справді вміщається разом із системою, історією та відповіддю.
+#: Нижче — звуження як запобіжник, а не як «економія».
 FULL_SET_MIN_WINDOW = 16_384
+
+#: Частка вікна, яка МУСИТЬ лишитись на саму розмову (історію).
+#:
+#: Заміряно на живому прогоні 21.11.2026: коли інструментів стало 91, схеми
+#: зайняли 11 520 токенів, і бюджет історії став НУЛЕМ («система 8 939,
+#: схеми 4 252, історія 0»). Модель не бачила, що вже зроблено, і хід ставав
+#: марним — користувач бачив, що відповіді перестали надходити.
+#:
+#: Третина — не «магічна частка»: вона лишає місце на кілька повідомлень і
+#: результати інструментів, не віддаючи весь контекст описам інструментів.
+HISTORY_FLOOR_SHARE = 0.34
 
 #: Скільки разів повторювати порожню відповідь у звичайній розмові.
 #:
@@ -171,6 +183,9 @@ SCHEMA_PRIORITY: tuple[str, ...] = (
     # 3. Інтернет: свіжі дані й документація. Високо, бо без нього модель
     #    вигадує ціни, курси й версії замість того, щоб дізнатись.
     "search_web", "fetch_url", "web_api", "internet_status",
+    # 3a. Безкоштовні вебчати як «друга думка». Стоїть поруч із мережею:
+    #     коли власних знань бракує, модель має побачити цей шлях одразу.
+    "ask_free_ai",
     # 4. Перевірка й орієнтація в проєкті.
     "python_check", "find_files", "project_tree", "git_status", "git_diff",
     # 4a. Скіли: короткі інструкції, як робити типові речі в ЦЬОМУ проєкті.
@@ -2678,10 +2693,11 @@ class AgentRunner:
             budget_tokens=self._schema_budget(),
             token_counter=AgentSession._tokens_in,
             specs=self._specs or None,
-            # Повний режим: лінивість вимикаємо, поки набір фізично вміщається
-            # у вікно моделі. Вузьке вікно (8k і менше) лишає запобіжник —
-            # інакше запит обривається помилкою контексту замість роботи.
-            force_full=full_tools and self._full_set_fits(),
+            # Повний режим: лінивість вимикаємо, поки набір РАЗОМ із
+            # системою й відповіддю лишає місце на історію. Перевірка бере
+            # реальні схеми: з 91 інструментом вони важать 11 520 токенів, і
+            # «вікно 16k» саме по собі нічого не гарантує.
+            force_full=full_tools and self._full_set_fits(available),
         )
         self._schemas_lazy = bool(lazy)
         if lazy:
@@ -2694,7 +2710,12 @@ class AgentRunner:
         #
         # У ПОВНОМУ режимі це єдине місце, де набір ще може скоротитись, і
         # скорочується він ЛИШЕ під реальний розмір вікна — не за наміром.
-        schemas = self._fit_schemas(available, full=bool(full_tools))
+        #
+        # ``_full_set_fits()`` обов'язковий: у вікні 2048 «повний» бюджет у
+        # 50% вікна більший за сам запит, і схеми не вміщались у контекст
+        # (перевірено ``test_v2_audit``: 2231 токен при вікні 2048).
+        schemas = self._fit_schemas(
+            available, full=bool(full_tools) and self._full_set_fits(available))
         # Кеш для оцінки токенів: схеми займають помітну частину вікна,
         # і бюджет історії має це враховувати.
         self._schemas_cache = schemas
@@ -2796,36 +2817,97 @@ class AgentRunner:
                        f"{len(available)} ({selection.reason})")
         return narrowed
 
-    def _schema_budget(self) -> int:
+    def _schema_budget(self, *, full: bool = False) -> int:
+        """Скільки токенів можна віддати схемам інструментів.
+
+        ЄДИНА міра для всього: і ``_fit_schemas``, і ``_full_set_fits``
+        рахують від одного числа. Раніше це були дві різні формули (25% вікна
+        проти «room мінус частка історії»), і вони давали різні відповіді:
+        перевірка «повний набір не влазить» спрацьовувала, а обрізання
+        вважало, що влазить. Наслідок — непередбачуваний набір схем.
+
+        ``full=True`` — скільки лишається схемАМ, якщо на розмову відкласти
+        :data:`HISTORY_FLOOR_SHARE` вікна. Це і є межа «повного набору».
+        """
         limit = int(getattr(self.session, "context_limit", 0) or 0)
         if limit <= 0:
             return 0
         budget_model = getattr(self, "_context_budget", None)
-        if budget_model is not None and budget_model.window:
-            ceiling = max(512, int(budget_model.window * 0.25))
-            return min(ceiling, max(512, budget_model.window
-                                    - budget_model.answer
-                                    - budget_model.safety
-                                    - budget_model.system))
-        return max(512, int(limit * 0.25))
+        if budget_model is None or not budget_model.window:
+            return max(512, int(limit * (0.5 if full else 0.25)))
+        # Скільки лишається після системи, відповіді й запасу.
+        room = (budget_model.window - budget_model.answer
+                - budget_model.safety - budget_model.system)
+        if full:
+            # Мінус частка, відкладена на саму розмову.
+            return max(0, room - self._history_floor())
+        ceiling = max(512, int(budget_model.window * 0.25))
+        return min(ceiling, max(512, room))
 
-    def _full_set_fits(self) -> bool:
+    def _full_set_fits(self, schemas: list[dict[str, Any]] | None = None) -> bool:
         """Чи вміщається ПОВНИЙ набір схем у вікно моделі.
 
         Навіщо окремо від ``update``. ``tool_lazy`` порівнює розмір із
-        бюджетом схем — а бюджет — це 25% вікна. Для повного режиму цього
+        бюджетом схем — а бюджет — це частка вікна. Для повного режиму цього
         замало: питання не «скільки відведено під схеми», а «чи влізе
         взагалі разом із системою, історією й відповіддю».
 
-        Вузьке вікно (8k і менше) лишає запобіжник увімкненим: краще
-        показати ядро, ніж обірвати запит помилкою контексту.
+        ── ЧОМУ ЛИШЕ РОЗМІР ВІКНА БУЛО ПОМИЛКОЮ (заміряно 21.11.2026) ────
+        Раніше тут стояло лише ``limit >= FULL_SET_MIN_WINDOW``. Коли
+        інструментів стало 91 (MCP + пам'ять + скіли + саморобні), схеми
+        почали важити 11 520 токенів — а вікно 16 384 усе ще проходило
+        перевірку. Наслідок у лозі: «система 8 939, схеми 4 252, історія 0»
+        — тобто обрізалось до 17 схем із 91 випадково, і модель отримувала
+        нуль історії. Користувач бачив, що «відповіді перестали надходити».
+
+        Тепер перевірка реальна: чи вміщається набір РАЗОМ із системою,
+        відповіддю й запасом. Якщо ні — вмикається звуження (ядро + контроль
+        реєстру), і на історію лишається місце.
         """
         limit = int(getattr(self.session, "context_limit", 0) or 0)
         if limit <= 0:
             # Вікно невідоме — обережно вважаємо, що повний набір уміщається:
             # більшість моделей, з якими працює проєкт, мають ≥16k.
             return True
-        return limit >= FULL_SET_MIN_WINDOW
+        if limit < FULL_SET_MIN_WINDOW:
+            return False
+        if not schemas:
+            return True
+        # ── Міряємо НАЙДЕШЕВШИЙ варіант, а не сирий ────────────────────────
+        # ``_fit_schemas`` уміє стискати описи (9302 → 7058 токенів), і в
+        # повному режимі воно робить це ПЕРШ ніж різати. Тому питання не
+        # «чи влізе сирий набір», а «чи влізе стиснутий»: саме його модель і
+        # побачить. Раніше тут мірявся сирий набір, перевірка казала «не
+        # влазить», вмикався лінивий реєстр — і модель отримувала 17 схем
+        # замість 64, хоч стиснуті всі 64 уміщались.
+        allowed = self._schema_budget(full=True)
+        if allowed <= 0:
+            return False
+        cheapest = tool_lazy.compact_schemas(
+            schemas, description_limit=tool_lazy.COMPACT_DESCRIPTION_TIGHT,
+            param_limit=tool_lazy.COMPACT_PARAM_TIGHT)
+        return self._schemas_cost(cheapest) <= allowed
+
+    def _history_floor(self) -> int:
+        """Скільки токенів МИСИТЬ лишитись на саму розмову.
+
+        Не «частка вікна навмання»: беремо менше з двох — частки вікна й
+        того, що реально лишається після системи, відповіді та запасу.
+        Інакше при великому промпті «захист історії» сам стає причиною, чому
+        схемАМ не лишається нічого, і набір ріжеться до ядра.
+        """
+        limit = int(getattr(self.session, "context_limit", 0) or 0)
+        if limit <= 0:
+            return 0
+        budget_model = getattr(self, "_context_budget", None)
+        if budget_model is None or not budget_model.window:
+            return max(1024, int(limit * HISTORY_FLOOR_SHARE))
+        room = (budget_model.window - budget_model.answer
+                - budget_model.safety - budget_model.system)
+        share = max(1024, int(budget_model.window * HISTORY_FLOOR_SHARE))
+        # Не більше половини того, що лишилось: інакше історія з'їдає місце,
+        # призначене інструментам, і модель втрачає можливості.
+        return max(0, min(share, int(room * 0.5)))
 
     def _refresh_lazy_specs(self) -> None:
         """Додати специфікації інструментів керування реєстром.
@@ -3087,8 +3169,20 @@ class AgentRunner:
         токенів, разом ~2100, плюс система ~3000 — і на розмову майже нічого
         не лишається. Тому кількість прив'язана до вікна; решта доступна
         через ``find_tools``/``load_tools``, тож нічого не втрачається.
+
+        ПОВНИЙ РЕЖИМ (вимога 21.11.2026) піднімає стелю до кількості
+        реально наявних інструментів: саме поріг 48 мовчки перемикав
+        систему на «лінивий» реєстр навіть тоді, коли бюджет схем дозволяв
+        усе. Рішення про те, скільки влазить, ухвалює вже ``_fit_schemas``
+        за РЕАЛЬНИМИ токенами — воно й обрізає зайве.
         """
         limit = int(getattr(self.session, "context_limit", 0) or 0)
+        settings = getattr(self, "agent_settings", None)
+        full = bool(getattr(settings, "full_tools", True))
+        if full and limit >= FULL_SET_MIN_WINDOW:
+            # Не «нескінченність»: рівно стільки, скільки є. Далі staffing
+            # обріже ``_fit_schemas`` за бюджетом.
+            return max(tool_lazy.MAX_EAGER_TOOLS, 999)
         if limit <= 0:
             return tool_lazy.MAX_EAGER_TOOLS
         if limit < 12_288:
@@ -4199,6 +4293,11 @@ class AgentRunner:
                 tool_router.confident(text)
                 if self.tools_enabled and len(text.strip()) < 400 else []
             )
+            # ── Залізне правило: свіжі дані — лише з інтернету ─────────────
+            # Стоїть ПІСЛЯ роутера: якщо роутер уже впізнав пошук, дублювати
+            # не треба; якщо ні, але питання про ціну/курс/погоду/новини —
+            # пошук додається примусово.
+            self._web_rule_hint(text)
             if self._pending_hint:
                 names = ", ".join(hint.describe() for hint in self._pending_hint[:4])
                 self._emit("status", f"Зрозумів як дію: {names}")
@@ -4548,21 +4647,29 @@ class AgentRunner:
 
         Залізне правило (вимога користувача): про ціну, курс, погоду, новини
         чи версію агент не має відповідати з пам'яті моделі — тільки з
-        мережі. Тут ми лише КАЖЕМО про це моделі до дії; саму відповідь вона
-        будує далі своїми інструментами.
+        мережі. Тут ми додаємо ПІДКАЗКУ-ДІЮ ``search_web`` (а не текст), бо
+        ``_pending_hint`` — це список :class:`tool_router.ToolHint`: агент
+        виконає пошук сам і покаже результат людині.
         """
-        if not getattr(self.agent_settings, "memory_participates", True):
-            return
         if not self.tools_enabled or self.state.private:
             return
         used = [str(getattr(item, "name", "") or "")
                 for item in (self._observations or [])]
-        memory_gave = bool(getattr(self, "_memory_snapshot", None) is not None
-                           and not self._memory_snapshot.empty)
+        snapshot = getattr(self, "_memory_snapshot", None)
+        memory_gave = snapshot is not None and not snapshot.empty
         if not web_learning.needs_web(text, used=used, memory_gave=memory_gave):
             return
+        query = " ".join(str(text or "").split())[:200]
+        if not query:
+            return
         self._pending_hint = list(getattr(self, "_pending_hint", []) or [])
-        self._pending_hint.append(web_learning.format_for_prompt(text))
+        if any(getattr(hint, "tool", "") == "search_web"
+               for hint in self._pending_hint):
+            return
+        self._pending_hint.append(
+            tool_router.ToolHint("search_web", {"query": query},
+                                 tool_router.HIGH,
+                                 "свіжі дані: відповідь без мережі заборонена"))
         self._emit("status",
                    "Питання про свіжі дані — спершу шукаю в інтернеті.")
 

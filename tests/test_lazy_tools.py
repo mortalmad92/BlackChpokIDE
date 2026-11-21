@@ -56,25 +56,40 @@ class TestCompactRegistry(unittest.TestCase):
         self.assertGreaterEqual(state["total"], len(TOOL_SCHEMAS),
                                 f"реєстр знає лише {state['total']}")
 
-    def test_few_schemas_are_sent(self) -> None:
-        """Вимогу ЗМІНЕНО користувачем 21.11.2026: показуємо ПОВНИЙ набір.
+    def test_context_keeps_room_for_history(self) -> None:
+        """Головна гарантія: на ІСТОРІЮ мусить лишитись місце.
 
-        Раніше тут перевірялось, що схем у запиті «значно менше» за
-        інструменти (не більше 22). Користувач скасував це: «ніяких режимів
-        лінивий, тільки повний режим з повною автономією!». Причина — живі
-        прогони, де модель не бачила потрібного інструмента, витрачала кроки
-        на ``load_tools`` і йшла по колу.
+        Історія цього тесту. Спершу тут перевірялось «схем не більше 22»
+        (економія). Потім користувач зажадав повного набору, і тест став
+        вимагати «усі схеми». Це дало РЕГРЕС 21.11.2026: коли інструментів
+        стало 91, схеми зайняли 11 520 токенів, бюджет історії впав до НУЛЯ,
+        і відповіді перестали надходити — модель не бачила, що вже зроблено.
 
-        Що тепер охороняється: у вікні 16k модель бачить УСІ інструменти,
-        і жоден не «схований» за церемонією.
+        Тепер охороняється те, що справді важливе: скільки б не було
+        інструментів, на розмову лишається відчутна частка вікна. Схеми
+        звужуються (з ``run_tool``/``load_tools`` як шляхом до решти), але
+        історія ніколи не обнуляється.
         """
-        runner = _runner(ctx=16384)
-        sent = _names(runner.tool_schemas())
-        total = runner.tool_registry_state()["total"]
-        self.assertEqual(len(sent), total,
-                         f"повний режим: очікували всі {total}, "
-                         f"отримали {len(sent)}; бракує "
-                         f"{sorted(set(TOOL_SCHEMAS_NAMES) - sent)[:10]}")
+        for window in (8192, 16384, 32768):
+            with self.subTest(window=window):
+                runner = _runner(ctx=window)
+                schemas = runner.tool_schemas()
+                system = sum(
+                    len(str(item.get("content") or "")) for item in
+                    [runner.session.system_message()])
+                budget = runner._context_budget
+                explanation = (
+                    f"вікно {window}: схем {len(schemas)}, "
+                    f"система ~{system}, бюджет {budget.text() if budget else '—'}")
+                self.assertTrue(budget is not None, explanation)
+                self.assertGreater(
+                    budget.history, 0,
+                    f"на історію не лишилось місця — відповіді не надходитимуть; "
+                    f"{explanation}")
+                # Історія має бути не «символічною»: хоча б два повідомлення.
+                self.assertGreaterEqual(
+                    budget.history, 1024,
+                    f"історії замало для розмови; {explanation}")
 
     def test_narrow_window_still_sends_core(self) -> None:
         """Вузьке вікно (8k) не вміщає повний набір — лишається ядро.
@@ -133,26 +148,27 @@ class TestLazyAccess(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("не знайдено", result.output)
 
-    def test_load_adds_schema_to_next_request(self) -> None:
-        """``load_tools`` не ламає повний набір і звітує про невідомі назви.
+    def test_load_makes_schema_reachable_when_cut(self) -> None:
+        """Коли схему обрізано під вікно — ``load_tools`` її повертає.
 
-        Раніше цей тест перевіряв, що схеми СПЕРШУ немає, а після
-        ``load_tools`` вона з'являється. У повному режимі схема є одразу —
-        і це правильно (вимога 21.11.2026), тому перевіряємо інше:
-        завантаження не прибирає нічого з набору, а вигадана назва чесно
-        відхиляється.
+        Це і є гарантія досяжності: навіть якщо бюджет не вміщає всі схеми,
+        модель дістає потрібну за ОДИН крок. Перевіряємо на вузькому вікні,
+        де набір справді звужено.
         """
-        runner = _runner()
+        runner = _runner(ctx=8192)
         before = _names(runner.tool_schemas())
-        target = "web_audit"
-        self.assertIn(target, before,
-                      "повний режим: схема мусить бути вже в наборі")
+        all_names = set(runner.tool_registry_state().get("names") or []) or set(
+            TOOL_SCHEMAS_NAMES)
+        cut = sorted(all_names - before)
+        self.assertTrue(cut, f"очікували звужений набір, отримали {sorted(before)}")
+        target = cut[0]
         loaded = runner.call_tool("load_tools", {"names": [target]})
         self.assertTrue(loaded.ok, loaded.output)
         after = _names(runner.tool_schemas())
         self.assertIn(target, after,
-                      "load_tools не має прибирати схему з набору")
-        self.assertEqual(before, after, "набір змінився без причини")
+                      f"load_tools не повернув схему {target} у набір")
+        # Раніше завантажене не має зникати.
+        self.assertTrue(before & after, "ядро зникло після load_tools")
 
     def test_load_reports_unknown_names(self) -> None:
         """Вигадана назва не має проходити мовчки."""
