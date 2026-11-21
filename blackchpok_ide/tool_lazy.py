@@ -44,6 +44,10 @@ from . import context_budget
 LOG = logging.getLogger("blackchpok.tool_lazy")
 
 __all__ = [
+    "COMPACT_DESCRIPTION_LIMIT",
+    "COMPACT_DESCRIPTION_TIGHT",
+    "COMPACT_PARAM_LIMIT",
+    "COMPACT_PARAM_TIGHT",
     "CONTROL_FIND",
     "CONTROL_LOAD",
     "CONTROL_RUN",
@@ -51,6 +55,8 @@ __all__ = [
     "CORE_TOOLS",
     "LazyToolRouter",
     "ToolCard",
+    "compact_schema",
+    "compact_schemas",
     "control_schemas",
     "is_control_tool",
 ]
@@ -100,6 +106,93 @@ _RECURSION_GUARD: frozenset[str] = frozenset(CONTROL_TOOLS)
 def is_control_tool(name: str) -> bool:
     """Чи це інструмент керування реєстром (``find_tools`` тощо)."""
     return str(name or "").strip() in _RECURSION_GUARD
+
+
+#: Скільки символів опису ІНСТРУМЕНТА лишаємо при стисненні.
+COMPACT_DESCRIPTION_LIMIT = 90
+
+#: Скільки символів опису ПАРАМЕТРА лишаємо при стисненні.
+COMPACT_PARAM_LIMIT = 60
+
+#: Скільки символів опису лишаємо при СИЛЬНОМУ стисненні (вузьке вікно).
+COMPACT_DESCRIPTION_TIGHT = 70
+
+#: Скільки символів опису параметра при сильному стисненні.
+COMPACT_PARAM_TIGHT = 40
+
+
+def compact_schema(schema: Mapping[str, Any], *,
+                   description_limit: int = COMPACT_DESCRIPTION_LIMIT,
+                   param_limit: int = COMPACT_PARAM_LIMIT) -> dict[str, Any]:
+    """Стиснути схему інструмента, НЕ змінюючи його можливостей.
+
+    Навіщо. Вимога користувача (21.11.2026): «ніяких режимів лінивий, тільки
+    повний режим». Але повний набір (60 інструментів) у сирому вигляді важить
+    9302 токени, а бюджет схем у вікні 16k — 8113. Раніше вибір був «або
+    ховати інструменти, або переповнити контекст».
+
+    Третій шлях: лишити ВСІ інструменти, але скоротити описи. Заміряно на
+    справжньому реєстрі: 9302 → 7058 токенів (на 24% менше), і всі назви,
+    типи та обов'язкові параметри лишаються на місці.
+
+    Що НЕ чіпаємо:
+    * назву, ``type``, ``required``, ``enum``, ``default`` — тобто все, за
+      чим модель дзвонить інструмент;
+    * вкладені схеми (``items``, ``oneOf``) — там описи теж коротшають, але
+      структура лишається.
+    """
+    try:
+        clone = json.loads(json.dumps(schema, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return dict(schema)
+    fn = clone.get("function")
+    if not isinstance(fn, dict):
+        return clone
+    body = " ".join(str(fn.get("description") or "").split())
+    if len(body) > description_limit:
+        cut = body[:description_limit]
+        # Обриваємо на межі речення, а не посеред слова: «…; …» читається
+        # моделлю як зламаний текст і плутає її більше, ніж короткий опис.
+        for separator in (". ", " — ", "; ", ", "):
+            position = cut.rfind(separator)
+            if position > max(30, description_limit // 3):
+                cut = cut[:position]
+                break
+        body = cut.rstrip(" .,;—-") + "…"
+    fn["description"] = body
+    parameters = fn.get("parameters")
+    if isinstance(parameters, dict):
+        _compact_properties(parameters.get("properties"), param_limit)
+    return clone
+
+
+def _compact_properties(properties: Any, limit: int) -> None:
+    """Скоротити описи параметрів (рекурсивно, але структуру не чіпаємо)."""
+    if not isinstance(properties, dict):
+        return
+    for spec in properties.values():
+        if not isinstance(spec, dict):
+            continue
+        text = " ".join(str(spec.get("description") or "").split())
+        if len(text) > limit:
+            spec["description"] = text[: max(10, limit - 1)].rstrip(" .,;—-") + "…"
+        elif not text:
+            spec.pop("description", None)
+        else:
+            spec["description"] = text
+        _compact_properties(spec.get("properties"), limit)
+        items = spec.get("items")
+        if isinstance(items, dict):
+            _compact_properties(items.get("properties"), limit)
+
+
+def compact_schemas(schemas: Iterable[Mapping[str, Any]], *,
+                    description_limit: int = COMPACT_DESCRIPTION_LIMIT,
+                    param_limit: int = COMPACT_PARAM_LIMIT
+                    ) -> list[dict[str, Any]]:
+    """Стиснути набір схем (усі інструменти лишаються)."""
+    return [compact_schema(schema, description_limit=description_limit,
+                           param_limit=param_limit) for schema in schemas]
 
 #: Поріг, після якого повний набір схем вважається завеликим для передачі
 #: цілком. Виміряно: одна повна схема — у середньому 350 токенів, тож

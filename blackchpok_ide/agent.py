@@ -2675,7 +2675,7 @@ class AgentRunner:
         #
         # У ПОВНОМУ режимі це єдине місце, де набір ще може скоротитись, і
         # скорочується він ЛИШЕ під реальний розмір вікна — не за наміром.
-        schemas = self._fit_schemas(available)
+        schemas = self._fit_schemas(available, full=bool(full_tools))
         # Кеш для оцінки токенів: схеми займають помітну частину вікна,
         # і бюджет історії має це враховувати.
         self._schemas_cache = schemas
@@ -2900,13 +2900,22 @@ class AgentRunner:
         self.orchestrator = engine
         return engine
 
-    def _fit_schemas(self, schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _fit_schemas(self, schemas: list[dict[str, Any]],
+                     *, full: bool = False) -> list[dict[str, Any]]:
         """Лишити стільки схем, скільки реально вміщається у вікно моделі.
 
         Пріоритет — у :data:`SCHEMA_PRIORITY`: без читання й запису файлів
         агент не працює зовсім, а без знімка сторінки — просто працює
         гірше. Коли місця бракує, ми прибираємо ДРУГОРЯДНІ схеми (а не
         мовчки переповнюємо контекст), і кажемо про це в лог.
+
+        ``full=True`` — ПОВНИЙ режим (вимога 21.11.2026: «ніяких режимів
+        лінивий, тільки повний режим»). Тоді межа піднята до половини вікна:
+        заміряно, що всі 54 вбудовані схеми важать 7701 токен, а 25% від
+        16384 — лише 4096, тобто «повний режим» мовчки зрізав половину
+        інструментів. Половинний бюджет уміщає їх разом із системою й
+        відповіддю, а на вузькому вікні (8k) усе одно звужує — там повний
+        набір фізично не влазить.
 
         ВАЖЛИВО про розмір бюджету. Раніше стояло «40% вікна» — і цього
         не вистачало, щойно підключався MCP: 65 схем давали ≈20 000
@@ -2922,20 +2931,45 @@ class AgentRunner:
         limit = int(getattr(self.session, "context_limit", 0) or 0)
         if limit <= 0 or not schemas:
             return schemas
+        share = 0.5 if full else 0.25
         budget_model = getattr(self, "_context_budget", None)
         if budget_model is not None and budget_model.window:
-            # Частка схем у бюджеті: не більше чверті вікна й не більше
+            # Частка схем у бюджеті: не більше ``share`` вікна й не більше
             # того, що лишилось після системи та резерву відповіді.
-            ceiling = max(512, int(budget_model.window * 0.25))
+            ceiling = max(512, int(budget_model.window * share))
             budget = min(ceiling, max(512, budget_model.window
                                       - budget_model.answer
                                       - budget_model.safety
                                       - budget_model.system))
         else:
             # Бюджет ще не пораховано (перший хід до сервера) — беремо
-            # обережні 25%: менше, ніж «40% навмання», і саме стільки, щоб
-            # лишилось місце розмові.
-            budget = max(512, int(limit * 0.25))
+            # обережнішу частку: менше, ніж «40% навмання», і саме стільки,
+            # щоб лишилось місце розмові.
+            budget = max(512, int(limit * share))
+        # ── ПОВНИЙ РЕЖИМ: спершу стискаємо описи, а не ховаємо інструменти ──
+        # Вимога: «ніяких режимів лінивий, тільки повний режим». Сирий набір
+        # (60 схем) важить 9302 токени, а бюджет схем у вікні 16k — 8113, тож
+        # без стиснення «повний режим» мовчки зрізав би частину інструментів.
+        # Заміряно: стиснення описів дає 7058 токенів, і всі назви, типи та
+        # обов'язкові параметри лишаються — модель бачить УСІ інструменти.
+        if full:
+            total_cost = self._schemas_cost(schemas)
+            if total_cost > budget:
+                for description_limit, param_limit in (
+                        (tool_lazy.COMPACT_DESCRIPTION_LIMIT,
+                         tool_lazy.COMPACT_PARAM_LIMIT),
+                        (tool_lazy.COMPACT_DESCRIPTION_TIGHT,
+                         tool_lazy.COMPACT_PARAM_TIGHT)):
+                    candidate = tool_lazy.compact_schemas(
+                        schemas, description_limit=description_limit,
+                        param_limit=param_limit)
+                    candidate_cost = self._schemas_cost(candidate)
+                    if candidate_cost <= budget:
+                        LOG.info("Схеми стиснуто під вікно %s: %s → %s токенів, "
+                                 "усі %s інструментів лишились",
+                                 limit, total_cost, candidate_cost, len(schemas))
+                        return candidate
+                    schemas, total_cost = candidate, candidate_cost
         ordered = sorted(schemas, key=lambda item: _schema_rank(item))
         kept: list[dict[str, Any]] = []
         used = 0
@@ -2975,6 +3009,19 @@ class AgentRunner:
         return kept
 
     # ── лінивий реєстр інструментів ────────────────────────────────────────
+    @staticmethod
+    def _schemas_cost(schemas: list[dict[str, Any]]) -> int:
+        """Вартість набору схем у токенах (та сама міра, що й у бюджеті)."""
+        total = 0
+        for schema in schemas:
+            try:
+                encoded = json.dumps(schema, ensure_ascii=False)
+            except (TypeError, ValueError):
+                total += 400
+                continue
+            total += AgentSession._tokens_in(encoded) if encoded else 400
+        return total
+
     def lazy_router(self) -> "tool_lazy.LazyToolRouter":
         """Лінивий реєстр інструментів (створюється за потреби).
 

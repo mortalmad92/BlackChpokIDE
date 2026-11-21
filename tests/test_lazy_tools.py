@@ -42,6 +42,9 @@ def _names(schemas) -> set[str]:
     return {item["function"]["name"] for item in schemas}
 
 
+TOOL_SCHEMAS_NAMES: set[str] = {item["function"]["name"] for item in TOOL_SCHEMAS}
+
+
 class TestCompactRegistry(unittest.TestCase):
     """Компактний реєстр: усі інструменти видно, схем у запиті — мало."""
 
@@ -54,14 +57,38 @@ class TestCompactRegistry(unittest.TestCase):
                                 f"реєстр знає лише {state['total']}")
 
     def test_few_schemas_are_sent(self) -> None:
-        """Головна мета: схем у запиті значно менше, ніж інструментів."""
+        """Вимогу ЗМІНЕНО користувачем 21.11.2026: показуємо ПОВНИЙ набір.
+
+        Раніше тут перевірялось, що схем у запиті «значно менше» за
+        інструменти (не більше 22). Користувач скасував це: «ніяких режимів
+        лінивий, тільки повний режим з повною автономією!». Причина — живі
+        прогони, де модель не бачила потрібного інструмента, витрачала кроки
+        на ``load_tools`` і йшла по колу.
+
+        Що тепер охороняється: у вікні 16k модель бачить УСІ інструменти,
+        і жоден не «схований» за церемонією.
+        """
         runner = _runner(ctx=16384)
         sent = _names(runner.tool_schemas())
         total = runner.tool_registry_state()["total"]
-        self.assertLess(len(sent), total,
-                        "мали передавати не всі схеми")
-        self.assertLessEqual(len(sent), 22,
-                             f"запит усе ще завеликий: {sorted(sent)}")
+        self.assertEqual(len(sent), total,
+                         f"повний режим: очікували всі {total}, "
+                         f"отримали {len(sent)}; бракує "
+                         f"{sorted(set(TOOL_SCHEMAS_NAMES) - sent)[:10]}")
+
+    def test_narrow_window_still_sends_core(self) -> None:
+        """Вузьке вікно (8k) не вміщає повний набір — лишається ядро.
+
+        Це не «лінивий режим», а запобіжник: повний набір тут фізично не
+        влазить, і без звуження сервер обірвав би запит помилкою контексту.
+        """
+        runner = _runner(ctx=8192)
+        sent = _names(runner.tool_schemas())
+        self.assertLess(len(sent), runner.tool_registry_state()["total"],
+                        "вузьке вікно мусить звужувати набір")
+        for name in ("read_file", "write_file", "run_command"):
+            with self.subTest(tool=name):
+                self.assertIn(name, sent)
 
     def test_core_tools_are_always_present(self) -> None:
         """Без ядра агент не працює — воно мусить бути в кожному запиті."""
@@ -107,17 +134,25 @@ class TestLazyAccess(unittest.TestCase):
         self.assertIn("не знайдено", result.output)
 
     def test_load_adds_schema_to_next_request(self) -> None:
-        """Завантажена схема справді потрапляє в набір для моделі."""
+        """``load_tools`` не ламає повний набір і звітує про невідомі назви.
+
+        Раніше цей тест перевіряв, що схеми СПЕРШУ немає, а після
+        ``load_tools`` вона з'являється. У повному режимі схема є одразу —
+        і це правильно (вимога 21.11.2026), тому перевіряємо інше:
+        завантаження не прибирає нічого з набору, а вигадана назва чесно
+        відхиляється.
+        """
         runner = _runner()
         before = _names(runner.tool_schemas())
         target = "web_audit"
-        self.assertNotIn(target, before,
-                         "тест має сенс лише коли схеми ще немає")
+        self.assertIn(target, before,
+                      "повний режим: схема мусить бути вже в наборі")
         loaded = runner.call_tool("load_tools", {"names": [target]})
         self.assertTrue(loaded.ok, loaded.output)
         after = _names(runner.tool_schemas())
         self.assertIn(target, after,
-                      "load_tools не додав схему до запиту")
+                      "load_tools не має прибирати схему з набору")
+        self.assertEqual(before, after, "набір змінився без причини")
 
     def test_load_reports_unknown_names(self) -> None:
         """Вигадана назва не має проходити мовчки."""
@@ -129,14 +164,19 @@ class TestLazyAccess(unittest.TestCase):
         self.assertIn("вигаданий_інструмент", result.output)
 
     def test_run_executes_tool_without_loaded_schema(self) -> None:
-        """Ключова властивість: виклик можливий БЕЗ завантаження схеми."""
-        folder = Path(ROOT / "userdata" / "models")
-        runner = _runner()
+        """``run_tool`` працює навіть коли схеми немає в наборі.
+
+        Раніше перевірялось на інструменті, якого не було серед надісланих
+        схем. У повному режимі модель бачить усі схеми, тому «немає в
+        наборі» більше не трапляється — але гарантія мусить лишитись:
+        ``run_tool`` виконує інструмент за назвою завжди, зокрема той, чию
+        схему обрізав вузький бюджет вікна.
+        """
+        runner = _runner(ctx=8192)   # вузьке вікно: набір справді обрізано
         sent = _names(runner.tool_schemas())
-        target = "list_dir"
-        # list_dir — ядро, тож для перевірки беремо інструмент поза ядром.
         target = "list_screenshots"
-        self.assertNotIn(target, sent)
+        self.assertNotIn(target, sent,
+                         "тест має сенс лише коли схеми немає в наборі")
         result = runner.call_tool("run_tool",
                                   {"name": target, "arguments": {"limit": 1}})
         self.assertTrue(result.ok, result.output)
