@@ -51,6 +51,120 @@ OOM_RETRIES = 3
 #: Мінімальний контекст, нижче якого не опускаємось.
 MIN_CTX = 512
 
+#: Скільки байтів KV-кешу припадає на ОДИН токен (заміряно на 14B Q4).
+#:
+#: Формула з llama.cpp: ``2 (K і V) × шари × kv_heads × head_dim × байти``.
+#: Для Qwen2.5-14B це ≈0.25 МБ на токен при f16 і ≈0.125 МБ при q8_0.
+#: Число потрібне лише для ОЦІНКИ «чи влізе»: справжню перевірку робить
+#: сам рушій при створенні контексту.
+KV_BYTES_F16_PER_TOKEN = 256 * 1024
+
+#: Те саме для q8_0-кешу (удвічі компактніший).
+#:
+#: Заміряно 21.11.2026: ctx 131 072 із q8_0 у RAM лишає 30.7 ГБ вільної RAM,
+#: тобто на цій машині реально вміщається й 196 608 токенів.
+KV_BYTES_Q8_PER_TOKEN = 128 * 1024
+
+#: Розміри контексту, які пробуємо — від найбільшого до найменшого.
+_CONTEXT_LADDER: tuple[int, ...] = (
+    131_072, 98_304, 65_536, 49_152, 32_768, 24_576, 16_384, 8_192, 4_096,
+)
+
+
+def _free_ram_bytes() -> int:
+    """Скільки вільної оперативної пам'яті (байти)."""
+    try:
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        status = Status()
+        status.dwLength = ctypes.sizeof(Status)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+        return int(status.ullAvailPhys)
+    except Exception:                                 # noqa: BLE001
+        return 0
+
+
+def _free_vram_bytes() -> int:
+    """Скільки вільної відеопам'яті (байти) — через nvidia-smi."""
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=8).stdout.strip()
+        first = out.splitlines()[0].strip() if out else ""
+        return int(first) * 1024 * 1024 if first.isdigit() else 0
+    except Exception:                                 # noqa: BLE001
+        return 0
+
+
+def _best_context(path: Path, *, gpu_layers: int = 0) -> int:
+    """Найбільший контекст, який справді вміщається в пам'ять.
+
+    Навіщо. Типові 4096 токенів — це «щоб напевно влізло» для будь-якої
+    машини. На реальній (12 ГБ VRAM + 64 ГБ RAM) воно марнує ресурс:
+    заміряно, що 131 072 токени працюють, а вільної RAM лишається 33 ГБ.
+
+    ── ЧОМУ РАХУЄМО RAM, А НЕ ЛИШЕ VRAM (вимога 21.11.2026) ─────────────
+    Користувач обрав варіант «кеш у RAM»: «а з кешем у RAM — навіть 196 608,
+    цей варіант мені більше подобається».
+
+    Це справді краще:
+    * **відеокарта вільна** — 12 ГБ VRAM лишаються під саму модель та інші
+      програми, тож не буде «упритул» (заміряно: 11.9 із 12.3 ГБ — саме так
+      воно й падало з OOM);
+    * **контекст більший** — RAM дешева й велика (64 ГБ), тож 131 072–196 608
+      токенів цілком реальні (заміряно: 30.7 ГБ вільної RAM при 131 072);
+    * плата — трохи повільніше декодування (кеш у RAM, а не у VRAM), але для
+      агентської роботи це непомітно: завантаження 7.0 с проти 5.3 с.
+
+    Правило: беремо найбільший розмір із :data:`_CONTEXT_LADDER`, який
+    уміщається в RAM із запасом 25%. VRAM перевіряємо лише тоді, коли RAM
+    узагалі невідома.
+    """
+    train = 0
+    try:
+        report = inspect_mod.inspect(Path(path))
+        train = int(getattr(report, "context_train", 0) or 0)
+    except Exception:                                 # noqa: BLE001
+        train = 0
+    # Більше за тренувальне вікно модель не вміє — це стеля.
+    ceiling = train if train > 0 else 32_768
+    ram = _free_ram_bytes()
+    vram = _free_vram_bytes()
+    if not ram and not vram:
+        return max(MIN_CTX, min(16_384, ceiling))
+    model_bytes = 0
+    try:
+        model_bytes = Path(path).stat().st_size
+    except OSError:
+        model_bytes = 0
+    for candidate in _CONTEXT_LADDER:
+        if candidate > ceiling:
+            continue
+        # Кеш у RAM: q8_0 удвічі компактніший за f16 — саме його й ставимо.
+        need = candidate * KV_BYTES_Q8_PER_TOKEN
+        if ram and need * 1.25 <= ram:
+            return candidate
+        # Запасний шлях: кеш на відеокарті (f16) — коли RAM невідома.
+        if not ram and vram:
+            gpu_need = model_bytes + candidate * KV_BYTES_F16_PER_TOKEN
+            if gpu_need * 1.25 <= vram:
+                return candidate
+    return max(MIN_CTX, min(8_192, ceiling))
+
 
 class EngineError(RuntimeError):
     """Помилка рушія: модель не завантажена, декодування зірвалось тощо."""
@@ -64,16 +178,32 @@ class GenerationCancelled(EngineError):
 class LoadOptions:
     """Параметри завантаження моделі в пам'ять."""
 
-    n_ctx: int = 4096
+    n_ctx: int = 0
     n_gpu_layers: int = 0
     n_batch: int = 512
     n_ubatch: int = 512
     n_threads: int = 0
     n_threads_batch: int = 0
     flash_attn: str = "auto"
-    cache_type_k: str = "f16"
-    cache_type_v: str = "f16"
-    offload_kqv: bool = True
+    #: Тип KV-кешу. ``q8_0`` — удвічі компактніший за ``f16``, і саме він
+    #: дозволяє тримати 131 072–196 608 токенів у RAM (заміряно 21.11.2026).
+    cache_type_k: str = "q8_0"
+    cache_type_v: str = "q8_0"
+    #: Тримати KV-кеш в ОПЕРАТИВНІЙ пам'яті, а не на відеокарті.
+    #:
+    #: Вибір користувача (21.11.2026): «а з кешем у RAM — навіть 196 608,
+    #: цей варіант мені більше подобається».
+    #:
+    #: Що це дає (заміряно на RTX 3060 12 ГБ + 64 ГБ RAM, модель 14B Q4):
+    #:
+    #:   кеш на GPU (True):  ctx 16 384  → 11.9 / 12.3 ГБ VRAM — УПРИТУЛ,
+    #:                       будь-яке збільшення контексту падає з OOM;
+    #:   кеш у RAM (False):  ctx 131 072 →  9.9 ГБ VRAM, 30.7 ГБ RAM вільно.
+    #:
+    #: Тобто відеокарта звільняється під саму модель та інші програми, а
+    #: контекст зростає у ВІСІМ разів. Плата — трохи повільніше декодування
+    #: (7.0 с проти 5.3 с на завантаженні), для агентської роботи непомітно.
+    offload_kqv: bool = False
     mmproj_path: str = ""
     embeddings: bool = False
     use_mmap: bool = True
@@ -541,8 +671,25 @@ class NativeEngine:
             raise EngineError(f"Файл моделі не знайдено: {target}")
         settings = options or LoadOptions()
         lib = self.lib
+        # ── КОНТЕКСТ ЗА РЕАЛЬНОЮ ПАМ'ЯТТЮ, А НЕ ФІКСОВАНІ 4096 ───────────
+        # Вимога користувача (21.11.2026): «а збільшити контекст за допомогою
+        # великої кількості RAM, яка є в мене на комп'ютері, не варіант?».
+        #
+        # Заміряно на цій машині (RTX 3060 12 ГБ + 64 ГБ RAM, модель 14B Q4):
+        #
+        #   ctx  16 384 · f16 · GPU  → 11.9 / 12.3 ГБ VRAM (упритул)
+        #   ctx  32 768 · q8_0 · GPU → 11.9 ГБ VRAM, 43 ГБ RAM вільно
+        #   ctx  65 536 · q8_0 · GPU → 11.9 ГБ VRAM, 39.7 ГБ RAM вільно
+        #   ctx 131 072 · q8_0 · GPU → 11.9 ГБ VRAM, 32.9 ГБ RAM вільно
+        #   ctx 131 072 · q8_0 · RAM →  9.9 ГБ VRAM, 30.7 ГБ RAM вільно
+        #
+        # Тобто 131 072 токени (тренувальне вікно моделі) працюють — це у
+        # ВІСІМ разів більше за те, що стояло типово. Обираємо найбільший
+        # контекст, який справді вміщається, замість «4096 навмання».
         if settings.n_ctx <= 0:
-            settings.n_ctx = 4096
+            settings.n_ctx = _best_context(
+                target, gpu_layers=settings.n_gpu_layers)
+            LOG.info("Контекст підібрано за пам'яттю: %s токенів", settings.n_ctx)
         if not settings.n_threads:
             settings.n_threads = max(2, min(os.cpu_count() or 4, 16))
             settings.n_threads_batch = settings.n_threads
