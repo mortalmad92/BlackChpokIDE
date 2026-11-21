@@ -701,14 +701,45 @@ class ChatPanel(tk.Frame):
         # Раніше картка аналізу росла в чаті й витісняла форму вводу за
         # екран; користувач просив: «глибоке мислення має бути над формою
         # для вводу тексту ... а чат окремо зробити».
-        self.thought_box = tk.Frame(self.bottom_box, bg=theme.BG_ALT)
+        self.thought_box = tk.Frame(self.bottom_box, bg=theme.BG_CARD, bd=0,
+                                    highlightthickness=1,
+                                    highlightbackground=theme.BORDER_SOFT)
         self.thought_box.grid(row=3, column=0, sticky="ew", padx=theme.SPACE_SM,
                               pady=(0, theme.SPACE_XS))
         self.thought_box.grid_remove()
+        # Заголовок — клікабельний: ▾ розгортає повний текст думок, ▸ згортає.
+        thought_head = tk.Frame(self.thought_box, bg=theme.BG_CARD, cursor="hand2")
+        thought_head.pack(fill="x", padx=(6, 6), pady=(4, 0))
+        self._thought_arrow = tk.Label(
+            thought_head, text="▸", bg=theme.BG_CARD, fg=theme.FG_FAINT,
+            font=theme.font(8), cursor="hand2")
+        self._thought_arrow.pack(side="left")
+        tk.Label(thought_head, text="ДУМКИ АГЕНТА", bg=theme.BG_CARD,
+                 fg=theme.FG_FAINT, font=theme.font(8, "bold"),
+                 anchor="w").pack(side="left", padx=(4, 0))
+        # Рядок поточного стану («працює…», «аналізую запит»).
         self._thought_label = tk.Label(
-            self.thought_box, text="", bg=theme.BG_ALT, fg=theme.FG_DIM,
+            self.thought_box, text="", bg=theme.BG_CARD, fg=theme.FG_DIM,
             font=theme.font(8), anchor="w", justify="left", wraplength=900)
-        self._thought_label.pack(fill="x", padx=(2, 2))
+        self._thought_label.pack(fill="x", padx=(8, 8))
+        # Тіло: повний текст думок у власній прокрутці, згорнуте типово.
+        self._thought_body = tk.Frame(self.thought_box, bg=theme.BG_EDITOR)
+        self._thought_text = tk.Text(
+            self._thought_body, wrap="word", height=7, bd=0,
+            highlightthickness=0, background=theme.BG_EDITOR,
+            foreground=theme.FG, insertbackground=theme.FG_BRIGHT,
+            font=self.fonts.mono_small if hasattr(self.fonts, "mono_small")
+            else self.fonts.chat, padx=8, pady=6, spacing1=1, spacing3=2,
+            cursor="arrow", selectbackground=theme.SELECTION,
+            state="disabled")
+        self._thought_scroll = tk.Scrollbar(self._thought_body, orient="vertical",
+                                            command=self._thought_text.yview)
+        self._thought_text.configure(yscrollcommand=self._thought_scroll.set)
+        self._thought_scroll.pack(side="right", fill="y")
+        self._thought_text.pack(side="left", fill="both", expand=True)
+        self._thought_open = False
+        for widget in (thought_head, self._thought_arrow):
+            widget.bind("<Button-1>", lambda _e: self._thought_toggle())
 
         # 2b. Сам композер: одна компактна картка, без «стіни» на весь екран.
         composer = widgets.Card(self.bottom_box, bg=theme.BG_INPUT, border=theme.BORDER_SOFT)
@@ -1658,6 +1689,7 @@ class ChatPanel(tk.Frame):
         self._pending_code.clear()
         self._tool_rows.clear()
         self._pending_fits.clear()
+        self._thought_clear()
         for card in self._cards:
             try:
                 card.destroy()
@@ -2601,20 +2633,84 @@ class ChatPanel(tk.Frame):
 
     # ── етапи задачі ───────────────────────────────────────────────────────
     def _arrow_thought(self, text: str, *, show: bool = True) -> None:
-        """Показати/сховати рядок «глибокого мислення» над формою.
+        """Показати/сховати зону «думки агента» над формою вводу.
 
-        Думки агента живуть окремою тонкою зоною, а не в стрічці чату:
-        інакше вони розтягують стрічку й витісняють поле вводу за екран.
+        Думки живуть ОКРЕМИМ вікном над полем вводу, а не в стрічці чату:
+        інакше вони розтягують стрічку й витісняють поле за екран. У зоні
+        два рівні:
+
+        * короткий рядок стану (завжди видно, коли агент працює);
+        * повний текст думок — за кліком на заголовок (типово згорнутий).
+
+        Раніше тут був ОДИН обрізаний до 200 символів рядок: довші
+        міркування моделі зникали безслідно, і користувач не міг прочитати,
+        чому агент обрав саме цей крок.
         """
-        clean = " ".join((text or "").split())
+        clean = (text or "").strip()
         try:
             if show and clean:
-                shown = clean if len(clean) <= 200 else clean[:199] + "…"
+                flat = " ".join(clean.split())
+                shown = flat if len(flat) <= 200 else flat[:199] + "…"
                 self._thought_label.configure(text="◔ " + shown)
                 self.thought_box.grid()
+                # Повний текст — в історію вікна думок. Статуси агента теж
+                # сюди потрапляють: вони пояснюють крок не гірше за модель.
+                self._thought_append(flat)
             elif not show:
                 self.thought_box.grid_remove()
         except (tk.TclError, AttributeError):
+            pass
+
+    def _thought_append(self, text: str) -> None:
+        """Дописати рядок у вікно думок (без дублів поспіль)."""
+        widget = getattr(self, "_thought_text", None)
+        if widget is None or not text:
+            return
+        # Стеля: довгий хід із десятками статусів не має роздувати віджет.
+        if getattr(self, "_thought_lines", 0) > 400:
+            try:
+                widget.configure(state="normal")
+                widget.delete("1.0", "2.0")
+                widget.configure(state="disabled")
+            except tk.TclError:
+                return
+        else:
+            self._thought_lines = getattr(self, "_thought_lines", 0) + 1
+        try:
+            last = widget.get("end-2l", "end-1c").strip() if widget.index("end-1c") != "1.0" else ""
+        except tk.TclError:
+            last = ""
+        if last == text:
+            return
+        try:
+            widget.configure(state="normal")
+            widget.insert("end", text + "\n")
+            widget.configure(state="disabled")
+            # Автопрокрутка лише коли вікно розгорнуте: інакше немає сенсу.
+            if getattr(self, "_thought_open", False):
+                widget.see("end")
+        except tk.TclError:
+            pass
+
+    def _thought_toggle(self) -> None:
+        """Розгорнути/згорнути повний текст думок агента."""
+        body = getattr(self, "_thought_body", None)
+        arrow = getattr(self, "_thought_arrow", None)
+        if body is None:
+            return
+        self._thought_open = not getattr(self, "_thought_open", False)
+        try:
+            if self._thought_open:
+                body.pack(fill="both", expand=False, padx=(6, 6), pady=(2, 6),
+                          after=self._thought_label)
+                if arrow is not None:
+                    arrow.configure(text="▾")
+                self._thought_text.see("end")
+            else:
+                body.pack_forget()
+                if arrow is not None:
+                    arrow.configure(text="▸")
+        except tk.TclError:
             pass
 
     def _show_agent_plan(self, event: AgentEvent) -> None:
