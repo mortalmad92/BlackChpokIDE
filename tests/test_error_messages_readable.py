@@ -64,12 +64,27 @@ class TestHumanErrorBody(unittest.TestCase):
 
 class _EscapedErrorHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
+        # ── ДОЧИТАТИ ТІЛО ЗАПИТУ ПЕРЕД ВІДПОВІДДЮ ──────────────────────────
+        # Клієнт надсилає JSON із ``Content-Length``. Якщо закрити сокет,
+        # не прочитавши його, у буфері лишаються невитребувані дані — і
+        # Windows замість FIN шле RST: клієнт ловить
+        # ``ConnectionAbortedError [WinError 10053]`` ПОКИ читає відповідь,
+        # хоч сервер правильно віддав 500. Саме це падало у повному прогоні
+        # плаваюче (коментар нижче про «2 із 8» — про той самий ефект).
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length:
+            self.rfile.read(length)
+        body = json.dumps(
+            {"error": {"message": "модель впала: немає памʼяті"}},
+            ensure_ascii=True).encode("utf-8")
         self.send_response(500)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(
-            {"error": {"message": "модель впала: немає памʼяті"}},
-            ensure_ascii=True).encode("utf-8"))
+        self.wfile.write(body)
 
     def log_message(self, *args):  # noqa: ANN002
         pass

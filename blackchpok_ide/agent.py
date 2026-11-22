@@ -549,7 +549,12 @@ class _RepeatGuard:
 #: На скріншоті користувача модель 14 разів писала «Знайшов, є помилка в
 #: відповіді. Спробую інший запит.» — і не робила жодного виклику. Такий
 #: текст не є відповіддю, і показувати його як результат не можна.
-_PROMISE_MARKERS = (
+#:
+#: Окрема назва, а НЕ другий ``_PROMISE_MARKERS``: у модулі вже є перелік
+#: «обіцянок показати результат» для :func:`_is_bare_promise` (рядок ~337),
+#: і друге присвоєння того самого імені мовчки перекривало його — обидві
+#: перевірки дивились в ОДИН список чужих маркерів.
+_ACTION_PROMISE_MARKERS: tuple[str, ...] = (
     "спробую", "перевірю", "зараз ", "зроблю", "виправлю", "перероблю",
     "пошукаю", "подивлюсь", "подивлюся", "напишу", "внесу", "запущу",
     "let me", "i will", "i'll", "trying", "attempting",
@@ -570,7 +575,7 @@ def _promises_action(text: str) -> bool:
     if "```" in body or body.startswith(("-", "•", "1.", "2.")):
         return False
     lowered = body.lower()
-    return any(marker in lowered for marker in _PROMISE_MARKERS)
+    return any(marker in lowered for marker in _ACTION_PROMISE_MARKERS)
 
 
 def _overlaps(answer: str, question: str, *, threshold: float = 0.12) -> bool:
@@ -2372,8 +2377,22 @@ class AgentRunner:
         if self.mode_prompt.strip():
             self.session.extra_prompt = "\n\n".join(
                 part for part in (self.mode_prompt.strip(), extra_prompt.strip()) if part)
-        # Каталог дій: щоб модель знала, що взагалі вміє, і не «розмовляла»
-        # замість виклику інструмента.
+        # Каталог дій рахуємо у фоновому потоці (``_build_action_prompt``):
+        # тут лише скидаємо стан.
+        self._specs = {}
+        self._observations = []
+        # ── Профіль моделі ─────────────────────────────────────────────────
+        self._thread = threading.Thread(target=self._run, args=(text,), daemon=True)
+        self._thread.start()
+        return True
+
+    def _build_action_prompt(self, text: str) -> None:
+        """Зібрати ``session.action_prompt``: каталог, скіли, пам'ять, мережа.
+
+        Викликається з фонового потоку (:meth:`_run`) ПЕРЕД першим запитом
+        до моделі. Тут дозволені довгі операції: мережевий пошук «на кожен
+        запит», читання пам'яті NEUROMESH, планування.
+        """
         has_mcp = False
         if self.mcp_manager is not None:
             try:
@@ -2384,8 +2403,6 @@ class AgentRunner:
         # Схеми рахуємо ПЕРШИМИ: від них залежить, чи потрібен текстовий
         # каталог (він же дублює їхні описи). Раніше ``_specs`` скидались
         # нижче, і перевірка завжди бачила порожнечу.
-        self._specs = {}
-        self._observations = []
         if self.tools_enabled:
             try:
                 self.tool_schemas()
@@ -2494,9 +2511,6 @@ class AgentRunner:
         # Рахуємо ДО першого запиту: вікно могло змінитись (інша модель,
         # інший режим), і хроніка має зайняти рівно свою частку.
         self._render_digest()
-        self._thread = threading.Thread(target=self._run, args=(text,), daemon=True)
-        self._thread.start()
-        return True
 
     def turn_reset(self, *, keep: int = 0) -> int:
         """Режим «один запит — один контекст»: увесь хід → у пам'ять.
@@ -3922,6 +3936,140 @@ class AgentRunner:
             return ToolResult(False, self._unknown_tool_hint(name))
         return self.registry.call(name, arguments)
 
+    # ── Саморозширення: виконання інструментів ────────────────────────────
+    def _extend(self, name: str, data: dict[str, Any]) -> ToolResult:
+        """Виконати інструменти саморозширення (create_skill/create_tool/…).
+
+        Сюди веде :meth:`call_tool` для назв із
+        :data:`extensions.EXTENSION_TOOLS`. Раніше ці інструменти мали схеми
+        й потрапляли в промпт моделі, але виконавця НЕ мали: кожен виклик
+        падав ``AttributeError: ... has no attribute '_extend'`` і модель
+        чесно бачила «інструмент зламаний», хоча сама схема запропонувала
+        його викликати.
+        """
+        store = self.extensions
+        if name == "create_skill":
+            result = store.create_skill(
+                str(data.get("name") or ""),
+                str(data.get("description") or ""),
+                str(data.get("body") or ""),
+                source=str(data.get("source") or ""),
+            )
+        elif name == "create_tool":
+            parameters = data.get("parameters")
+            result = store.create_tool(
+                str(data.get("name") or ""),
+                str(data.get("description") or ""),
+                str(data.get("code") or ""),
+                parameters=parameters if isinstance(parameters, dict) else None,
+                source=str(data.get("source") or ""),
+                overwrite=bool(data.get("overwrite")),
+            )
+        elif name == "list_custom_tools":
+            return ToolResult(True, extensions_module.describe_extensions(store))
+        elif name == "learn_from_web":
+            return self._learn_from_web_tool(data)
+        else:
+            return ToolResult(
+                False,
+                f"Невідомий інструмент розширення: {name}. "
+                f"Є: {', '.join(sorted(extensions_module.EXTENSION_TOOLS))}.")
+        text = result.message or ("Готово." if result.ok else "Не вдалось.")
+        if result.detail:
+            text += f"\n{result.detail}"
+        if result.path:
+            text += f"\nШлях: {result.path}"
+        return ToolResult(result.ok, text)
+
+    @staticmethod
+    def _first_url(text: str) -> str:
+        """Перша URL-адреса в тексті (``""``, якщо адреси немає)."""
+        match = re.search(r"https?://[^\s)\]>'\"<>]+", text or "")
+        if not match:
+            return ""
+        return match.group(0).rstrip(".,;:!?")
+
+    def _learn_from_web_tool(self, data: dict[str, Any]) -> ToolResult:
+        """Інструмент ``learn_from_web``: джерело з інтернету для скіла.
+
+        За схемою (:data:`extensions.TOOL_SCHEMAS`) інструмент ШУКАЄ, ЧИТАЄ
+        сторінку й зберігає текст разом із посиланням, а створення скіла чи
+        інструмента — окремий виклик ``create_skill``/``create_tool`` із
+        ``source=URL``. Мережу не робимо самі: просимо в реєстру його
+        власні ``search_web``/``fetch_url``, щоб шлях і обмеження були ті самі.
+        """
+        url = str(data.get("url") or "").strip()
+        query = str(data.get("query") or "").strip()
+        if not url and not query:
+            return ToolResult(
+                False, "Вкажіть url (сторінка) або query (що знайти).")
+        try:
+            if url:
+                source = url
+                page = self.registry.call("fetch_url", {"url": url})
+            else:
+                hits = self.registry.call("search_web", {"query": query})
+                if not hits.ok:
+                    return ToolResult(False, f"Пошук не вдався: {hits.output}")
+                first = self._first_url(hits.output)
+                source = first or query
+                if not first:
+                    # Пошук дав відповідь без посилань — це вже знання.
+                    body = " ".join(str(hits.output or "").split())[:4000]
+                    return ToolResult(True, (
+                        f"Джерело: пошук «{query}».\n\n{body}\n\n"
+                        "Посилань у результаті немає. Створи скіл "
+                        "(create_skill) або інструмент (create_tool) з цього "
+                        f"знання і вкажи source=пошук «{query}»."),)
+                page = self.registry.call("fetch_url", {"url": first})
+        except Exception as exc:                     # noqa: BLE001
+            return ToolResult(False, f"{type(exc).__name__}: {exc}")
+        if not page.ok:
+            return ToolResult(False, f"Сторінку не прочитано: {page.output}")
+        body = str(page.output or "").strip()
+        if not body:
+            return ToolResult(False, f"Сторінка {source} порожня.")
+        title = ""
+        for line in body.splitlines():
+            line = line.strip()
+            if line:
+                title = line[:120]
+                break
+        parts = [
+            f"Джерело: {source}",
+            f"Заголовок: {title}",
+            "",
+            body[:6000],
+        ]
+        parts.append(
+            "\nДалі: закріпи це знання — create_skill (інструкція) або "
+            f"create_tool (код) — і вкажи source={source}.")
+        return ToolResult(True, "\n".join(parts))
+
+    def _run_custom_tool(self, name: str, data: dict[str, Any]) -> ToolResult:
+        """Виконати саморобний інструмент ``custom:<назва>``.
+
+        Код інструмента запускається в ОКРЕМОМУ процесі
+        (:func:`extensions.run_custom_tool`): його писала модель, тож
+        помилка або зациклення не мають валити IDE і хід агента. Раніше ця
+        гілка викликала неіснуючий метод — ``custom:*`` не працював узагалі.
+        """
+        tool = self.extensions.get_tool(
+            name[len(extensions_module.CUSTOM_PREFIX):])
+        if tool is None:
+            known = ", ".join(
+                f"{extensions_module.CUSTOM_PREFIX}{item.name}"
+                for item in self.extensions.tools())
+            return ToolResult(
+                False,
+                f"Інструмент «{name}» не знайдено в {extensions_module.TOOLS_DIR}. "
+                + (f"Є такі: {known}."
+                   if known else
+                   "Власних інструментів ще немає — створи через create_tool."))
+        ok, text = extensions_module.run_custom_tool(tool, dict(data or {}))
+        self.extensions.record_run(tool.name, ok=ok, error="" if ok else text)
+        return ToolResult(ok, text)
+
     def _self_repair(self, *, dry_run: bool = False) -> ToolResult:
         """Перевірити власний стан IDE і (не обов'язково) полагодити його."""
         try:
@@ -4892,6 +5040,17 @@ class AgentRunner:
         self._web_digest = ""
         self._web_facts = 0
         self._web_context_cache = None
+        # ── Промпт збираємо ТУТ, у фоновому потоці ──────────────────────────
+        # ``start()`` викликається з потоку інтерфейсу, і раніше збирав
+        # промпт синхронно: інтернет-пошук «на кожен запит» (до 25 с на
+        # джерело), читання пам'яті NEUROMESH і планування блокували
+        # чергу повідомлень вікна — користувач бачив «Not Responding»,
+        # хоч модель ще навіть не отримала запит. Тепер важка збірка йде
+        # тут, а інтерфейс живе.
+        try:
+            self._build_action_prompt(text)
+        except Exception:  # noqa: BLE001 - промпт не має зривати хід
+            LOG.exception("Не вдалось зібрати промпт дій")
         # ── Самовідновлення адреси сервера ────────────────────────────────
         # Реальний випадок із логу користувача: рушій піднявся на 8081 (бо
         # 8080 тримав Steam), а в налаштуваннях лишився 8080. Агент стукав у

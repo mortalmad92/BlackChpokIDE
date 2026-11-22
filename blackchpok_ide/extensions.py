@@ -41,13 +41,13 @@ from typing import Any, Iterable, Sequence
 from . import skills as skills_module
 
 __all__ = [
-    "BUILTIN_NAME",
     "CUSTOM_PREFIX",
     "CustomTool",
     "EXTENSION_TOOLS",
     "ExtensionResult",
     "ExtensionStore",
     "TOOL_SCHEMAS",
+    "TOOLS_DIR",
     "custom_tool_schemas",
     "describe_extensions",
     "parse_custom_tool",
@@ -237,18 +237,20 @@ class ExtensionStore:
         clean = (name or "").strip()
         if not clean:
             return ExtensionResult(kind="skill", message="Порожня назва скіла.")
+        # «Уже існував» визначаємо ДО запису — і без побічних ефектів:
+        # ``create_skill`` навмисно не перезаписує наявний SKILL.md, тому
+        # перевірка самим записом була б марною (раніше вона ще й подвійно
+        # викликала ``create_skill`` і завжди звітувала «новий»).
+        existed = skills_module.skill_path(self.root, clean).exists()
         try:
             path = skills_module.create_skill(self.root, clean, description, body)
         except OSError as exc:
             return ExtensionResult(kind="skill", name=clean,
                                    message=f"Скіл не створено: {exc}")
-        created = path.parent == (Path(self.root) / skills_module.SEARCH_DIRS[0]
-                                 / skills_module.create_skill(
-                                     self.root, clean, description, body).parent.name)
         return ExtensionResult(
             ok=True, kind="skill", name=clean, path=str(path),
             message=f"Скіл «{clean}» готовий: {path}",
-            detail="новий" if created else "уже існував, вміст не перезаписано",
+            detail="уже існував, вміст не перезаписано" if existed else "новий",
         )
 
     def skills(self) -> list[skills_module.Skill]:

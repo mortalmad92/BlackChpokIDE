@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Фінансові новини — Коментарі та аналітика</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <h1>Фінансові новини України та світу</h1>
+        <nav>
+            <a href="#articles">Статті</a>
+            <a href="#comments">Коментарі</a>
+            <a href="https://api.example.com" target="_blank">API для інтеграції</a>
+        </nav>
+    </header>
+
+    <main>
+        <section id="articles">
+            <h2>Останні новини</h2>
+            <article>
+                <h3>Курс валюти сьогодні: оновлення</h3>
+                <p>Опубліковано: 10.09.2024</p>
+                <p>Детальний аналіз курсу долара, євро та криптовалют на сьогодні. Що чекати на ринку?</p>
+            </article>
+
+            <article>
+                <h3>Інвестиції в Україні: нові можливості</h3>
+                <p>Опубліковано: 09.09.2024</p>
+                <p>Які сектори економіки показують найбільший ріст і куди варто вкладати гроші?</p>
+            </article>
+        </section>
+
+        <section id="comments">
+            <h2>Додайте свій коментар</h2>
+            <form id="commentForm">
+                <input type="text" placeholder="Ваше ім'я" required>
+                <textarea placeholder="Ваш коментар" required></textarea>
+                <button type="submit">Опублікувати</button>
+            </form>
+
+            <h3>Коментарі користувачів</h3>
+            <div id="commentsList">
+                <!-- Коментарі будуть завантажуватися через API -->
+                <p>Завантаження коментарів...</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>© 2024 Фінансові новини. Всі права захищені.</p>
+    </footer>
+
+    <script>
+        // Логіка для завантаження коментарів через API
+        document.getElementById('commentForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            fetch('/api/comments', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Коментар опубліковано:', data);
+                location.reload(); // Перезавантажити сторінку для відображення нового коментаря
+            })
+            .catch(error => console.error('Помилка:', error));
+        });
+    </script>
+</body>
+</html>

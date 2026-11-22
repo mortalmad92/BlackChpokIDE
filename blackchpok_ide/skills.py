@@ -171,16 +171,27 @@ def make_skill_text(name: str, description: str, body: str) -> str:
     )
 
 
-def create_skill(root: Path, name: str, description: str = "", body: str = "") -> Path:
-    """Створити теку скіла й файл SKILL.md. Повертає шлях до файлу."""
-    slug = re.sub(r"[^\w.-]+", "-", (name or "").strip().lower(), flags=re.UNICODE).strip("-")
+def skill_path(root: Path, name: str) -> Path:
+    """Шлях до ``SKILL.md`` для назви (БЕЗ створення теки чи файлу).
+
+    Той самий слаг, який будує :func:`create_skill` — потрібен, щоб
+    перевірити «скіл уже існує?» до запису, нічого не створюючи.
+    """
+    slug = re.sub(r"[^\w.-]+", "-", (name or "").strip().lower(),
+                  flags=re.UNICODE).strip("-")
     if not slug:
         slug = "новий-скіл"
-    folder = Path(root) / SEARCH_DIRS[0] / slug
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / SKILL_FILE
+    return Path(root) / SEARCH_DIRS[0] / slug / SKILL_FILE
+
+
+def create_skill(root: Path, name: str, description: str = "", body: str = "") -> Path:
+    """Створити теку скіла й файл SKILL.md. Повертає шлях до файлу."""
+    path = skill_path(root, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        path.write_text(make_skill_text(name or slug, description, body), encoding="utf-8")
+        path.write_text(
+            make_skill_text(name or path.parent.name, description, body),
+            encoding="utf-8")
     return path
 
 

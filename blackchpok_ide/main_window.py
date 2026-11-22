@@ -4981,11 +4981,36 @@ class BlackChpokIDE(tk.Tk):
             return False
 
     def _before_agent_request(self) -> None:
-        """Перед кожним запитом: підняти модель, якщо її вивантажив простій."""
-        try:
-            self._wake_model_if_needed()
-        except Exception:  # noqa: BLE001 - підйом не має блокувати запит
-            LOG.debug("Підйом моделі перед запитом не вдався", exc_info=True)
+        """Перед кожним запитом: підняти модель, якщо її вивантажив простій.
+
+        ── ЧОМУ У ФОНОВОМУ ПОТОЦІ ─────────────────────────────────────────
+        Підйом — це справжнє завантаження моделі в пам'ять: власний рушій
+        читає гігабайти GGUF (секунди — хвилини), llama-server -
+        ``wait_ready(timeout=300)``. Раніше це виконувалось ПРЯМО в потоці
+        інтерфейсу: вікно переставало відповідати на будь-який клік, і
+        Windows малювала «Not Responding» — саме це бачив користувач на
+        другому запиті після паузи (модель вивантажилась за 5 хв простою,
+        перший запит пішов, другий заморозив вікно). Запит агента при цьому
+        НЕ втрачається: черга подій чату (``_poll_events``) прочитає все,
+        щойно хід почнеться.
+        """
+        if not getattr(self, "_model_unloaded_by_idle", False):
+            return
+        if getattr(self, "_model_wake_busy", False):
+            return
+        self._model_wake_busy = True
+        self.set_status("Модель вивантажено після простою — піднімаю її…")
+
+        def work() -> None:
+            try:
+                self._wake_model_if_needed()
+            except Exception:  # noqa: BLE001 - підйом не має валити запит
+                LOG.debug("Підйом моделі перед запитом не вдався", exc_info=True)
+            finally:
+                self._model_wake_busy = False
+
+        threading.Thread(target=work, daemon=True,
+                         name="model-wake").start()
 
     def _chat_folder_ready(self) -> bool:
         """Перед запитом привести агента й чат до ОДНІЄЇ теки.
