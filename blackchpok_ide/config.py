@@ -970,7 +970,7 @@ def write_json_atomic(target: Path, data: Any, *, indent: int = 2) -> Path:
     path = Path(target)
     with _STATE_WRITE_LOCK:
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(data, ensure_ascii=False, indent=indent)
+        payload = json.dumps(data, ensure_ascii=False, indent=indent, default=str)
         suffix = f".{os.getpid()}.{threading.get_ident()}.tmp"
         temporary = path.with_name(path.name + suffix)
         try:

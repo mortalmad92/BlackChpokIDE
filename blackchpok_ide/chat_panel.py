@@ -329,6 +329,32 @@ class _QueueStrip(tk.Frame):
                 for widget in row.winfo_children():
                     widget.bind("<Button-1>", lambda _e: on_open())
                 row.bind("<Button-1>", lambda _e: on_open())
+
+            def _del_strip_task(t_obj=task, r_w=row):
+                try:
+                    top = self.winfo_toplevel()
+                    q_eng = getattr(top, "queue", None) or getattr(getattr(top, "autonomous_engine", None), "queue", None)
+                    tid = getattr(t_obj, "id", None)
+                    if q_eng is not None and tid is not None and hasattr(q_eng, "cancel"):
+                        q_eng.cancel(tid)
+                    for attr in ("_tasks", "tasks", "_items", "items"):
+                        lst = getattr(q_eng, attr, None)
+                        if isinstance(lst, list):
+                            lst[:] = [x for x in lst if getattr(x, "id", None) != tid and x is not t_obj]
+                            if hasattr(q_eng, "_save"):
+                                q_eng._save()
+                except Exception:
+                    pass
+                try:
+                    r_w.destroy()
+                except Exception:
+                    pass
+                self._signature = ()
+
+            del_lbl = tk.Label(row, text="\u2715", bg=theme.BG_ALT, fg="#EF4444",
+                               font=theme.font(9, "bold"), cursor="hand2", padx=6)
+            del_lbl.grid(row=0, column=3, padx=(6, 0), sticky="e")
+            del_lbl.bind("<Button-1>", lambda _e, fn=_del_strip_task: (fn(), "break")[1])
             self._rows.append(row)
 
 

@@ -3035,6 +3035,24 @@ class AgentRunner:
             for item in observations
         ]
 
+
+        #  ???????? ?????? ????????????? ?????????? ????????? ?????? (.venv, pip, npm, CLI) 
+        if not getattr(self, "_cli_hint_injected", False):
+            self._cli_hint_injected = True
+            _cli_note = (
+                "\n[\u0412\u0411\u0423\u0414\u041e\u0412\u0410\u041d\u0418\u0419 \u041a\u041e\u041c\u0410\u041d\u0414\u041d\u0418\u0419 \u0420\u042f\u0414\u041e\u041a (CLI / TERMINAL)]: "
+                "\u0423 \u0442\u0435\u0431\u0435 \u0404 \u043f\u043e\u0432\u043d\u0438\u0439 \u0434\u043e\u0441\u0442\u0443\u043f \u0434\u043e \u043a\u043e\u043c\u0430\u043d\u0434\u043d\u043e\u0433\u043e \u0440\u044f\u0434\u043a\u0430 \u0447\u0435\u0440\u0435\u0437 \u0456\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442 run_command (\u043f\u0440\u0430\u0446\u044e\u0454 \u0432 \u043f\u0430\u043f\u0446\u0456 \u043f\u0440\u043e\u0454\u043a\u0442\u0443). "
+                "\u042f\u043a\u0449\u043e \u0434\u043b\u044f \u043f\u0440\u043e\u0454\u043a\u0442\u0443 \u043f\u043e\u0442\u0440\u0456\u0431\u043d\u0456 \u0431\u0456\u0431\u043b\u0456\u043e\u0442\u0435\u043a\u0438 \u0430\u0431\u043e \u0432\u0438\u043d\u0438\u043a\u0430\u0454 ModuleNotFoundError: "
+                "1) \u0421\u0442\u0432\u043e\u0440\u0438 \u0456\u0437\u043e\u043b\u044c\u043e\u0432\u0430\u043d\u0435 \u0432\u0456\u0440\u0442\u0443\u0430\u043b\u044c\u043d\u0435 \u0441\u0435\u0440\u0435\u0434\u043e\u0432\u0438\u0449\u0435: python -m venv .venv; "
+                "2) \u0412\u0441\u0442\u0430\u043d\u043e\u0432\u0438 \u043f\u043e\u0442\u0440\u0456\u0431\u043d\u0456 \u043f\u0430\u043a\u0435\u0442\u0438 \u0432 .venv: .venv\\Scripts\\python.exe -m pip install <\u043f\u0430\u043a\u0435\u0442\u0438> \u0456 \u0437\u0431\u0435\u0440\u0435\u0436\u0438 requirements.txt; "
+                "3) \u0417\u0430\u043f\u0443\u0441\u043a\u0430\u0439 \u0442\u0430 \u0442\u0435\u0441\u0442\u0443\u0439 \u043a\u043e\u0434 \u0447\u0435\u0440\u0435\u0437 .venv\\Scripts\\python.exe, npm, git \u0430\u0431\u043e \u0456\u043d\u0448\u0456 CLI-\u0456\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0438 \u043f\u0440\u043e\u0454\u043a\u0442\u0443.\n"
+            )
+            try:
+                if self.session.messages and self.session.messages.get("role") == "system":
+                    self.session.messages["content"] = str(self.session.messages.get("content") or "") + "\n" + _cli_note
+            except Exception:
+                pass
+
         budget = self.step_budget
         facts = selflearning.TurnFacts(
             calls=calls,
@@ -6404,7 +6422,7 @@ class AgentRunner:
                     if isinstance(_m, dict) and _m.get("role") == "tool":
                         _c = str(_m.get("content") or "")
                         if len(_c) > 650:
-                            _m["content"] = _c[:260] + "\n... [?????????? ? NEUROMESH ??? ??????????? ?????] ..."
+                            _m["content"] = _c[:260] + "\n... [archived to NEUROMESH ??? ??????????? ?????] ..."
                 freed = self.auto_free_context()
                 if freed:
                     LOG.info("Хід %s: контекст звільнено (%s повідомлень)",
@@ -6508,10 +6526,18 @@ class AgentRunner:
                     except Exception:
                         pass
                     # ???? ? ???????? ????????????? ???? ? ?????? ????? ??????? ???? 1-? ????  ???????????? ?? ?????????? ?????!
-                    _has_more_plan = bool(getattr(self, "_plan_steps", None)) and step < budget - 1 and len(self._observations or []) > 0
-                    if _has_more_plan and not getattr(self, "_plan_nudged", False):
-                        self._plan_nudged = True
-                        self.session.messages.append({"role": "user", "content": "????????? ?????????? ???????? ????? ????? ?? ??????? ????????? ? Live Preview."})
+                    _q_full = str(getattr(self, "_last_user_text", "") or "").lower()
+                    _is_build_task = any(w in _q_full for w in ("??????", "????", "???", "???????", "???????", "???????", "???????", "??????", "?????"))
+                    _nudge_cnt = int(getattr(self, "_plan_nudged_cnt", 0))
+                    if _is_build_task and _nudge_cnt < 2 and step < budget - 1 and len(self._observations or []) > 0:
+                        self._plan_nudged_cnt = _nudge_cnt + 1
+                        _follow_msg = (
+                            "?? ????????? ?? ??????? ????????! ?????? ?????? ?? ???????????? ????? 2026 ????: "
+                            "????? ??????? ?????????? (?????/?????? ????, ?????????, Bento Grid ??????, ????????, "
+                            "????????? ?????????, ????????????? JavaScript, ?????? Inter/Plus Jakarta Sans), "
+                            "??????? ??? ? ??????????? Live Preview."
+                        )
+                        self.session.messages.append({"role": "user", "content": _follow_msg})
                         continue
                     return
             if not result.tool_calls:

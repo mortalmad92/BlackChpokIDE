@@ -583,7 +583,7 @@ class AutonomousEngine:
         try:
             _p_cur = Path(str(getattr(self, "project", "") or "")).resolve()
             if _p_cur == _ide_root or _ide_root in _p_cur.parents:
-                _safe = _ide_root.parent / "projects"
+                _safe = (Path.home() / "BlackChpokProjects")
                 _safe.mkdir(parents=True, exist_ok=True)
                 self.project = _safe
         except Exception:
@@ -681,6 +681,145 @@ class AutonomousEngine:
         packages = project_packages(self.project)
         if packages:
             ideas.extend(research_ideas(packages, limit=1))
+        # ?? ??????????? ????????? ?????????? ????? ???????? ????-????? ??????? ??
+        from types import SimpleNamespace as _SNS
+        def _mk_idea(kind: str, path: str, title: str, instruction: str):
+            return _SNS(
+                kind=kind,
+                path=path,
+                title=title,
+                instruction=instruction,
+                key=lambda k=f"{kind}:{path}:{title}": k,
+            )
+        if not ideas and self.project and Path(self.project).is_dir():
+            _root = Path(self.project)
+            _ign = {".git", ".venv", "venv", "__pycache__", "node_modules"}
+            _files = [
+                f for f in sorted(_root.rglob("*"))
+                if f.is_file() and not any(part in _ign for part in f.parts)
+            ]
+            _rel = {f.relative_to(_root).as_posix(): f for f in _files}
+            if not _files:
+                ideas.append(_mk_idea(
+                    "feature",
+                    "index.html",
+                    "\u0421\u0442\u0432\u043e\u0440\u0438\u0442\u0438 \u0441\u0442\u0430\u0440\u0442\u043e\u0432\u0443 \u0430\u0440\u0445\u0456\u0442\u0435\u043a\u0442\u0443\u0440\u0443 \u043f\u0440\u043e\u0454\u043a\u0442\u0443 2026",
+                    "\u0421\u0442\u0432\u043e\u0440\u0438 \u0441\u0443\u0447\u0430\u0441\u043d\u0438\u0439 \u0430\u0434\u0430\u043f\u0442\u0438\u0432\u043d\u0438\u0439 \u043f\u0440\u043e\u0454\u043a\u0442 2026 \u0440\u043e\u043a\u0443 \u0437 \u043c\u043e\u0434\u0443\u043b\u044c\u043d\u043e\u044e \u0441\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u043e\u044e \u0444\u0430\u0439\u043b\u0456\u0432 \u0456 \u0437\u0430\u043f\u0443\u0441\u0442\u0438 \u0432 Live Preview.",
+                ))
+            else:
+                for _rp, _fp in list(_rel.items())[:12]:
+                    try:
+                        _ln_cnt = len(_fp.read_text(encoding="utf-8", errors="ignore").splitlines())
+                    except Exception:
+                        _ln_cnt = 999
+                    if _rp.endswith(".js") and _ln_cnt < 30:
+                        ideas.append(_mk_idea(
+                            "feature",
+                            _rp,
+                            f"\u0414\u043e\u0434\u0430\u0442\u0438 \u0456\u043d\u0442\u0435\u0440\u0430\u043a\u0442\u0438\u0432\u043d\u0443 \u043b\u043e\u0433\u0456\u043a\u0443 \u0443 {_rp}",
+                            f"\u041f\u0440\u043e\u0447\u0438\u0442\u0430\u0439 {_rp} \u0442\u0430 \u043f\u043e\u0432'\u044f\u0437\u0430\u043d\u0456 \u0444\u0430\u0439\u043b\u0438 \u0456 \u0440\u0435\u0430\u043b\u0456\u0437\u0443\u0439 \u0441\u0443\u0447\u0430\u0441\u043d\u0443 \u0456\u043d\u0442\u0435\u0440\u0430\u043a\u0442\u0438\u0432\u043d\u0456\u0441\u0442\u044c 2026 \u0440\u043e\u043a\u0443.",
+                        ))
+                    elif _rp.endswith(".css") and _ln_cnt < 75:
+                        ideas.append(_mk_idea(
+                            "refactor",
+                            _rp,
+                            f"\u041f\u043e\u043a\u0440\u0430\u0449\u0438\u0442\u0438 \u0434\u0438\u0437\u0430\u0439\u043d 2026 \u0443 {_rp}",
+                            f"\u041f\u0440\u043e\u0447\u0438\u0442\u0430\u0439 {_rp} \u0456 \u043e\u043d\u043e\u0432\u0438 \u0441\u0442\u0438\u043b\u0456 \u0434\u043e \u0441\u0442\u0430\u043d\u0434\u0430\u0440\u0442\u0443 2026 \u0440\u043e\u043a\u0443 (Bento Grid, Glassmorphism, \u0430\u0434\u0430\u043f\u0442\u0438\u0432\u043d\u0456\u0441\u0442\u044c).",
+                        ))
+                    elif _rp.endswith(".html") and _ln_cnt < 65:
+                        ideas.append(_mk_idea(
+                            "feature",
+                            _rp,
+                            f"\u0420\u043e\u0437\u0448\u0438\u0440\u0438\u0442\u0438 \u0441\u0435\u043a\u0446\u0456\u0457 \u0443 {_rp}",
+                            f"\u041f\u0440\u043e\u0447\u0438\u0442\u0430\u0439 {_rp} \u0456 \u0434\u043e\u0434\u0430\u0439 \u0441\u0443\u0447\u0430\u0441\u043d\u0456 \u0441\u0435\u043a\u0446\u0456\u0457 \u0442\u0430 \u043f\u0435\u0440\u0435\u0432\u0456\u0440 \u0443 Live Preview.",
+                        ))
+                    elif _rp.endswith(".py") and _ln_cnt < 40 and not _rp.startswith("test"):
+                        ideas.append(_mk_idea(
+                            "feature",
+                            _rp,
+                            f"\u0420\u043e\u0437\u0432\u0438\u043d\u0443\u0442\u0438 \u0444\u0443\u043d\u043a\u0446\u0456\u043e\u043d\u0430\u043b \u0443 {_rp}",
+                            f"\u041f\u0440\u043e\u0447\u0438\u0442\u0430\u0439 {_rp}, \u0434\u043e\u0434\u0430\u0439 \u0442\u0438\u043f\u0456\u0437\u0430\u0446\u0456\u044e \u0442\u0430 \u043e\u0431\u0440\u043e\u0431\u043a\u0443 \u043f\u043e\u043c\u0438\u043b\u043e\u043a.",
+                        ))
+                if not any("test" in k.lower() for k in _rel):
+                    ideas.append(_mk_idea(
+                        "test",
+                        "tests_check.py",
+                        "\u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0438\u0442\u0438 \u0446\u0456\u043b\u0456\u0441\u043d\u0456\u0441\u0442\u044c \u043f\u0440\u043e\u0454\u043a\u0442\u0443",
+                        "\u041f\u0435\u0440\u0435\u0432\u0456\u0440 \u0443\u0441\u0456 \u0444\u0430\u0439\u043b\u0438 \u043f\u0440\u043e\u0454\u043a\u0442\u0443 \u043d\u0430 \u0441\u0438\u043d\u0442\u0430\u043a\u0441\u0438\u0441 \u0442\u0430 \u0440\u043e\u0431\u043e\u0442\u0443 \u0432 Live Preview.",
+                    ))
+        #  ?????? 2 ? 3: ???? ???????? ???? ????????? -> ??????? ???????????? ??????? Gemini ??? ??????? ? ????????? 
+        if not ideas and self.project and Path(self.project).is_dir():
+            _root2 = Path(self.project)
+            _ign2 = {".git", ".venv", "venv", "__pycache__", "node_modules"}
+            _fnames = [
+                f.relative_to(_root2).as_posix()
+                for f in sorted(_root2.rglob("*"))
+                if f.is_file() and not any(part in _ign2 for part in f.parts)
+            ][:20]
+            _stack_desc = ", ".join(_fnames) if _fnames else "empty project"
+            _got_remote = False
+            try:
+                import json as _j_au, urllib.request as _u_au
+                from . import config as _cfg_au
+                _st_obj = getattr(self, "settings", None) or _cfg_au.AppSettings.load()
+                _gkey = str(getattr(_st_obj, "gemini_api_key", "") or "").strip()
+                if _gkey:
+                    _prompt_ai = (
+                        "You are an autonomous lead software architect in 2026. "
+                        f"Project files: [{_stack_desc}]. "
+                        "Propose 2 concrete, high-value new features or improvements (2026 standards) not yet implemented. "
+                        "Return ONLY JSON list of objects with keys: title, path, instruction (in Ukrainian, concise)."
+                    )
+                    _body = _j_au.dumps({"contents": [{"role": "user", "parts": [{"text": _prompt_ai}]}]}).encode("utf-8")
+                    for _gm in ("gemini-flash-lite-latest", "gemini-flash-latest"):
+                        try:
+                            _url = f"https://googleapis.com{_gm}:generateContent?key={_gkey}"
+                            _req = _u_au.Request(_url, data=_body, headers={"Content-Type": "application/json"})
+                            with _u_au.urlopen(_req, timeout=10) as _resp:
+                                _raw = _j_au.loads(_resp.read().decode("utf-8"))
+                            _txt = _raw["candidates"]["content"]["parts"]["text"].strip()
+                            if "```" in _txt:
+                                _txt = _txt.split("```").replace("json", "", 1).strip()
+                            _arr = _j_au.loads(_txt)
+                            if isinstance(_arr, list):
+                                for _it in _arr[:2]:
+                                    if isinstance(_it, dict) and _it.get("title") and _it.get("instruction"):
+                                        ideas.append(_mk_idea(
+                                            "feature",
+                                            str(_it.get("path") or (_fnames if _fnames else "main.py")),
+                                            str(_it["title"])[:80],
+                                            str(_it["instruction"]),
+                                        ))
+                                        _got_remote = True
+                            if _got_remote:
+                                self.log(f"\u2601\ufe0f Gemini ({_gm}) \u0437\u0433\u0435\u043d\u0435\u0440\u0443\u0432\u0430\u0432 {len(ideas)} \u043d\u043e\u0432\u0438\u0445 \u0456\u0434\u0435\u0439 \u0440\u043e\u0437\u0432\u0438\u0442\u043a\u0443 \u043f\u0440\u043e\u0454\u043a\u0442\u0443.", kind="info")
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            if not _got_remote:
+                try:
+                    import urllib.request as _u_web, urllib.parse as _up_web, re as _re_web
+                    _q_str = "modern web app UI UX features 2026" if any(x.endswith(".html") for x in _fnames) else "modern python software architecture features 2026"
+                    _wurl = "https://duckduckgo.com" + _up_web.quote(_q_str)
+                    _wreq = _u_web.Request(_wurl, headers={"User-Agent": "Mozilla/5.0"})
+                    with _u_web.urlopen(_wreq, timeout=8) as _wresp:
+                        _html = _wresp.read().decode("utf-8", errors="ignore")
+                    _titles = _re_web.findall(r'class="result__a"[^>]*>(.*?)</a>', _html)
+                    _clean_t = [_re_web.sub(r"<[^>]+>", "", t).strip() for t in _titles if t.strip()][:2]
+                    for _ct in _clean_t:
+                        ideas.append(_mk_idea(
+                            "research",
+                            _fnames if _fnames else "README.md",
+                            f"\U0001f310 \u0406\u0434\u0435\u044f \u0437 \u043c\u0435\u0440\u0435\u0436\u0456: {_ct[:55]}",
+                            f"\u0412\u043f\u0440\u043e\u0432\u0430\u0434\u044c \u0441\u0443\u0447\u0430\u0441\u043d\u0435 \u043f\u043e\u043a\u0440\u0430\u0449\u0435\u043d\u043d\u044f \u0437\u0430 \u0442\u0435\u043c\u043e\u044e '{_ct}' \u0443 \u043f\u043e\u0442\u043e\u0447\u043d\u0438\u0439 \u043f\u0440\u043e\u0454\u043a\u0442 2026 \u0440\u043e\u043a\u0443.",
+                        ))
+                    if ideas:
+                        self.log("\U0001f310 \u0417\u043d\u0430\u0439\u0434\u0435\u043d\u043e \u0441\u0432\u0456\u0436\u0456 \u0456\u0434\u0435\u0457 \u0432 \u0456\u043d\u0442\u0435\u0440\u043d\u0435\u0442\u0456 \u0442\u0430 \u0434\u043e\u0434\u0430\u043d\u043e \u0432 \u0447\u0435\u0440\u0433\u0443.", kind="info")
+                except Exception:
+                    pass
+
         self.ideas_total = len(ideas)
         added = 0
         for idea in ideas:

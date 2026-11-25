@@ -676,6 +676,13 @@ class FirstRunWizard(tk.Toplevel):
             self._ui(self._fail, f"{type(exc).__name__}: {exc}")
 
     def _finish(self, base_url: str, choice: hw.ModelChoice) -> None:
+        try:
+            _def_proj = Path.home() / "BlackChpokProjects"
+            _def_proj.mkdir(parents=True, exist_ok=True)
+            if self.settings is not None:
+                self.settings.workspace = _def_proj
+        except Exception:
+            pass
         self._stage = "done"
         self.progress.configure(value=100)
         self.cancel_btn.state(["disabled"])

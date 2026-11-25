@@ -393,17 +393,35 @@ class AutonomousPanel(tk.Frame):
                      wraplength=max(110, self._wrap() - 40), justify="left").grid(
                 row=1, column=1, sticky="w", pady=(0, 4), padx=(0, 4))
             # Зняти задачу з черги (не для активної — її можна лише зупинити).
-            if task.status == "очікує":
-                widgets.IconButton(row, "×", lambda t=task: self._drop_task(t),
-                                   bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                                   font=theme.font(8),
-                                   tooltip="Прибрати задачу з черги").grid(
-                    row=0, column=2, rowspan=2, padx=(0, 2))
+            widgets.IconButton(row, "\u2715", lambda t=task: self._drop_task(t),
+                               bg=theme.BG_CARD, fg="#EF4444",
+                               font=theme.font(9), size=16,
+                               tooltip="\u0412\u0438\u0434\u0430\u043b\u0438\u0442\u0438 \u0437\u0430\u0434\u0430\u0447\u0443 \u0437 \u0447\u0435\u0440\u0433\u0438").grid(
+                row=0, column=2, rowspan=2, padx=(2, 4), sticky="e")
             self._task_widgets.append(row)
 
     def _drop_task(self, task) -> None:
-        dropped = self.engine.queue.cancel(task.id)
-        self._notify("Задачу знято з черги." if dropped else "Активну задачу можна лише зупинити.")
+        dropped = False
+        try:
+            dropped = bool(self.engine.queue.cancel(task.id))
+        except Exception:
+            pass
+        if not dropped:
+            try:
+                q_obj = getattr(self.engine, "queue", None)
+                for attr in ("_tasks", "tasks", "_items", "items"):
+                    lst = getattr(q_obj, attr, None)
+                    if isinstance(lst, list):
+                        before = len(lst)
+                        lst[:] = [x for x in lst if getattr(x, "id", None) != getattr(task, "id", None)]
+                        if len(lst) < before:
+                            dropped = True
+                            if hasattr(q_obj, "_save"):
+                                q_obj._save()
+            except Exception:
+                pass
+        self._queue_signature = None
+        self._notify("\u0417\u0430\u0434\u0430\u0447\u0443 \u0432\u0438\u0434\u0430\u043b\u0435\u043d\u043e \u0437 \u0447\u0435\u0440\u0433\u0438.")
         self.refresh()
 
     def _draw_log(self, signature: Optional[tuple] = None) -> None:

@@ -262,7 +262,12 @@ def main(argv: list[str] | None = None) -> int:
 
     from blackchpok_ide import run
 
-    return run(args.workspace)
+    _ide_dir = Path(__file__).resolve().parent
+    _ws_arg = Path(args.workspace).resolve() if getattr(args, "workspace", None) else _ide_dir
+    if _ws_arg == _ide_dir or _ide_dir in _ws_arg.parents:
+        _ws_arg = (Path.home() / "BlackChpokProjects")
+        _ws_arg.mkdir(parents=True, exist_ok=True)
+    return run(_ws_arg)
 
 
 if __name__ == "__main__":

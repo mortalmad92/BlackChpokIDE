@@ -7292,7 +7292,7 @@ class BlackChpokIDE(tk.Tk):
         try:
             _cand = Path(folder).resolve()
             if _cand == _ide_root or _ide_root in _cand.parents:
-                _safe_proj = _ide_root.parent / "projects"
+                _safe_proj = (Path.home() / "BlackChpokProjects")
                 _safe_proj.mkdir(parents=True, exist_ok=True)
                 folder = _safe_proj
         except Exception:
