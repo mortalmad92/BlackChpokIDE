@@ -204,20 +204,62 @@ _SELF_SERVE_RE = re.compile(
     r"|serve_forever\s*\(",
 )
 
+#: Реальний ЗАПУСК сервера (а не лише імпорт): ``serve_forever``,
+#: ``uvicorn.run``, ``HTTPServer(…).serve_forever``, конструктор
+#: ``HTTPServer(…)/TCPServer(…)`` з аргументами (адреса вже передана —
+#: далі зазвичай іде ``serve_forever``), ``app.run(…)``, ``make_server``.
+#: Раніш був один збірний маркер ``http.server`` — і ``from http.server
+#: import BaseHTTPRequestHandler`` (без запуску!) вважалось «підніме
+#: сервер сам».
+_RUN_SERVER_RE = re.compile(
+    r"serve_forever\s*\("
+    r"|uvicorn\.run\s*\("
+    r"|HTTPServer\s*\([^)]*\)\s*\.serve_forever"
+    r"|TCPServer\s*\([^)]*\)"
+    r"|HTTPServer\s*\([^)]*\)"
+    r"|(?:^|\n)\s*(?:[\w.]+\.)?run\s*\(\s*(?:host\s*=|port\s*=|debug\s*=|\))"
+    r"|make_server\s*\(",
+)
+
 
 def looks_like_web_app(code: str) -> tuple[bool, str]:
-    """Визначити, чи файл справді піднімає вебсервер.
+    """Визначити, чи файл справді підніме вебсервер — і не впаде одразу.
 
     Повертає ``(так/ні, причина)``. Причина потрібна для чесного
     пояснення: «MCP-сервер, а не сайт» краще за мовчазний запуск, який
     падає з незрозумілою помилкою.
+
+    ── ДОДАТОК: зламані «гібриди» ────────────────────────────────────────
+    Реальний випадок (файл користувача): ``server.py`` писав
+    ``from http.server import …``, але тіло було від Flask
+    (``@app.route``, ``jsonify``, ``app.run``) — імпорту Flask не було.
+    Раніше файл вважався вебзастосунком (збіг маркера ``http.server`` у
+    самозапуску), процес падав з ``NameError: name 'app' is not defined``
+    за 0.3 с, а детектор «Сервер не відповів за 45 с» пояснював нічого.
+    Тепер такий файл розпізнається ДО запуску — з чесною причиною.
     """
     body = code or ""
     low = body.lower()
 
+    # ── Flask-ТІЛО без Flask-імпорту = гарантований NameError ──────────
+    # Перевірка ЙДЕ ПЕРШОЮ: і зламаний «гібрид» (http.server імпорт +
+    # Flask-тіло), і звичайний забутий імпорт ловляться тут, до будь-якої
+    # іншої евристики. Інакше ``app.run(debug=True)`` з гібрида збігається
+    # з маркером самозапуску, і файл знову стає «сайтом».
+    flask_calls = ("@app.route", "jsonify(", "request.json",
+                   "render_template(")
+    uses_flask_api = any(marker in body for marker in flask_calls)
+    if uses_flask_api and "flask" not in low:
+        return False, (
+            "код використовує Flask-API (@app.route/jsonify), але Flask "
+            "не імпортований — запуститься падінням NameError. Треба "
+            "`from flask import Flask, request, jsonify` або переписати "
+            "на http.server")
+
     match = _WEB_IMPORT_RE.search(body)
     if match:
-        return True, f"імпорт {(match.group(1) or match.group(2) or '').strip()}"
+        imported = (match.group(1) or match.group(2) or "").strip().lower()
+        return True, f"імпорт {imported}"
 
     for marker in _NOT_WEB_MARKERS:
         if marker.lower() in low:
@@ -226,7 +268,13 @@ def looks_like_web_app(code: str) -> tuple[bool, str]:
                 f"(«{marker}»): запускати його як вебзастосунок не можна")
 
     if _SELF_SERVE_RE.search(body):
-        return True, "скрипт піднімає сервер сам"
+        # Самозапуск без виклику сервера — ще не сайт: скрипт із
+        # ``import http.server`` і без ``serve_forever`` не підніме порт.
+        # Вимагаємо реальний запуск, а не лише імпорт модуля.
+        if _RUN_SERVER_RE.search(body):
+            return True, "скрипт піднімає сервер сам"
+        return False, ("є імпорт серверних модулів, але немає запуску "
+                       "(serve_forever/app.run) — це бібліотека, не сайт")
 
     return False, "немає ознак вебзастосунку"
 
@@ -391,13 +439,25 @@ def port_busy(port: int) -> bool:
 
 
 def wait_for_port(port: int, *, timeout: float = 30.0,
-                  on_status: Optional[Callable[[str], None]] = None) -> tuple[bool, str]:
-    """Чекати, поки порт почне відповідати."""
+                  on_status: Optional[Callable[[str], None]] = None,
+                  process: Optional["subprocess.Popen[str]"] = None
+                  ) -> tuple[bool, str]:
+    """Чекати, поки порт почне відповідати.
+
+    ``process`` — необов'язковий, але важливий: якщо сервер уже Помер
+    (кристалізована помилка в коді проєкту, відсутня бібліотека), чекати
+    решту таймауту безглуздо — користувач дивився 45 секунд на «Запускаю
+    сервер…», хоч процес помер за 0.3 с із ``NameError`` у журналі.
+    Тепер смерть процеса — негайна відмова з хвостом його виводу.
+    """
     deadline = time.monotonic() + timeout
     notified = 0.0
     while time.monotonic() < deadline:
         if port_busy(port):
             return True, f"Сервер на порту {port} відповідає."
+        if process is not None and process.poll() is not None:
+            return False, (f"Процес сервера завершився (код "
+                           f"{process.returncode}) — див. вивід у панелі.")
         if on_status is not None and time.monotonic() - notified > 1.5:
             notified = time.monotonic()
             left = int(deadline - time.monotonic())

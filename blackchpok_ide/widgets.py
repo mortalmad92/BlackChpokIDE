@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Iterable, Optional
 
-from . import theme
+from . import icons, theme
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ class HoverLabel(tk.Label):
         command: Optional[Callable[[], None]] = None,
         *,
         bg: str = theme.BG_ALT,
-        fg: str = theme.FG_DIM,
+        fg: str = theme.FG,
         hover_bg: str = theme.BG_HOVER,
         hover_fg: str = theme.FG_BRIGHT,
         active_bg: str = "",
@@ -67,6 +67,24 @@ class HoverLabel(tk.Label):
         self.bind("<Leave>", self._on_leave)
         self.bind("<Button-1>", self._on_press)
         self.bind("<ButtonRelease-1>", self._on_release)
+        self._vec_name, self._vec_rest = icons.resolve_glyph(text)
+        if self._vec_name:
+            self._apply_vec_icon(fg)
+
+    def _apply_vec_icon(self, color: str) -> None:
+        if not getattr(self, "_vec_name", None):
+            return
+        try:
+            in_hdr = "headerbar" in str(self).lower()
+            sz = (24 if self._vec_rest else 34) if in_hdr else (15 if self._vec_rest else 18)
+            img = icons.get_icon(self._vec_name, color=color, size=sz)
+            self._vec_img_ref = img
+            if self._vec_rest:
+                super().configure(image=img, text=" " + self._vec_rest, compound="left", width=0, height=0)
+            else:
+                super().configure(image=img, text="", compound="center", width=0, height=0)
+        except Exception:
+            pass
 
     # ── актуальні кольори ──────────────────────────────────────────────────
     def _colours(self) -> tuple[str, str, str, str, str, str]:
@@ -90,18 +108,21 @@ class HoverLabel(tk.Label):
     def set_active(self, active: bool) -> None:
         self._active = active
         bg, fg, _hover_bg, _hover_fg, active_bg, active_fg = self._colours()
-        super().configure(bg=active_bg if active else bg,
-                          fg=active_fg if active else fg)
+        c_fg = active_fg if active else fg
+        super().configure(bg=active_bg if active else bg, fg=c_fg)
+        self._apply_vec_icon(c_fg)
 
     def _on_enter(self, _event=None) -> None:
         if not self._active:
             _bg, _fg, hover_bg, hover_fg, _a_bg, _a_fg = self._colours()
             super().configure(bg=hover_bg, fg=hover_fg)
+            self._apply_vec_icon(hover_fg)
 
     def _on_leave(self, _event=None) -> None:
         if not self._active:
             bg, fg, _hover_bg, _hover_fg, _a_bg, _a_fg = self._colours()
             super().configure(bg=bg, fg=fg)
+            self._apply_vec_icon(fg)
 
     def _on_press(self, _event=None) -> None:
         if not self._active:
@@ -129,24 +150,58 @@ class Chip(HoverLabel):
         self.configure(relief="flat")
 
 
-class IconButton(HoverLabel):
-    """Квадратна кнопка-іконка (закрити вкладку, оновити, меню).
+class IconButton(tk.Label):
+    """??????? ??????-?????? (2026 UI): ?????????? ????????? ?????? 20x20 px + ?????? ?????-???????? ?????????."""
 
-    Розмір типово 12 pt і ширина 3 символи: дрібні іконки 10 pt на
-    високому екрані (150–200 % масштаб Windows) було важко націлити
-    мишею — особливо «×» закриття чату й «🗑» видалення.
-    """
-
-    def __init__(self, master: tk.Misc, text: str, command=None, *, bg: str = theme.BG_ALT,
-                 fg: str = theme.FG_DIM, size: int = 22, font=None, tooltip: str = "") -> None:
-        super().__init__(master, text=text, command=command, bg=bg, fg=fg,
-                         hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT,
-                         font=font or theme.font(12), padx=1, pady=1, anchor="center",
-                         width=3, height=1)
-        self._size = size
-        self._tip = tooltip
+    def __init__(self, master, glyph: str, command: Optional[Callable[[], None]] = None,
+                 bg: str = theme.BG_ALT, fg: str = theme.FG,
+                 hover_bg: str = theme.BG_HOVER, hover_fg: str = theme.FG_BRIGHT,
+                 font=None, tooltip: str = "", size: int = 22, **kwargs):
+        self._cmd = command
+        self._base_bg = bg
+        self._hover_bg = hover_bg
+        self._glyph = glyph
+        self._icon_size = size
+        gname, rest = icons.resolve_glyph(str(glyph or "").lstrip())
+        if not gname and str(glyph or "").strip():
+            ch = str(glyph).strip()
+            if ch in icons.GLYPH_MAP:
+                gname, rest = icons.GLYPH_MAP[ch], str(glyph).strip()[1:].strip()
+        if gname:
+            self._vec_img = icons.get_icon(gname, color=fg, size=size)
+            self._vec_img_ref = self._vec_img
+            self._vec_locked = True
+            super().__init__(
+                master, image=self._vec_img, text=(" " + rest if rest else ""),
+                compound=("left" if rest else "center"), bg=bg, fg=fg,
+                padx=6, pady=4, cursor="hand2"
+            )
+        else:
+            super().__init__(
+                master, text=glyph, bg=bg, fg=fg,
+                font=font or theme.font(11), padx=6, pady=4, cursor="hand2"
+            )
         if tooltip:
             Tip(self, tooltip)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonRelease-1>", self._on_click)
+
+    def _on_enter(self, _e=None):
+        try:
+            self.configure(bg=self._hover_bg)
+        except Exception:
+            pass
+
+    def _on_leave(self, _e=None):
+        try:
+            self.configure(bg=self._base_bg)
+        except Exception:
+            pass
+
+    def _on_click(self, _e=None):
+        if callable(self._cmd):
+            self._cmd()
 
 
 class Pill(tk.Frame):
@@ -175,6 +230,7 @@ class Pill(tk.Frame):
 
 
 class Tip:
+    _ACTIVE_TIP = None
     """Підказка до віджета без зовнішніх бібліотек."""
 
     def __init__(self, widget: tk.Misc, text: str, delay: int = 450) -> None:
@@ -203,21 +259,33 @@ class Tip:
             self._after = None
 
     def _show(self) -> None:
+        if Tip._ACTIVE_TIP is not None and Tip._ACTIVE_TIP is not self:
+            Tip._ACTIVE_TIP._hide()
         if self._win is not None or not self.text:
             return
         try:
-            x = self.widget.winfo_rootx() + 6
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+            px = self.widget.winfo_pointerx()
+            py = self.widget.winfo_pointery()
         except tk.TclError:
             return
         win = tk.Toplevel(self.widget)
         win.wm_overrideredirect(True)
-        win.configure(bg=theme.BORDER_SOFT)
-        label = tk.Label(win, text=self.text, bg=theme.BG_INPUT, fg=theme.FG,
-                         font=theme.font(8), padx=8, pady=3, justify="left")
+        win.configure(bg=theme.ACCENT)
+        label = tk.Label(win, text=self.text, bg=theme.BG_CARD, fg=theme.FG_BRIGHT,
+                         font=theme.font(10, "bold"), padx=10, pady=5, justify="left")
         label.pack(padx=1, pady=1)
-        win.wm_geometry(f"+{max(0, x)}+{max(0, y)}")
+        win.update_idletasks()
+        tw, th = win.winfo_reqwidth(), win.winfo_reqheight()
+        # ????????? ??? ??????? ???????? ????; ???? ????? ???? ?????? (< th + 14)  ???????? ??? ??????? (+42 px)
+        if py - th - 14 >= 4:
+            x = max(4, px - tw // 2)
+            y = py - th - 14
+        else:
+            x = px + 42
+            y = max(4, py - 8)
+        win.wm_geometry(f"+{x}+{y}")
         self._win = win
+        Tip._ACTIVE_TIP = self
 
     def _hide(self, _event=None) -> None:
         self._cancel()
@@ -590,30 +658,93 @@ class ScrollFrame(ttk.Frame):
 # Меню
 # ─────────────────────────────────────────────────────────────────────────────
 
+_ACTIVE_CONTEXT_MENU: Optional[tk.Toplevel] = None
+
 def context_menu(master: tk.Misc, items: Iterable[tuple[str, Optional[Callable[[], None]]]],
                  event) -> None:
-    """Показати контекстне меню; пункт із command=None стає розділювачем."""
-    menu = tk.Menu(master, tearoff=0, bg=theme.BG_ELEVATED, fg=theme.FG,
-                   activebackground=theme.BG_ACTIVE, activeforeground=theme.FG_BRIGHT,
-                   bd=0, font=theme.font(9))
+    """???????? ?????? ?????????? ????????? ???? (Toplevel) ??? ????????????? ????? ????? Windows."""
+    global _ACTIVE_CONTEXT_MENU
+    if _ACTIVE_CONTEXT_MENU is not None:
+        try:
+            _ACTIVE_CONTEXT_MENU.destroy()
+        except Exception:
+            pass
+        _ACTIVE_CONTEXT_MENU = None
+
+    top = master.winfo_toplevel()
+    win = tk.Toplevel(top)
+    win.wm_overrideredirect(True)
+    win.configure(bg=theme.BORDER_SOFT)
+    _ACTIVE_CONTEXT_MENU = win
+
+    box = tk.Frame(win, bg=theme.BG_ELEVATED, padx=4, pady=4)
+    box.pack(padx=1, pady=1, fill="both", expand=True)
+
+    def _close_menu(_ev=None):
+        global _ACTIVE_CONTEXT_MENU
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        if _ACTIVE_CONTEXT_MENU is win:
+            _ACTIVE_CONTEXT_MENU = None
+
     for label, command in items:
         if command is None:
-            menu.add_separator()
+            lbl_s = str(label or "").strip()
+            if lbl_s:
+                tk.Label(box, text=lbl_s, bg=theme.BG_ELEVATED, fg=theme.FG_FAINT,
+                         font=theme.font(8, "bold"), anchor="w", padx=12, pady=3).pack(fill="x")
+            else:
+                tk.Frame(box, bg=theme.BORDER_SOFT, height=1).pack(fill="x", padx=6, pady=4)
+            continue
+        lbl_txt = str(label).lstrip()
+        gname, rest_txt = icons.resolve_glyph(lbl_txt)
+        if not gname and lbl_txt:
+            ch0 = lbl_txt[0]
+            if ch0 in icons.GLYPH_MAP:
+                gname, rest_txt = icons.GLYPH_MAP[ch0], lbl_txt[1:].lstrip()
+        if gname:
+            is_light_bg = str(theme.BG_ELEVATED).lower().startswith(("#f", "#e", "#d", "#c"))
+            icon_col = "#1E293B" if is_light_bg else theme.FG
+            vec_img = icons.get_icon(gname, color=icon_col, size=16)
+            row = tk.Label(
+                box, text=("  " + rest_txt if rest_txt else ""), image=vec_img, compound="left",
+                bg=theme.BG_ELEVATED, fg=theme.FG, font=theme.font(10),
+                anchor="w", padx=12, pady=5, cursor="hand2"
+            )
+            row._vec_img_ref = vec_img
+            row._vec_locked = True
         else:
-            menu.add_command(label=label, command=command)
-    try:
-        menu.tk_popup(event.x_root, event.y_root)
-    finally:
-        menu.grab_release()
+            row = tk.Label(
+                box, text=lbl_txt, bg=theme.BG_ELEVATED, fg=theme.FG,
+                font=theme.font(10), anchor="w", padx=12, pady=5, cursor="hand2"
+            )
+        is_active_item = str(label).lstrip().startswith("\u2713")
+        base_bg = theme.BG_ACTIVE if is_active_item else theme.BG_ELEVATED
+        base_fg = "#38BDF8" if is_active_item else theme.FG
+        if is_active_item:
+            row.configure(bg=base_bg, fg=base_fg, font=theme.font(10, "bold"))
+        row.pack(fill="x", pady=1)
+        row.bind("<Enter>", lambda _e, r=row: r.configure(bg=theme.BG_HOVER, fg=theme.FG_BRIGHT))
+        row.bind("<Leave>", lambda _e, r=row, bbg=base_bg, bfg=base_fg: r.configure(bg=bbg, fg=bfg))
+        def _invoke(_e, fn=command):
+            _close_menu()
+            try:
+                fn()
+            except Exception:
+                pass
+        row.bind("<ButtonRelease-1>", _invoke)
 
+    win.update_idletasks()
+    mw, mh = win.winfo_reqwidth(), win.winfo_reqheight()
+    sw, sh = top.winfo_screenwidth(), top.winfo_screenheight()
+    x = min(max(4, int(getattr(event, "x_root", 100))), max(4, sw - mw - 8))
+    y = min(max(4, int(getattr(event, "y_root", 60))), max(4, sh - mh - 8))
+    win.wm_geometry(f"+{x}+{y}")
+    win.lift()
+    win.bind("<Escape>", _close_menu)
 
-# ── Буфер обміну для полів введення й текстових областей ────────────────────
-#
-# Навіщо власні функції, а не вбудовані ``<<Paste>>``/``<<Copy>>``:
-# у ttk.Entry на Windows ці віртуальні події не завжди доїжджають (зокрема
-# коли фокус переходить із списку), і Ctrl+V у полі пошуку хаба моделей
-# просто нічого не робив — «навіть через Ctrl+V не можу вставити». Тут
-# операція виконується напряму через буфер Tk, тож працює завжди.
 
 def _selection(widget) -> str:
     """Виділений текст віджета (порожній рядок, якщо виділення немає)."""

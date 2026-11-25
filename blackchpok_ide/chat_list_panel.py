@@ -309,6 +309,7 @@ class ChatListPanel(tk.Frame):
         self.query = ""
         self.compact = False
         self._active_id = ""
+        self._working_labels: list = []
         self._rows: dict[str, _SessionRow] = {}
         #: Ширина, за якої малювався список (перемальовуємо при зміні).
         self._built_width = 0
@@ -348,13 +349,19 @@ class ChatListPanel(tk.Frame):
             relief="flat", font=theme.font(9), bd=0, highlightthickness=0,
         )
         self.search_entry.grid(row=0, column=1, sticky="ew", ipady=5, padx=(0, 6))
+        self.clear_search_btn = tk.Label(
+            search_host, text="\u2715", bg=theme.BG_CARD, fg=theme.FG_FAINT,
+            font=theme.font(8), cursor="hand2", padx=4
+        )
+        self.clear_search_btn.bind("<ButtonRelease-1>", lambda _e: self._clear_search())
+        self.search_entry.bind("<FocusIn>", lambda _e: self._show_search_placeholder(False))
+        self.search_entry.bind("<FocusOut>", lambda _e: self._show_search_placeholder(True) if not self.search_entry.get().strip() else None)
         self.search_entry.bind("<KeyRelease>", self._on_search)
-        self.search_entry.bind("<Escape>", lambda _e: (self.search_entry.delete(0, "end"),
-                                                       self._on_search(None)))
-        self._search_placeholder = "Пошук…"
+        self.search_entry.bind("<Escape>", lambda _e: self._clear_search())
+        self._search_placeholder = "\u041f\u043e\u0448\u0443\u043a\u2026"
+        self._has_placeholder = False
         self._show_search_placeholder(True)
 
-        # ── заголовок секції: чати й агенти — це один список
         head = tk.Frame(self, bg=theme.BG_ALT)
         head.grid(row=2, column=0, sticky="ew", padx=(16, 12), pady=(2, 4))
         head.columnconfigure(0, weight=1)
@@ -396,16 +403,34 @@ class ChatListPanel(tk.Frame):
 
     def _show_search_placeholder(self, on: bool) -> None:
         if on:
-            self.search_entry.insert(0, self._search_placeholder)
-            self.search_entry.configure(fg=theme.FG_FAINT)
+            if not self.search_entry.get().strip():
+                self.search_entry.delete(0, "end")
+                self.search_entry.insert(0, self._search_placeholder)
+                self.search_entry.configure(fg=theme.FG_FAINT)
+                self._has_placeholder = True
+        else:
+            if getattr(self, "_has_placeholder", False) or self.search_entry.get() == self._search_placeholder:
+                self.search_entry.delete(0, "end")
+                self.search_entry.configure(fg=theme.FG_BRIGHT)
+                self._has_placeholder = False
+
+    def _clear_search(self) -> None:
+        self.search_entry.delete(0, "end")
+        self._has_placeholder = False
+        self.query = ""
+        self.clear_search_btn.grid_forget()
+        self.refresh()
+        if self.focus_get() is not self.search_entry:
+            self._show_search_placeholder(True)
 
     def _search_text(self) -> str:
+        if getattr(self, "_has_placeholder", False):
+            return ""
         value = self.search_entry.get().strip()
         if value == self._search_placeholder:
             return ""
         return value
 
-    # ── дії ────────────────────────────────────────────────────────────────
     def _notify(self, text: str) -> None:
         if self.on_status:
             self.on_status(text)
@@ -419,7 +444,13 @@ class ChatListPanel(tk.Frame):
         self.refresh()
 
     def _on_search(self, _event=None) -> None:
+        if getattr(self, "_has_placeholder", False):
+            return
         self.query = self._search_text()
+        if self.query:
+            self.clear_search_btn.grid(row=0, column=2, padx=(0, 6))
+        else:
+            self.clear_search_btn.grid_forget()
         self.refresh()
 
     # ── малювання ──────────────────────────────────────────────────────────
@@ -427,7 +458,36 @@ class ChatListPanel(tk.Frame):
         """Підсвітити активну сесію без перечитування сховища."""
         self._active_id = chat_id or ""
 
+
+    def _animate_working_labels(self) -> None:
+        """?'??? ????????? ???????? ?????????? Working ? ?????? ????? ?????."""
+        try:
+            if not self.winfo_exists():
+                return
+            frames = ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"]
+            palette = ["#7C6DA8", "#588B99", "#528B76", "#8E7B5B", "#8B6988", "#5E7CA6"]
+            step = getattr(self, "_wk_anim_step", 0)
+            self._wk_anim_step = step + 1
+            sp = frames[step % len(frames)]
+            col = palette[step % len(palette)]
+            alive = []
+            for lbl in getattr(self, "_working_labels", []):
+                try:
+                    if lbl.winfo_exists() and "Working" in str(lbl.cget("text") or ""):
+                        lbl.configure(text=f"{sp} Working", fg=col)
+                        alive.append(lbl)
+                except Exception:
+                    pass
+            self._working_labels = alive
+            self.after(220, self._animate_working_labels)
+        except Exception:
+            pass
+
     def refresh(self) -> None:
+        self._working_labels = []
+        if not getattr(self, '_wk_loop_started', False):
+            self._wk_loop_started = True
+            self.after(250, self._animate_working_labels)
         for child in self.host.winfo_children():
             child.destroy()
         self._rows.clear()
@@ -614,6 +674,15 @@ class ChatListPanel(tk.Frame):
         self._notify("Сесію видалено.")
 
     def _delete_all(self) -> None:
+        try:
+            _th = __import__("pathlib").Path.home() / "AppData/Roaming/BlackChpokIDE/thoughts_history"
+            if _th.exists():
+                for _f in _th.glob("*.json"): _f.unlink(missing_ok=True)
+            _mw = self.winfo_toplevel()
+            if hasattr(_mw, "chat") and hasattr(_mw.chat, "wipe_all_thoughts"):
+                _mw.chat.wipe_all_thoughts()
+        except Exception:
+            pass
         """Видалити всі чати (у вкладці архіву — лише архівні).
 
         Підтвердження обов'язкове: дія незворотна, і випадковий клік по

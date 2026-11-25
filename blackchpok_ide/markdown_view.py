@@ -168,7 +168,7 @@ def parse_markdown(text: str) -> list[Segment]:
             closed = False
             while i < total:
                 candidate = lines[i]
-                closing = re.match(r"^ {0,3}(?P<fence>`{3,}|~{3,})[ \t]*$", candidate)
+                closing = re.match(r"^\s*(?P<fence>`{3,}|~{3,})\s*$", candidate)
                 if (
                     closing
                     and closing.group("fence")[0] == fence_char

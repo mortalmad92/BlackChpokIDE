@@ -350,9 +350,87 @@ class ToolRegistry:
             "compare_screenshots": self.compare_screenshots,
             "analyze_visual_difference": self.analyze_visual_difference,
             "list_screenshots": self.list_screenshots,
+            #  ????????? ???????????, ?????????? ? MCP ??? ??????????
+            "db_schema": self.db_schema,
+            "review_code": self.review_code,
+            "night_shift": self.night_shift,
+            "set_preview_device": self.set_preview_device,
         }
 
     # ── прив'язка керування застосунком ────────────────────────────────────
+    def db_schema(self, path: str = "") -> ToolResult:
+        """???????? ??????? ?? ??????? SQLite-???? ????? ? ???????."""
+        import sqlite3
+        root = Path(self.workspace)
+        dbs = [root / path] if path else list(root.rglob("*.db")) + list(root.rglob("*.sqlite")) + list(root.rglob("*.sqlite3"))
+        dbs = [d for d in dbs if d.exists() and d.is_file() and ".venv" not in str(d)]
+        if not dbs:
+            return ToolResult(True, "SQLite-??? ????? ? ??????? ???? ?? ????????.")
+        out = []
+        for db in dbs[:5]:
+            try:
+                con = sqlite3.connect(str(db))
+                tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+                lines = [f"????: {db.name}"]
+                for tbl in tables:
+                    cols = [f"{c[1]} ({c[2]})" for c in con.execute(f"PRAGMA table_info({tbl})").fetchall()]
+                    lines.append(f"  - {tbl}: {', '.join(cols)}")
+                con.close()
+                out.append("\n".join(lines))
+            except Exception as exc:
+                out.append(f"???? {db.name}: ??????? ??????? ({exc})")
+        return ToolResult(True, "\n\n".join(out))
+
+    def review_code(self, path: str = "") -> ToolResult:
+        """???????? ????????? Python-?????? ??????? ?? ????????? ? ????????."""
+        import ast
+        root = Path(self.workspace)
+        targets = [root / path] if path else [p for p in root.rglob("*.py") if ".venv" not in str(p) and "__pycache__" not in str(p)]
+        issues = []
+        checked = 0
+        for f in targets[:60]:
+            if not f.exists() or not f.is_file():
+                continue
+            checked += 1
+            try:
+                src = f.read_text(encoding="utf-8", errors="ignore")
+                ast.parse(src, filename=str(f))
+                for idx, line in enumerate(src.splitlines(), 1):
+                    if "TODO" in line or "FIXME" in line:
+                        issues.append(f"{f.name}:{idx} - {line.strip()[:80]}")
+            except SyntaxError as exc:
+                issues.append(f"{f.name}:{exc.lineno} - SyntaxError: {exc.msg}")
+        summary = f"?????????? ??????: {checked}. ???????? ?????????: {len(issues)}."
+        return ToolResult(True, summary + ("\n" + "\n".join(issues[:25]) if issues else ""))
+
+    def night_shift(self, phrase: str = "?????? ????? 4 ??????") -> ToolResult:
+        """????????? ??? ?????????? ?????????? ???? ??????? ????????????????? ???????."""
+        import importlib.util, sys
+        root = Path(self.workspace).resolve()
+        ns_file = Path(__file__).resolve().parent.parent / "night_shift.py"
+        if not ns_file.exists():
+            return ToolResult(False, "?????? night_shift.py ?? ???????? ? ?????? IDE.")
+        spec = importlib.util.spec_from_file_location("blackchpok_night_shift", str(ns_file))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["blackchpok_night_shift"] = mod
+        spec.loader.exec_module(mod)
+        db_path = root / ".blackchpok_night.sqlite3"
+        out = mod.start_or_status(root, db_path, str(phrase or "?????? ????? 4 ??????"))
+        return ToolResult(True, str(out))
+
+    def set_preview_device(self, device: str = "desktop") -> ToolResult:
+        """?????????? ????? ?????????? ????? ? Live Preview: mobile (????????), tablet (???????), desktop (????'????)."""
+        ctrl = getattr(self, "_app_controller", None)
+        win = getattr(ctrl, "window", None) if ctrl is not None else None
+        lp = getattr(win, "live_preview", None) if win is not None else None
+        if lp is not None and hasattr(lp, "set_viewport_mode"):
+            try:
+                win.after(0, lambda: (win.toggle_preview(True), lp.set_viewport_mode(device)))
+                return ToolResult(True, f"Live Preview ?????????? ? ?????: {device} (????????=mobile, ???????=tablet, ????'????=desktop).")
+            except Exception as exc:
+                return ToolResult(False, f"??????? ??????????? ??????: {exc}")
+        return ToolResult(True, f"????? ?????????? ???????????: {device}.")
+
     def attach_app_controller(self, controller) -> None:
         """Підключити :class:`app_control.AppController` вікна IDE.
 
@@ -519,6 +597,13 @@ class ToolRegistry:
             message += "\nВиправ цей файл зараз же (edit_file або write_file)."
         message += _ast_note(target, body)
         self._show_in_editor(target, body, "write")
+        # AUTO_OPEN_BUILTIN_BROWSER: ??????????? ?????????? ??????? ??? ?????? ? ??????
+        try:
+            _p = str(locals().get('path') or locals().get('file_path') or '').lower()
+            if _p.endswith(('.html', '.htm', '.css', '.js', '.jsx', '.tsx', '.vue')) and hasattr(self, 'app_start'):
+                self.app_start()
+        except Exception:
+            pass
         return message
 
     def edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
@@ -589,6 +674,13 @@ class ToolRegistry:
             message += "\nВиправ цей файл зараз же."
         message += _ast_note(target, updated)
         self._show_in_editor(target, updated, "write")
+        # AUTO_OPEN_BUILTIN_BROWSER: ??????????? ?????????? ??????? ??? ?????? ? ??????
+        try:
+            _p = str(locals().get('path') or locals().get('file_path') or '').lower()
+            if _p.endswith(('.html', '.htm', '.css', '.js', '.jsx', '.tsx', '.vue')) and hasattr(self, 'app_start'):
+                self.app_start()
+        except Exception:
+            pass
         return message
 
     def append_file(self, path: str, content: str) -> str:

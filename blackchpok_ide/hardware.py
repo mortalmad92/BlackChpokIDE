@@ -361,25 +361,41 @@ def _merge_gpus(primary: Iterable[GpuInfo], secondary: Iterable[GpuInfo]) -> lis
     return list(merged.values())
 
 
-def detect(path: Path | str | None = None) -> HardwareProfile:
-    """Зібрати профіль заліза.
+_CACHED_STATIC_HW: dict[str, Any] | None = None
 
-    ``path`` — тека, вільне місце якої перевіряємо (типово домашня тека).
+
+def detect(path: Path | str | None = None, *, force: bool = False) -> HardwareProfile:
+    """??????? ??????? ?????? (???????? ????????? ????????? ?? ??? ?????).
+
+    ``path``  ????, ?????? ????? ???? ??????????? (?????? ??????? ????).
+    ``force``  ????????? ????????????? GPU/CPU ??????? ???????????? ????.
     """
-    total_ram, available_ram = _memory_gb()
-    registry_gpus = _windows_registry_gpus() if sys.platform == "win32" else []
-    gpus = _merge_gpus(_nvidia_gpus(), registry_gpus)
+    global _CACHED_STATIC_HW
+    first_run = _CACHED_STATIC_HW is None or force
 
-    threads = os.cpu_count() or 0
+    if first_run:
+        registry_gpus = _windows_registry_gpus() if sys.platform == "win32" else []
+        gpus = _merge_gpus(_nvidia_gpus(), registry_gpus)
+        threads = os.cpu_count() or 0
+        _CACHED_STATIC_HW = {
+            "os_name": f"{platform.system()} {platform.release()}",
+            "arch": platform.machine(),
+            "cpu_name": _cpu_name(),
+            "cpu_cores": max(1, threads // 2) if threads else 0,
+            "cpu_threads": threads,
+            "gpus": gpus,
+        }
+
+    total_ram, available_ram = _memory_gb()
     profile = HardwareProfile(
-        os_name=f"{platform.system()} {platform.release()}",
-        arch=platform.machine(),
-        cpu_name=_cpu_name(),
-        cpu_cores=max(1, threads // 2) if threads else 0,
-        cpu_threads=threads,
+        os_name=_CACHED_STATIC_HW["os_name"],
+        arch=_CACHED_STATIC_HW["arch"],
+        cpu_name=_CACHED_STATIC_HW["cpu_name"],
+        cpu_cores=_CACHED_STATIC_HW["cpu_cores"],
+        cpu_threads=_CACHED_STATIC_HW["cpu_threads"],
         ram_total_gb=round(total_ram, 1),
         ram_available_gb=round(available_ram, 1),
-        gpus=gpus,
+        gpus=_CACHED_STATIC_HW["gpus"],
     )
 
     target = Path(path) if path else Path.home()
@@ -389,7 +405,9 @@ def detect(path: Path | str | None = None) -> HardwareProfile:
         profile.disk_total_gb = round(usage.total / GB, 1)
     except OSError:
         pass
-    LOG.info("Залізо: %s", profile.summary())
+
+    if first_run:
+        LOG.info("??????: %s", profile.summary())
     return profile
 
 
@@ -579,7 +597,7 @@ def fit(profile: HardwareProfile, choice: ModelChoice, *,
         # Тому в режимі «авто» (target_ctx = 0) сюди не йдемо: краще віддати
         # 16K на повній швидкості, ніж 32K на третину повільніше. У RAM
         # переходимо лише коли користувач ЯВНО попросив більший контекст.
-        if target_ctx and choice.approx_gb + RUNTIME_OVERHEAD_GB <= vram_budget:
+        if (target_ctx or ram_budget >= 24.0) and choice.approx_gb + RUNTIME_OVERHEAD_GB <= vram_budget:
             need_ram = kv_cache_gb(choice, ctx) / 2 + RUNTIME_OVERHEAD_GB
             if need_ram <= ram_budget:
                 plan = LaunchPlan(gpu_layers=FULL_OFFLOAD, ctx_size=ctx, threads=threads,
@@ -720,7 +738,7 @@ class LaunchPlan:
 #: Обмежуємо не пам'яттю (її 64 ГБ), а швидкістю: після ~32K читання
 #: промпту стає помітно довшим, а локальній моделі стільки не потрібно —
 #: агент передає файли фрагментами.
-CTX_LADDER_RAM = (32768, 24576, 16384)
+CTX_LADDER_RAM = (65536, 32768, 24576, 16384)
 
 
 def fit_ctx_for_ram(profile: HardwareProfile, choice: ModelChoice,

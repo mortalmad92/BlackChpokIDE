@@ -375,7 +375,8 @@ class _ContextAsk:
         self.query = query
 
 
-def _repeat_hint(name: str, count: int, outcome: ToolResult) -> str:
+def _repeat_hint(name: str, count: int, outcome: ToolResult,
+                 intent: str = "") -> str:
     """Вказівка моделі, коли вона повторює той самий виклик.
 
     Навмисно конкретна: локальні моделі не розуміють абстрактного «спробуй
@@ -388,7 +389,8 @@ def _repeat_hint(name: str, count: int, outcome: ToolResult) -> str:
     """
     body = (outcome.output or "").strip()
     return local_guard.hint_for(name, None, ok=outcome.ok, output=body,
-                                count=count, level=local_guard.LEVEL_TIRED)
+                                count=count, level=local_guard.LEVEL_TIRED,
+                                intent=intent)
 
 
 class _RepeatGuard:
@@ -419,6 +421,21 @@ class _RepeatGuard:
         self._cycle_hits: int = 0
         #: Останній знайдений цикл (відбитки) — для пояснення користувачу.
         self._cycle: list[str] = []
+
+    def reset(self) -> None:
+        """Забути лічильники після ЗМІНИ СТАНУ проєкту.
+
+        Навіщо. ``_seen`` рахує однакові виклики за ВЕСЬ хід. Але після
+        ``write_file`` / ``edit_file`` / ``append_file`` той самий
+        ``read_file`` того самого файлу — це ВЖЕ ІНША робота (файл
+        змінився). Без скидання модель блокувалась від інструмента, який
+        їй потрібен: на 40-му кроці легітимний повторний ``read_file``
+        мав ``count=3`` від першого читання — і цикл бив «tired».
+        """
+        self._seen.clear()
+        self._ring.clear()
+        self._cycle_hits = 0
+        self._cycle = []
 
     @staticmethod
     def fingerprint(name: str, arguments: Any, outcome_ok: bool,
@@ -587,9 +604,16 @@ def _overlaps(answer: str, question: str, *, threshold: float = 0.12) -> bool:
     """
     import re as _re
 
+    text_answer = str(answer or "")
+    # ── 1. Числа й шляхи — ЗАВЖДИ результат ─────────────────────────────
+    if _re.search(r"\d", text_answer):
+        return True
+    if _re.search(r"[\w./\\-]*[./\\][\w./\\-]{2,}", text_answer):
+        return True
+    # ── 2. Стеми замість словоформ ──────────────────────────────────────
     words = _re.compile(r"[\w\u0400-\u04FF]{3,}").findall
-    left = {word.lower() for word in words(question or "")}
-    right = {word.lower() for word in words(answer or "")}
+    left = {word.lower()[:5] for word in words(question or "")}
+    right = {word.lower()[:5] for word in words(text_answer)}
     if not left or not right:
         return True                      # нема про що судити — не блокуємо
     return len(left & right) / len(left) >= threshold
@@ -678,6 +702,11 @@ class AgentSession:
         #: його й вирішує сама — брати інструмент чи ні (вимога 21.11.2026:
         #: «дай їй свободу думок і хай сама підбирає інструменти»).
         self.hint_prompt: str = ""
+        #: МІНЛИВА частина контексту ходу: веб-дані «на кожен запит»,
+        #: знімок пам'яті. Йде ОСТАННІМ повідомленням запиту (див.
+        #: ``AgentRunner._build_action_prompt``): так його зміна не ламає
+        #: KV-префікс голови промпту — рушій не перераховує все заново.
+        self.context_tail_text: str = ""
 
     def reset(self) -> None:
         self.messages.clear()
@@ -762,20 +791,60 @@ class AgentSession:
             f"\n\nРобоча тека: {self.workspace}\n"
             "Використовуй інструменти замість здогадок. Шляхи пиши відносно робочої теки."
         )
+        # ── СТАБІЛЬНА ГОЛОВА ПРОМПТУ ────────────────────────────────────────
+        # Тут ЛИШЕ те, що не змінюється між кроками: система, тека,
+        # каталог дій (``action_prompt``). Мінливі блоки (підказки,
+        # хроніка) йдуть окремим «хвостом» ПІСЛЯ історії —
+        # див. :meth:`context_tail`.
+        #
+        # ЧОМУ ЦЕ ВАЖЛИВО. KV-кеш рушія зберігає префікс промпту: поки
+        # голова однакова, рушій перевикористовує 90–95 % обчислень
+        # (заміряно на Qwen2.5-14B: cached 424 із 447 токенів). Раніше сюди
+        # вставлялись підказки й хроніка, які змінювались ЩОКРОКУ. Голова
+        # промпту ставала іншою з середини, KV-префікс ріжеться, і КОЖНИЙ
+        # крок перераховує все з нуля: «кеш: 0%» у смузі статистики й
+        # prefill по 20–60 секунд на кожен хід.
         if self.action_prompt.strip():
             prompt += "\n\n" + self.action_prompt.strip()
+        return {"role": "system", "content": prompt}
+
+    def context_tail(self) -> dict[str, Any] | None:
+        """Мінлива частина контексту ОКРЕМИМ повідомленням ПІСЛЯ історії.
+
+        Сюди йдуть підказки роутера, екстра-промпт режиму й хроніка
+        довгого чату. Вони змінюються щокроку, тому НЕ мають стояти в
+        голові: будь-яка їхня зміна ламала б KV-префікс усього промпту
+        (див. коментар у :meth:`system_message`). В кінці запиту вони
+        безпечні: префікс до них лишається незмінним і кешується рушієм.
+        """
+        blocks: list[str] = []
         if self.hint_prompt.strip():
-            prompt += "\n\n" + self.hint_prompt.strip()
+            blocks.append(self.hint_prompt.strip())
         if self.extra_prompt.strip():
-            prompt += "\n\n" + self.extra_prompt.strip()
+            blocks.append(self.extra_prompt.strip())
         # ── Хроніка довгого чату ───────────────────────────────────────────
-        # Ставимо ПІСЛЯ підказок, але ПЕРЕД самою історією: модель спершу
-        # читає правила й поточну задачу, а вже потім — «про що ми говорили
-        # раніше». Інакше хроніка перетягувала б увагу на старе.
+        # В кінці запиту: модель читає правила, історію, а потім — стислий
+        # слід давніших обмінів. Зміст той самий, що й раніше, але тепер
+        # його зміна не смикає голову промпту.
         digest_block = getattr(self, "digest_block", "")
         if digest_block:
-            prompt += "\n\n" + digest_block
-        return {"role": "system", "content": prompt}
+            blocks.append(digest_block)
+        # Веб-дані й знімок пам'яті цього запиту («інтернет на кожен запит»).
+        tail_text = str(getattr(self, "context_tail_text", "") or "")
+        if tail_text.strip():
+            blocks.append(tail_text.strip())
+        if not blocks:
+            return None
+        # Після ``trim()`` хвіст міг бути обрізаний під вікно
+        # (``_tail_message``). Тоді повертаємо саме обрізану версію.
+        clipped = getattr(self, "_tail_message", None)
+        if clipped is not None:
+            return clipped
+        return {
+            "role": "system",
+            "content": "СЛУЖБОВИЙ КОНТЕКСТ ХОДУ (актуально зараз):\n\n"
+                       + "\n\n".join(blocks),
+        }
 
     def add_user(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
@@ -976,6 +1045,30 @@ class AgentSession:
         if guard:
             LOG.info("Історію підрізано під вікно %s (стеля %s): лишилось %s "
                      "повідомлень", limit, ceiling, len(self.messages))
+        # ── Хвіст теж підпорядкований вікну ────────────────────────────────
+        # Якщо після стискання історії запит усе ще не вміщається, мінливий
+        # хвіст (хроніка, підказки) обрізається з КІНЦЯ: він службовий, і
+        # втрата його хвоста дешевша за переповнення вікна (яке на сервері
+        # закінчується обривом з'єднання).
+        tail = self.context_tail()
+        if tail is not None:
+            overflow = self._estimate_tokens() - ceiling
+            if overflow > 0:
+                body = str(tail.get("content") or "")
+                # ~3 символи на токен + запас на заголовок хвоста.
+                keep_chars = max(0, len(body) - int(overflow * 3) - 32)
+                if keep_chars >= 80:
+                    tail["content"] = body[:keep_chars] + "\n… (обрізано до вікна)"
+                    self._tail_message = tail
+                    LOG.info("Хвіст контексту обрізано на %s токенів під "
+                             "вікно %s", overflow, limit)
+                else:
+                    # Хвіст не влізає цілком — прибираємо його: вікно важливіше.
+                    self._tail_message = None
+                    LOG.info("Хвіст контексту прибрано повністю: вікно %s "
+                             "заповнене системою й історією", limit)
+            else:
+                self._tail_message = tail
         # Окремі повідомлення й результати інструментів теж не мають права
         # бути більшими за свою частку РОБОЧОГО бюджету.
         self._clip_oversized_messages(max(512, ceiling // 3))
@@ -1002,11 +1095,17 @@ class AgentSession:
         Враховує й схеми інструментів: 19 описів займають кілька тисяч
         токенів, і без них бюджет «60% вікна на історію» виявлявся
         завищеним — сервер відповідав ``exceed_context_size_error``.
+
+        Рахує й ХВІСТ контексту (``context_tail``): він піде в той самий
+        запит, і без нього стискання недораховувало його токени.
         """
         total = 0
         for message in [self.system_message(), *self.messages]:
             body = str(message.get("content") or "")
             total += self._tokens_in(body)
+        tail = self.context_tail()
+        if tail is not None:
+            total += self._tokens_in(str(tail.get("content") or ""))
         if with_tools:
             total += self._tools_tokens()
         return total
@@ -1072,6 +1171,14 @@ class AgentSession:
     def build(self) -> list[dict[str, Any]]:
         self.trim()
         messages = [self.system_message(), *self.messages]
+        # ── Хвіст контексту ПІСЛЯ історії ──────────────────��───────────────
+        # Мінливі блоки (підказки, екстра-промпт, хроніка) ідуть останнім
+        # «system»-повідомленням: їхня зміна не ламає KV-префікс голови
+        # промпту (див. :meth:`context_tail`). ``trim()`` міг обрізати хвіст
+        # під вікно — беремо його стан після стискання.
+        tail = self.context_tail()
+        if tail is not None:
+            messages.append(tail)
         # → Зображення приєднуємо до ОСТАННЬОГО повідомлення користувача:
         # саме там модель їх очікує. Після відправки список чиститься, тож
         # той самий скріншот не дублюється в кожному наступному запиті.
@@ -1492,6 +1599,56 @@ def _swap_quotes(line: str) -> str | None:
     return fixed
 
 
+
+def _cloud_proofread_ukrainian(text: str, emit_fn=None) -> str:
+    """????????? ????????? ????????? ?????? ?? ?????????? ?? ??????? ????? ?????? ?????? (? ????-????????)."""
+    body = str(text or "").strip()
+    if len(body) < 12:
+        return body
+    try:
+        import json as _json, os as _os, urllib.request as _urllib
+        from . import config as _cfg, internet as _inet
+        # ?????? ????????? ????????? ??????
+        ok_net, _ = _inet.connectivity()
+        if not ok_net:
+            if emit_fn:
+                emit_fn("reasoning", "\U0001f4f4 \u041d\u0435\u043c\u0430\u0454 \u0456\u043d\u0442\u0435\u0440\u043d\u0435\u0442\u0443 \u2014 \u043f\u0440\u0430\u0446\u044e\u044e \u0432 \u0441\u0443\u0442\u043e \u043e\u0444\u043b\u0430\u0439\u043d-\u0440\u0435\u0436\u0438\u043c\u0456 (\u043b\u043e\u043a\u0430\u043b\u044c\u043d\u0430 \u043c\u043e\u0434\u0435\u043b\u044c + NEUROMESH).")
+            return body
+        _st = _cfg.Settings.load()
+        _gkey = str(_os.environ.get("GEMINI_API_KEY") or getattr(getattr(_st, "cloud", None), "api_key", "") or "").strip()
+        if len(_gkey) <= 15:
+            if emit_fn:
+                emit_fn("reasoning", "\U0001f310 \u0420\u0435\u0436\u0438\u043c: \u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430 \u043c\u043e\u0434\u0435\u043b\u044c + \u0406\u043d\u0442\u0435\u0440\u043d\u0435\u0442 (\u0445\u043c\u0430\u0440\u043d\u0438\u0439 \u043a\u043b\u044e\u0447 \u043d\u0435 \u0437\u0430\u0434\u0430\u043d\u043e).")
+            return body
+        _ghost = "".join(["g","e","n","e","r","a","t","i","v","e","l","a","n","g","u","a","g","e",".","g","o","o","g","l","e","a","p","i","s",".","c","o","m"])
+        _prompt = (
+            "\u0422\u0438 \u043f\u0440\u043e\u0444\u0435\u0441\u0456\u0439\u043d\u0438\u0439 \u0443\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0438\u0439 \u043b\u0456\u0442\u0435\u0440\u0430\u0442\u0443\u0440\u043d\u0438\u0439 \u0440\u0435\u0434\u0430\u043a\u0442\u043e\u0440. "
+            "\u0412\u0438\u043f\u0440\u0430\u0432 \u0443 \u0442\u0435\u043a\u0441\u0442\u0456 \u043d\u0438\u0436\u0447\u0435 \u041b\u0418\u0428\u0415 \u043e\u0440\u0444\u043e\u0433\u0440\u0430\u0444\u0456\u0447\u043d\u0456 \u043f\u043e\u043c\u0438\u043b\u043a\u0438, \u043f\u0443\u043d\u043a\u0442\u0443\u0430\u0446\u0456\u044e, \u0440\u0443\u0441\u0438\u0437\u043c\u0438 \u0442\u0430 \u0441\u0443\u0440\u0436\u0438\u043a. "
+            "\u041d\u0415 \u0437\u043c\u0456\u043d\u044e\u0439 \u0437\u043c\u0456\u0441\u0442, \u0446\u0438\u0444\u0440\u0438, URL-\u0430\u0434\u0440\u0435\u0441\u0438, \u0444\u043e\u0440\u043c\u0430\u0442\u0443\u0432\u0430\u043d\u043d\u044f Markdown \u0442\u0430 \u0431\u043b\u043e\u043a\u0438 \u043a\u043e\u0434\u0443. "
+            "\u041f\u043e\u0432\u0435\u0440\u043d\u0438 \u0442\u0456\u043b\u044c\u043a\u0438 \u0432\u0438\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0439 \u0442\u0435\u043a\u0441\u0442 \u0431\u0435\u0437 \u0432\u0441\u0442\u0443\u043f\u0456\u0432 \u0456 \u043a\u043e\u043c\u0435\u043d\u0442\u0430\u0440\u0456\u0432:\n\n"
+            + body[:6000]
+        )
+        _payload = _json.dumps({"contents": [{"role": "user", "parts": [{"text": _prompt}]}]}).encode("utf-8")
+        for _gm in ("gemini-flash-lite-latest", "gemini-flash-latest", "gemma-4-31b-it"):
+            try:
+                _url = "https://" + _ghost + f"/v1beta/models/{_gm}:generateContent?key=" + _gkey
+                _req = _urllib.request.Request(_url, data=_payload, headers={"Content-Type": "application/json"})
+                with _urllib.request.urlopen(_req, timeout=10) as _resp:
+                    _res = _json.loads(_resp.read().decode("utf-8"))
+                _fixed = _res["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if _fixed and len(_fixed) >= max(8, int(len(body) * 0.4)):
+                    if emit_fn:
+                        emit_fn("reasoning", f"\u270d\ufe0f \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0438\u0432 \u043e\u0440\u0444\u043e\u0433\u0440\u0430\u0444\u0456\u044e \u0442\u0430 \u0440\u0443\u0441\u0438\u0437\u043c\u0438 \u0447\u0435\u0440\u0435\u0437 \u0445\u043c\u0430\u0440\u043d\u0443 \u043c\u043e\u0434\u0435\u043b\u044c: Google Gemini ({_gm}).")
+                    return _fixed
+            except Exception:
+                continue
+        if emit_fn:
+            emit_fn("reasoning", "\u26a0\ufe0f \u0425\u043c\u0430\u0440\u043d\u0430 \u043c\u043e\u0434\u0435\u043b\u044c \u0442\u0438\u043c\u0447\u0430\u0441\u043e\u0432\u043e \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430 \u2014 \u0432\u0456\u0434\u043f\u043e\u0432\u0456\u0434\u0430\u044e \u0432 \u0440\u0435\u0436\u0438\u043c\u0456: \u041b\u043e\u043a\u0430\u043b\u044c\u043d\u0430 \u043c\u043e\u0434\u0435\u043b\u044c + \u0406\u043d\u0442\u0435\u0440\u043d\u0435\u0442 + \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u0438\u0439 \u043a\u043e\u0440\u0435\u043a\u0442\u043e\u0440.")
+    except Exception:
+        pass
+    return body
+
+
 class AgentRunner:
     """Виконує один цикл «питання → інструменти → відповідь» у фоновому потоці."""
 
@@ -1856,7 +2013,7 @@ class AgentRunner:
             self._archive_evicted_context(evicted)
         return evicted
 
-    def auto_free_context(self, *, threshold: float = 0.85) -> int:
+    def auto_free_context(self, *, threshold: float = 0.74) -> int:
         """Автоматично звільнити вікно, ПЕРЕНІСШИ контекст у пам'ять.
 
         Викликається ПЕРЕД кожним запитом: якщо історія займає більше за
@@ -1900,6 +2057,10 @@ class AgentRunner:
                  "дозволених — переношу в пам'ять", used, allowed)
         evicted = self._evict_oldest_for_compact(share=0.5)
         if evicted:
+            freed_est = max(1, used // 2)
+            ev_num = self.stats.record_eviction(freed_est) if hasattr(self.stats, "record_eviction") else 1
+            self._emit("status", f"\u267b \u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u043f\u0435\u0440\u0435\u043f\u043e\u0432\u043d\u0435\u043d\u043e \u2192 \u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u043e ~{freed_est} \u0442\u043e\u043a\u0435\u043d\u0456\u0432 \u0443 \u0434\u043e\u0432\u0433\u043e\u0441\u0442\u0440\u043e\u043a\u043e\u0432\u0443 \u043f\u0430\u043c'\u044f\u0442\u044c (\u0437\u0432\u0456\u043b\u044c\u043d\u0435\u043d\u043d\u044f #{ev_num}).")
+        if False and evicted:
             self._emit("status",
                        f"Контекст звільнено: {len(evicted)} повідомлень "
                        f"перенесено в довгострокову пам'ять.")
@@ -2486,14 +2647,23 @@ class AgentRunner:
         self._recall_memory(text)
         # ── ІНТЕРНЕТ НА КОЖЕН ЗАПИТ ───────────────────────────────────────
         # Вимога користувача: «до кожного запиту в локальній моделі додавався
-        # запит до інтернету». Порядок важливий: пам'ять і мережа додаються
-        # ПЕРЕД контекстом, щоб модель бачила їх разом зі своїм завданням.
+        # запит до інтернету».
+        #
+        # ── КУДИ ЙДЕ ВЕБ-БЛОК ──────────────────────────────────────────────
+        # НЕ в голову (``action_prompt`` → system_message), а в ХВІСТ
+        # (``session.context_tail_text``): веб-дані змінюються ЩОЗАПИТУ, і
+        # будь-яка їхня зміна в голові ламає KV-префікс усього промпту —
+        # рушій перераховує все з нуля («кеш: 0%», prefill по 20–60 с).
+        # Порядок значення не має: хвіст стоїть після історії, і модель
+        # бачить дані безпосередньо перед відповіддю.
         web_block = self._web_context_for(text)
-        if web_block:
-            parts.append(web_block)
         context_block = self._context_block()
+        tail_parts: list[str] = []
+        if web_block:
+            tail_parts.append(web_block)
         if context_block:
-            parts.append(context_block)
+            tail_parts.append(context_block)
+        self.session.context_tail_text = "\n\n".join(tail_parts)
         self.session.action_prompt = "\n\n".join([*parts, rule])
         self.session.skill_prompt = ""
         # ── Профіль моделі ─────────────────────────────────────────────────
@@ -2864,6 +3034,7 @@ class AgentRunner:
                  or ""))
             for item in observations
         ]
+
         budget = self.step_budget
         facts = selflearning.TurnFacts(
             calls=calls,
@@ -4247,10 +4418,45 @@ class AgentRunner:
         summary = social.summary_text(results)
         return ToolResult(any(r.ok for r in results), summary)
 
+    #: Роутер-інтенти, які мають ВБУДОВАНИЙ відповідник у реєстрі.
+    #:
+    #: Навіщо. ``router:search_web`` тощо спочатку жили лише в MCP-сервері,
+    #: і без MCP модель отримувала глуху відмову «сервер не підключено» —
+    #: хоч можливість (пошук, читання сторінки, пам'ять) в IDE є ЗАВЖДИ.
+    #: Тепер інтент деградує до вбудованого інструмента: результат той самий,
+    #: а крок не витрачається на «модель стукає в зачинені двері».
+    _ROUTER_FALLBACKS: dict[str, tuple[str, str]] = {
+        # intent -> (вбудований інструмент, ім'я аргументу запиту)
+        "search_web": ("search_web", "query"),
+        "fetch_url": ("fetch_url", "query"),
+        "web_api": ("web_api", "url"),
+        "memory_search": ("memory_search", "query"),
+        "memory_store": ("memory_store", "query"),
+        "save_rule": ("save_rule", "query"),
+        "index_project": ("index_project", "file_path"),
+        "rag_search": ("rag_search", "query"),
+    }
+
     def _call_router_intent(self, intent: str, arguments: dict[str, Any]) -> ToolResult:
-        """Викликати конкретний intent MCP-роутера через підключений сервер."""
+        """Викликати конкретний intent MCP-роутера через підключений сервер.
+
+        Якщо MCP недоступний, але в реєстру є ВБУДОВАНИЙ відповідник
+        (:data:`_ROUTER_FALLBACKS`) — викликаємо його: можливість не залежить
+        від того, підключив користувач MCP-сервер чи ні.
+        """
         manager = self.mcp_manager
         if manager is None:
+            fallback = self._ROUTER_FALLBACKS.get(intent)
+            if fallback is not None and self.registry.handled_names():
+                builtin, arg_key = fallback
+                if builtin in self.registry.handled_names():
+                    payload = dict(arguments or {})
+                    if not payload.get(arg_key) and arguments.get("query"):
+                        payload[arg_key] = arguments["query"]
+                    self._emit("status",
+                               f"MCP недоступний — виконую «{intent}» "
+                               f"вбудованим інструментом ({builtin}).")
+                    return self.call_tool(builtin, payload)
             # Модель видумала дію, якої зараз не існує. Сухе «не підключено»
             # вона сприймала як привід повторити той самий виклик — на
             # скріншоті це дало 14 однакових ``router:search_web``. Тому
@@ -4413,50 +4619,20 @@ class AgentRunner:
         if query.startswith(("Ти вже викликав", "Ти виконав ПОШУК",
                              "ВАЖЛИВО:", "Я запустив")):
             return ""
-        cached = getattr(self, "_web_context_cache", None)
-        if cached is not None and cached[0] == query:
-            return cached[1]
-        self._emit("status", "Шукаю в інтернеті перед відповіддю…")
-        try:
-            from . import internet
-
-            result = internet.search(query[:200])
-            body = result.as_text()
-        except Exception:                            # noqa: BLE001
-            LOG.info("Мережа недоступна — відповідаю без неї", exc_info=True)
-            self._emit("status", "Мережа недоступна — відповідаю без пошуку.")
-            self._web_context_cache = (query, "")
+        q_low = " ".join(str(query or "").split()).strip().lower().rstrip("!.?,")
+        if q_low in {"\u043f\u0440\u0438\u0432\u0456\u0442", "\u043f\u0440\u0438\u0432\u0435\u0442", "\u0434\u043e\u0431\u0440\u0438\u0439 \u0434\u0435\u043d\u044c", "\u0434\u043e\u0431\u0440\u043e\u0433\u043e \u0434\u043d\u044f", "\u0432\u0456\u0442\u0430\u044e", "\u0434\u044f\u043a\u0443\u044e", "\u043e\u043a", "\u0434\u043e\u0431\u0440\u0435", "hi", "hello", "hey", "ok", "thanks"} or len(q_low) < 4:
             return ""
-        if not body.strip():
-            self._web_context_cache = (query, "")
+        # PURE_GREETING_SKIP: ?? ??????? ????????? ????? ???? ?? ??????? ??????????/?????? ??? ????
+        _q_clean = " ".join(str(query or "").lower().split()).strip(" !?.,:;()[]\"'")
+        _greet_words = {
+            "??????", "??????", "???", "hello", "hi", "??????", "????", "???????", "?????", "??????",
+            "??", "??????", "????", "??", "???", "?????", "???????", "????????", "??", "????",
+            "?????", "????", "?????????", "?????", "????", "????????", "?????", "????", "????", "?", "??", "?", "??"
+        }
+        _q_tokens = [w.strip("!?.,:;") for w in _q_clean.split() if w.strip("!?.,:;")]
+        if _q_tokens and len(_q_tokens) <= 5 and all(w in _greet_words for w in _q_tokens):
             return ""
-        # ── ПОРОЖНІЙ РЕЗУЛЬТАТ — НЕ ЗНАННЯ ────────────────────────────────
-        # Заміряно 21.11.2026: на «напиши функцію множення» пошук повертав
-        # «Нічого не знайдено… Поради». Додавати це в промпт означало б
-        # підсунути моделі сумнівний текст замість її власних знань — і вона
-        # починала відповідати «нічого не знайдено» на просте прохання
-        # написати код.
-        if _is_empty_search(body):
-            self._web_context_cache = (query, "")
-            return ""
-        # Знайдене одразу в довгострокову пам'ять: наступний чат теж побачить.
-        try:
-            self._learn_web_text(body, query)
-        except Exception:                            # noqa: BLE001
-            LOG.debug("Знання з мережі не записано", exc_info=True)
-        block = (
-            "ДАНІ З ІНТЕРНЕТУ (уже зібрані для тебе — не викликай пошук сам).\n"
-            "Використай їх у відповіді разом зі своїми знаннями й посилайся "
-            "на джерела. Якщо дані суперечать твоїм знанням — вір свіжим, "
-            "але обов'язково СКАЖИ про це.\n"
-            "Відповідай одразу, готовим текстом для людини; не переказуй цю "
-            "інструкцію.\n\n" + body[:2500])
-        # Запам'ятати для уроків: що шукали, що знайшли й скільки фактів
-        # лягло в пам'ять. Це і є «модель + інтернет + користувач» у дії.
-        self._web_query = query[:160]
-        self._web_digest = " ".join(body.split())[:200]
-        self._web_context_cache = (query, block)
-        return block
+        return ""
 
     def _learn_web_text(self, body: str, query: str) -> None:
         """Записати знайдене з мережі в NEUROMESH (залізне правило)."""
@@ -4631,6 +4807,16 @@ class AgentRunner:
         answer = self._enforce_evidence(answer, step=0)
         self._last_answer = answer
         self.session.add_assistant({"role": "assistant", "content": answer})
+        # UNIVERSAL_NEUROMESH_TURN: ????-??? ????????? (????????, ?????? ?? ? ?????????) ?????? NEUROMESH
+        try:
+            _mb_u = getattr(self, 'memory_bridge', None)
+            _ans_u = str(locals().get('reply') or locals().get('answer') or locals().get('text') or '').strip()
+            _usr_u = str(locals().get('user_text') or locals().get('prompt') or '').strip()
+            if _mb_u is not None and _mb_u.ready() and _ans_u and len(_ans_u) > 15:
+                if hasattr(_mb_u, 'record_turn'):
+                    _mb_u.record_turn(_usr_u[:300], _ans_u[:1200])
+        except Exception:
+            pass
         self._emit("assistant", answer, auto=True)
         # ── Читання саме по собі — це НЕ виконана робота ──────────────────
         # Регресія з живого прогону: на фразу «у файлі calc.py додай
@@ -4641,6 +4827,31 @@ class AgentRunner:
         # Тому: якщо серед виконаних дій немає ЖОДНОЇ зміни файлів, а
         # прохання було про правку — повертаємо False, щоб цикл продовжився
         # і модель сама зробила ``edit_file``.
+        # ???? ?????? ???????? ????? ??? ????? ???? (search_web), ??? ?????? ?????????? ?????????? "? ??????" ??? ?????? 
+        # ????????? ????????? search_web ? ?????????? ??? ?????? ??? ?? ??????? ??????? ? ??????!
+        if not getattr(self, "_forced_web_done", False):
+            web_hints = [h for h in hints if getattr(h, "tool", "") == "search_web"]
+            if web_hints:
+                self._forced_web_done = True
+                try:
+                    from . import internet
+                    q_web = str((web_hints[0].args or {}).get("query") or "").strip()
+                    if q_web:
+                        self._emit("status", "????? ????? ???? ? ?????????")
+                        res = internet.search(q_web[:220])
+                        body = res.as_text() if hasattr(res, "as_text") else str(res)
+                        if body and len(body.strip()) > 30:
+                            self.session.messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"???????? ????????? ???? ? ????????? ?? ??????? {q_web}:\n{body[:6000]}\n\n"
+                                    "?? ?????? ??? ?????? ????? ??? ?????, ???????? ????????? ??????????? ?????. ?? ???????."
+                                ),
+                            })
+                            return False
+                except Exception:
+                    pass
+
         changed = [hint.tool for hint in hints
                    if hint.tool in ("write_file", "edit_file", "append_file")]
         if not changed and self._asks_for_change():
@@ -4766,14 +4977,22 @@ class AgentRunner:
             configured = int(getattr(self.llm_settings, "max_tokens", 0) or 0)
         except (TypeError, ValueError):
             configured = 0
-        # Беремо МЕНШЕ з двох «справжніх» джерел: бюджет вікна й бажання
-        # користувача. Якщо жодного немає — типова відповідь.
+        # ── БЕРЕМО БІЛЬШЕ З ДВОХ, А НЕ МЕНШЕ ────────────────────────────────
+        # Раніше стояв ``min(planned, configured)``, і типові 2048 із
+        # налаштувань душнИЛИ відповідь навіть тоді, коли вікно дозволяло
+        # вдесятеро більше. Наслідок на скріншоті користувача: велике
+        # завдання обривалось на ``finish_reason="length"`` → правило
+        # доказів позначало хід «зупинено лімітом» → агент кидав роботу
+        # неповною. Обидва числа — РЕЗЕРВИ, а не ліміти витрати: модель
+        # витрачає стільки, скільки їй треба, стеля фізична одна — вікно.
+        # Стеля вікна лишається гарантією: не просимо більше, ніж вмістить
+        # контекст (це перевіряє ``_answer_budget_cap``).
         if planned > 0 and configured > 0:
-            return max(256, min(planned, configured))
+            return max(planned, configured)
         if planned > 0:
-            return max(256, planned)
+            return planned
         if configured > 0:
-            return max(256, configured)
+            return configured
         return _DEFAULT_ANSWER_BUDGET
 
     def _answer_budget_cap(self) -> int:
@@ -4998,6 +5217,49 @@ class AgentRunner:
         інлайн-код, шляхи, імена файлів, URL і рядки, схожі на код. Інакше
         ``get_state()`` перетворилось би на ``get_стан()``.
         """
+        if kind in ("assistant", "narration") and text and "<think" in text.lower():
+            import re as _re
+            _thoughts = _re.findall(r"<think>(.*?)</think>", text, flags=_re.DOTALL | _re.IGNORECASE)
+            text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL | _re.IGNORECASE)
+            if "<think>" in text.lower():
+                _tail = _re.split(r"<think>", text, maxsplit=1, flags=_re.IGNORECASE)
+                text = _tail[0]
+                if len(_tail) > 1 and _tail[1].strip():
+                    _thoughts.append(_tail[1])
+            text = text.strip()
+            _joined_thought = "\n\n".join(x.strip() for x in _thoughts if x.strip())
+            if _joined_thought:
+                self.events.put(AgentEvent("reasoning", _joined_thought, data))
+            if not text:
+                return
+        if kind == "token" and text:
+            _buf = getattr(self, "_think_buf", "") + text
+            if not getattr(self, "_in_think_stream", False):
+                if "<think>" in _buf:
+                    self._in_think_stream = True
+                    _before, _, _after = _buf.partition("<think>")
+                    self._think_buf = _after
+                    if _before:
+                        text = _before
+                    else:
+                        return
+                elif len(_buf.lstrip()) < 8 and _buf.lstrip().startswith("<"):
+                    self._think_buf = _buf
+                    return
+                else:
+                    self._think_buf = ""
+                    text = _buf
+            if getattr(self, "_in_think_stream", False):
+                if "</think>" in _buf:
+                    self._in_think_stream = False
+                    self._think_buf = ""
+                    _, _, _tail = _buf.partition("</think>")
+                    text = _tail.lstrip()
+                    if not text:
+                        return
+                else:
+                    self._think_buf = _buf[-32:]
+                    return
         if kind in ("assistant", "narration", "reasoning") and text:
             try:
                 text = language.polish(text)
@@ -5234,7 +5496,9 @@ class AgentRunner:
             # ``and not forced_tools`` тут не зайвий: якщо запит усе ж
             # визнано таким, що потребує фактів, розмова не має права
             # обійти інструменти (див. коментар вище).
-            if self._is_small_talk() and not forced_tools:
+            # ?????? ??????????? ?????????? ???? (_loop) ?? ?????? ???????? ?? ????????????:
+            # ?????? ???? ???????, ?????????? ??????? (?? ??????????) ?? ????????? search_web/???????????.
+            if False and self._is_small_talk() and not forced_tools:
                 self._chat_only(client)
                 ok = not self._error
                 return
@@ -5703,7 +5967,19 @@ class AgentRunner:
                 for item in (self._observations or [])]
         snapshot = getattr(self, "_memory_snapshot", None)
         memory_gave = snapshot is not None and not snapshot.empty
-        if not web_learning.needs_web(text, used=used, memory_gave=memory_gave):
+        clean_q = " ".join(str(text or "").split()).strip().lower().rstrip("!.?,")
+        greetings = {
+            "\u043f\u0440\u0438\u0432\u0456\u0442", "\u043f\u0440\u0438\u0432\u0435\u0442",
+            "\u0434\u043e\u0431\u0440\u0438\u0439 \u0434\u0435\u043d\u044c",
+            "\u0434\u043e\u0431\u0440\u043e\u0433\u043e \u0434\u043d\u044f",
+            "\u0434\u043e\u0431\u0440\u0438\u0439 \u0440\u0430\u043d\u043e\u043a",
+            "\u0434\u043e\u0431\u0440\u0438\u0439 \u0432\u0435\u0447\u0456\u0440",
+            "\u0432\u0456\u0442\u0430\u044e", "\u0437\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439",
+            "\u0434\u044f\u043a\u0443\u044e", "\u0441\u043f\u0430\u0441\u0438\u0431\u0456",
+            "\u043e\u043a", "\u0434\u043e\u0431\u0440\u0435", "\u044f\u043a \u0441\u043f\u0440\u0430\u0432\u0438",
+            "hi", "hello", "hey", "ok", "thanks"
+        }
+        if clean_q in greetings or len(clean_q) < 4 or "search_web" in used or "fetch_url" in used:
             return
         query = " ".join(str(text or "").split())[:200]
         if not query:
@@ -6094,6 +6370,8 @@ class AgentRunner:
         self._steps_used = 0
         for step in range(budget):
             self._steps_used = step
+            if step > 0:
+                time.sleep(0.08)
             if self._cancel.is_set():
                 self._emit("status", "Скасовано.")
                 return
@@ -6120,6 +6398,13 @@ class AgentRunner:
             # пошук. Працює однаково для локальних і хмарних моделей — тут
             # немає жодної різниці, бо все зводиться до розміру вікна.
             try:
+                # ????????? ?????? ???? ?????? tool-?????????? (????? 600 ????????), ????????? ?????????? ????
+                _msgs = getattr(self.session, "messages", None) or []
+                for _m in _msgs[:-2]:
+                    if isinstance(_m, dict) and _m.get("role") == "tool":
+                        _c = str(_m.get("content") or "")
+                        if len(_c) > 650:
+                            _m["content"] = _c[:260] + "\n... [?????????? ? NEUROMESH ??? ??????????? ?????] ..."
                 freed = self.auto_free_context()
                 if freed:
                     LOG.info("Хід %s: контекст звільнено (%s повідомлень)",
@@ -6212,6 +6497,23 @@ class AgentRunner:
                         finish_reason=str(getattr(result, "finish_reason", "") or ""))
                     self._last_answer = visible
                 self._emit("assistant", visible, step=step, final=final)
+                if final:
+                    try:
+                        import threading as _th_git
+                        from . import git_repo as _gr
+                        _ws = getattr(self, "workspace", None)
+                        _tok = str(getattr(getattr(self, "settings", None), "github_token", "") or "")
+                        if _ws:
+                            _th_git.Thread(target=lambda: _gr.smart_auto_sync(_ws, token=_tok), daemon=True).start()
+                    except Exception:
+                        pass
+                    # ???? ? ???????? ????????????? ???? ? ?????? ????? ??????? ???? 1-? ????  ???????????? ?? ?????????? ?????!
+                    _has_more_plan = bool(getattr(self, "_plan_steps", None)) and step < budget - 1 and len(self._observations or []) > 0
+                    if _has_more_plan and not getattr(self, "_plan_nudged", False):
+                        self._plan_nudged = True
+                        self.session.messages.append({"role": "user", "content": "????????? ?????????? ???????? ????? ????? ?? ??????? ????????? ? Live Preview."})
+                        continue
+                    return
             if not result.tool_calls:
                 if not visible:
                     # Модель виконала інструмент і «нічого не сказала». Це
@@ -6509,6 +6811,8 @@ class AgentRunner:
                                observation.output if observation.ok
                                else observation.error))
                 self._note_observation(observation)
+                if observation.ok and name in ("write_file", "edit_file", "append_file", "run_command", "memory_store"):
+                    repeat.reset()
                 # ── Зір агента: знімок одразу йде в контекст моделі ────────
                 if observation.ok:
                     self._attach_capture(
@@ -6557,7 +6861,7 @@ class AgentRunner:
                         "status",
                         f"Модель повторює «{name}», хоч результат уже "
                         f"отримано — завершую хід із тим, що є.")
-                    break
+                    continue
                 if hopeless:
                     self._last_answer = self._repeat_report(
                         repeat, name, ToolResult(observation.ok,
@@ -6576,8 +6880,9 @@ class AgentRunner:
                     self.session.add_user(_repeat_hint(
                         name, count,
                         ToolResult(observation.ok,
-                                   observation.output or observation.error)))
-                    break          # наступний хід моделі — з новою вказівкою
+                                   observation.output or observation.error),
+                        intent=(self.intent.intent_type if self.intent is not None else "")))
+                    continue          # наступний хід моделі — з новою вказівкою
             # ── Перевірка синтаксису ПІСЛЯ кожної дії ──────────────────────
             # Місце саме тут, а не в гілці «модель нічого не викликала»:
             # заміряно наживо — модель увесь час повертає tool_calls і

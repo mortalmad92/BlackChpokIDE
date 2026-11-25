@@ -101,7 +101,8 @@ class ContextPopover(tk.Toplevel):
                      font=theme.font(8), anchor="w", wraplength=BAR_WIDTH,
                      justify="left").grid(
                 row=row_index, column=0, columnspan=3, sticky="ew",
-                padx=16, pady=(8, 14))
+                padx=16, pady=(8, 4))
+            self._extra_rows(body, row_index + 1)
         else:
             tk.Label(
                 body,
@@ -129,23 +130,42 @@ class ContextPopover(tk.Toplevel):
             row=row, column=2, sticky="e", padx=(8, 14), pady=1)
 
     def _extra_rows(self, body: tk.Frame, row: int) -> None:
-        """Додаткові рядки: влучання в кеш і швидкість."""
         stats = self.stats
+        total_used = int(getattr(stats, "total_session_tokens", 0) or 0)
+        if total_used > 0:
+            tk.Label(
+                body,
+                text=f"\u0412\u0438\u043a\u043e\u0440\u0438\u0441\u0442\u0430\u043d\u043e \u0437\u0430 \u0441\u0435\u0441\u0456\u044e: {self._short_tokens(total_used)} \u0442\u043e\u043a\u0435\u043d\u0456\u0432",
+                bg=theme.BG_CARD, fg=theme.FG, font=theme.font(8, "bold"), anchor="w",
+            ).grid(row=row, column=0, columnspan=3, sticky="w", padx=16, pady=(4, 0))
+            row += 1
+        ev_cnt = int(getattr(stats, "evictions_count", 0) or 0)
+        ev_tok = int(getattr(stats, "evicted_tokens", 0) or 0)
+        ev_txt = (
+            f"\u0417\u0432\u0456\u043b\u044c\u043d\u0435\u043d\u044c \u0443 \u043f\u0430\u043c'\u044f\u0442\u044c: {ev_cnt} (\u043f\u0435\u0440\u0435\u043d\u0435\u0441\u0435\u043d\u043e {self._short_tokens(ev_tok)} \u0442\u043e\u043a.)"
+            if ev_cnt
+            else "\u0417\u0432\u0456\u043b\u044c\u043d\u0435\u043d\u044c \u0443 \u043f\u0430\u043c'\u044f\u0442\u044c: 0"
+        )
+        tk.Label(
+            body, text=ev_txt, bg=theme.BG_CARD,
+            fg=(theme.ACCENT if ev_cnt else theme.FG_FAINT),
+            font=theme.font(8), anchor="w",
+        ).grid(row=row, column=0, columnspan=3, sticky="w", padx=16, pady=(2, 0))
+        row += 1
         if stats.prompt_tokens:
-            text = f"Влучання в кеш: {stats.cache_hit_percent:.0f}%"
-            tk.Label(body, text=text, bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                     font=theme.font(8), anchor="w").grid(
-                row=row, column=0, columnspan=2, sticky="w", padx=14, pady=(6, 0))
+            tk.Label(
+                body, text=f"\u0412\u043b\u0443\u0447\u0430\u043d\u043d\u044f \u0432 \u043a\u0435\u0448: {stats.cache_hit_percent:.0f}%",
+                bg=theme.BG_CARD, fg=theme.FG_FAINT, font=theme.font(8), anchor="w",
+            ).grid(row=row, column=0, columnspan=2, sticky="w", padx=16, pady=(4, 0))
             row += 1
         if stats.step_count:
-            text = f"Кроків: {stats.step_count} · {stats.speed_text()} · {stats.elapsed_text}"
-            tk.Label(body, text=text, bg=theme.BG_CARD, fg=theme.FG_FAINT,
-                     font=theme.font(8), anchor="w").grid(
-                row=row, column=0, columnspan=3, sticky="w", padx=14, pady=(2, 10))
+            tk.Label(
+                body, text=f"\u041a\u0440\u043e\u043a\u0456\u0432: {stats.step_count} | {stats.speed_text()} | {stats.elapsed_text}",
+                bg=theme.BG_CARD, fg=theme.FG_FAINT, font=theme.font(8), anchor="w",
+            ).grid(row=row, column=0, columnspan=3, sticky="w", padx=16, pady=(2, 12))
         else:
-            tk.Frame(body, bg=theme.BG_CARD, height=8).grid(row=row, column=0)
+            tk.Frame(body, bg=theme.BG_CARD, height=10).grid(row=row, column=0)
 
-    # ── розрахунки й малювання ─────────────────────────────────────────────
     def _total_text(self) -> str:
         used = int(self.stats.last_prompt_tokens or 0)
         if self.limit:

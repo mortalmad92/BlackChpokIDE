@@ -206,9 +206,21 @@ _GENERIC = ("Не повторюй цей виклик: результат не 
 
 def hint_for(name: str, arguments: Mapping[str, Any] | None = None, *,
              ok: bool = True, output: str = "", count: int = 0,
-             level: int = LEVEL_TIRED) -> str:
-    """Конкретна вказівка моделі замість абстрактного «спробуй інакше»."""
+             level: int = LEVEL_TIRED, intent: str = "") -> str:
+    """Конкретна вказівка моделі замість абстрактного «спробуй інакше».
+
+    ``intent`` — тип наміру (``"inspect"``, ``"explain"``, ``"create"``…).
+    Потрібен, бо та сама підказка для ``read_file`` може бути хибною:
+    «переходь до edit_file» — правильно для ``edit``, але ШКІДЛИВО для
+    ``inspect`` (модель почне правити файл, який її просили лише прочитати).
+    """
     tool = str(name or "").strip()
+    if intent in ("inspect", "explain", "research") and tool in (
+            "read_file", "read_files", "list_dir", "find_files", "search_text"):
+        return ("Ти вже отримав цей результат. Не повторюй виклик — "
+                "використай те, що маєш, для відповіді. "
+                "Якщо треба ще щось — звернись до ІНШОГО файлу або "
+                "інструмента.")
     step = _NEXT_STEP.get(tool, _GENERIC)
     head = ""
     if count > 1:

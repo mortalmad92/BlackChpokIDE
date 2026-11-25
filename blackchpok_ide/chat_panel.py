@@ -124,6 +124,23 @@ class _MessageCard(tk.Frame):
     #: Розмір іконок дій (pt). Було 8 — на 4K-екрані цілитись мишею важко.
     ACTION_FONT_SIZE = 12
 
+    def _dedupe_header_icons(self, header_frame) -> None:
+        try:
+            seen = set()
+            for child in list(header_frame.winfo_children()):
+                txt = ""
+                try:
+                    txt = str(child.cget("text") or "").strip()
+                except Exception:
+                    pass
+                if txt in ("\u21bb", "\u29c9", "\u270e", "\u2715", "\u2713", "\u2192"):
+                    if txt in seen:
+                        child.destroy()
+                    else:
+                        seen.add(txt)
+        except Exception:
+            pass
+
     def __init__(self, master: tk.Misc, fonts: theme.Theme, role: str, *, accent: str = theme.FG_DIM,
                  bg: str = theme.BG_CARD) -> None:
         super().__init__(master, bg=bg, bd=0, highlightthickness=0)
@@ -178,6 +195,13 @@ class _MessageCard(tk.Frame):
         return
 
     def add_action(self, text: str, command: Callable[[], None], tooltip: str = "") -> tk.Label:
+        for _existing in list(self.extra.winfo_children()):
+            try:
+                if str(_existing.cget("text") or "") == str(text or ""):
+                    _existing.command = command
+                    return _existing
+            except Exception:
+                pass
         label = widgets.HoverLabel(self.extra, text=text, command=command, bg=self._bg,
                                    fg=theme.FG_FAINT, hover_fg=theme.FG_BRIGHT,
                                    font=theme.font(self.ACTION_FONT_SIZE),
@@ -597,6 +621,113 @@ class ChatPanel(tk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
         self.rowconfigure(1, weight=0)
+        self.rowconfigure(2, weight=0)
+
+        self.thoughts_dock = tk.Frame(
+            self, bg=theme.BG_CARD, bd=0,
+            highlightthickness=1, highlightbackground=theme.BORDER,
+        )
+        self.thoughts_dock.grid(row=1, column=0, sticky="ew", padx=theme.SPACE_MD, pady=(4, 4))
+        self.thoughts_dock.columnconfigure(0, weight=1)
+        self.thoughts_dock.grid()
+
+        _td_head = tk.Frame(self.thoughts_dock, bg=theme.BG_CARD)
+        _td_head.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(2, 0))
+
+        self._thoughts_grip = tk.Frame(self.thoughts_dock, bg=theme.BORDER, height=4, cursor="sb_v_double_arrow")
+        self._thoughts_grip.grid(row=0, column=0, columnspan=2, sticky="ew")
+        def _drag_thoughts(e):
+            try:
+                cur_h = int(self._thoughts_text.cget("height"))
+                new_h = max(3, min(28, cur_h - (1 if e.y > 0 else -1)))
+                self._thoughts_text.configure(height=new_h)
+            except Exception:
+                pass
+        self._thoughts_grip.bind("<B1-Motion>", _drag_thoughts)
+        widgets.Tip(self._thoughts_grip, "\u041f\u043e\u0442\u044f\u0433\u043d\u0456\u0442\u044c \u0432\u0433\u043e\u0440\u0443/\u0432\u043d\u0438\u0437, \u0449\u043e\u0431 \u0437\u043c\u0456\u043d\u0438\u0442\u0438 \u0432\u0438\u0441\u043e\u0442\u0443 \u0432\u0456\u043a\u043d\u0430 \u0434\u0443\u043c\u043e\u043a")
+
+        self._thoughts_canvas = tk.Canvas(
+            self.thoughts_dock, bg=theme.BG_CARD, height=130,
+            bd=0, highlightthickness=0,
+        )
+        from tkinter import ttk as _ttk
+        _st_sb = _ttk.Style()
+        try:
+            _st_sb.configure(
+                "Thoughts.Vertical.TScrollbar",
+                background=theme.BG_ELEVATED,
+                troughcolor=theme.BG_CARD,
+                bordercolor=theme.BG_CARD,
+                arrowcolor=theme.FG_DIM,
+                darkcolor=theme.BG_ELEVATED,
+                lightcolor=theme.BG_ELEVATED,
+            )
+        except Exception:
+            pass
+        self._thoughts_scroll = _ttk.Scrollbar(
+            self.thoughts_dock, orient="vertical",
+            command=self._thoughts_canvas.yview,
+            style="Thoughts.Vertical.TScrollbar",
+        )
+        self._thoughts_canvas.configure(yscrollcommand=self._thoughts_scroll.set, height=130)
+        self._thoughts_canvas.grid(row=2, column=0, sticky="ew", padx=(6, 0), pady=(0, 4))
+        self._thoughts_scroll.grid(row=2, column=1, sticky="ns", pady=(0, 4), padx=(0, 4))
+
+        self._thoughts_text = tk.Text(
+            self.thoughts_dock,
+            height=7,
+            bg=theme.BG_CARD,
+            fg=theme.FG_DIM,
+            font=theme.font(8),
+            bd=0,
+            highlightthickness=0,
+            wrap="word",
+            padx=8,
+            pady=4,
+            state="disabled",
+            cursor="arrow",
+        )
+        self._thoughts_text.grid(row=2, column=0, sticky="nsew", padx=(4, 0), pady=(0, 4))
+        self._thoughts_scroll.configure(command=self._thoughts_text.yview)
+        self._thoughts_text.configure(yscrollcommand=self._thoughts_scroll.set)
+        self._thoughts_text.tag_configure("stage", foreground=theme.ACCENT, font=theme.font(8, "bold"))
+        self._thoughts_text.tag_configure("thought", foreground="#9CA3AF")
+        self._thoughts_text.tag_configure("step", foreground="#7DD3FC")
+        self._thoughts_text.configure(font=theme.font(9), spacing1=2, spacing3=2, padx=10, pady=6)
+        self._thoughts_text.tag_configure("stage", foreground="#93C5FD", font=theme.font(9, "bold"))
+        self._thoughts_text.tag_configure("step_num", foreground="#64748B", font=theme.font(8, "bold"))
+        self._thoughts_text.tag_configure("step", foreground="#CBD5E1", font=theme.font(9))
+        self._thoughts_text.tag_configure("copy_btn", foreground="#38BDF8", font=theme.font(8, "bold"))
+        self._thoughts_text.tag_configure("thought_url", foreground="#38BDF8", underline=True, font=theme.font(9, "bold"))
+        self._thoughts_text.tag_configure("thought_url_hint", foreground="#64748B", font=theme.font(8, "italic"))
+        self.after(350, self._load_thought_stages)
+        self._thoughts_canvas.grid_remove()
+        self._thoughts_body = tk.Frame(self._thoughts_canvas, bg=theme.BG_CARD)
+        self._thoughts_body.columnconfigure(0, weight=1)
+        _tb_win = self._thoughts_canvas.create_window((0, 0), window=self._thoughts_body, anchor="nw")
+        self._thoughts_body.bind(
+            "<Configure>",
+            lambda _e: (self._thoughts_canvas.configure(scrollregion=self._thoughts_canvas.bbox("all")), self._thoughts_canvas.yview_moveto(1.0)),
+        )
+        self._thoughts_canvas.bind(
+            "<Configure>",
+            lambda e: self._thoughts_canvas.itemconfigure(_tb_win, width=e.width),
+        )
+
+        def _toggle_td(_e=None):
+            if self._thoughts_text.winfo_viewable():
+                self._thoughts_text.grid_remove(); self._thoughts_scroll.grid_remove()
+                _td_btn.configure(text="\u25b8")
+            else:
+                self._thoughts_text.grid(); self._thoughts_scroll.grid()
+                _td_btn.configure(text="\u25be")
+
+        _td_btn = widgets.HoverLabel(
+            _td_head, text="\u25be", command=_toggle_td,
+            bg=theme.BG_CARD, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,
+            hover_fg=theme.FG_BRIGHT, font=theme.font(9, "bold"), padx=6, pady=0,
+        )
+        _td_btn.pack(side="right")
 
         # Заголовок сесії будує оболонка (він на всю ширину робочої області),
         # але стан («●», назва чату, спінер) живе тут. Ці два підписи —
@@ -662,7 +793,7 @@ class ChatPanel(tk.Frame):
                               or theme.COMPOSER_MAX_WIDTH),
                 gutter=theme.SPACE_MD,
             )
-            self.composer_column.grid(row=1, column=0, sticky="ew")
+            self.composer_column.grid(row=2, column=0, sticky="ew")
             host = self.composer_column.inner
         else:
             host = parent
@@ -806,6 +937,26 @@ class ChatPanel(tk.Frame):
         self.mode_btn = None
         self.mode_caption = None
 
+        prompt_chips_bar = tk.Frame(self.composer_host, bg=theme.BG_ALT)
+        prompt_chips_bar.grid(row=0, column=0, sticky="ew", padx=12, pady=(4, 2))
+        def _use_chip(txt_p: str):
+            try:
+                self.input_box.delete("1.0", "end")
+                self.input_box.insert("1.0", txt_p)
+                self.input_box.focus_set()
+            except Exception:
+                pass
+        for chip_lbl, chip_prompt in (
+            ("\u2728 \u0421\u0442\u0432\u043e\u0440\u0438\u0442\u0438 \u0432\u0435\u0431\u0441\u0430\u0439\u0442", "\u0421\u0442\u0432\u043e\u0440\u0438 \u0441\u0443\u0447\u0430\u0441\u043d\u0438\u0439 \u0430\u0434\u0430\u043f\u0442\u0438\u0432\u043d\u0438\u0439 \u0432\u0435\u0431\u0441\u0430\u0439\u0442 \u0456 \u0437\u0430\u043f\u0443\u0441\u0442\u0438 \u0439\u043e\u0433\u043e \u0432 Live Preview"),
+            ("\U0001f50d \u041f\u0435\u0440\u0435\u0432\u0456\u0440\u0438\u0442\u0438 \u043f\u0440\u043e\u0454\u043a\u0442", "\u041f\u0440\u043e\u0430\u043d\u0430\u043b\u0456\u0437\u0443\u0439 \u0441\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0443 \u043f\u0440\u043e\u0454\u043a\u0442\u0443 \u0442\u0430 \u0437\u043d\u0430\u0439\u0434\u0438 \u043c\u043e\u0436\u043b\u0438\u0432\u0456 \u043f\u043e\u043c\u0438\u043b\u043a\u0438"),
+            ("\u26a1 \u041e\u043f\u0442\u0438\u043c\u0456\u0437\u0443\u0432\u0430\u0442\u0438 \u043a\u043e\u0434", "\u041f\u043e\u043a\u0440\u0430\u0449 \u0448\u0432\u0438\u0434\u043a\u043e\u0434\u0456\u044e \u0442\u0430 \u0447\u0438\u0441\u0442\u043e\u0442\u0443 \u043a\u043e\u0434\u0443 \u0432 \u043f\u043e\u0442\u043e\u0447\u043d\u043e\u043c\u0443 \u0444\u0430\u0439\u043b\u0456"),
+        ):
+            ch_btn = widgets.HoverLabel(
+                prompt_chips_bar, text=chip_lbl, command=lambda p=chip_prompt: _use_chip(p),
+                bg=theme.BG_CARD, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,
+                hover_fg=theme.FG_BRIGHT, font=theme.font(8), padx=10, pady=3
+            )
+            ch_btn.pack(side="left", padx=(0, 6))
         self.input_box = tk.Text(
             box, height=2, width=30, wrap="word", bd=0, highlightthickness=0,
             background=theme.BG_INPUT, foreground=theme.FG, insertbackground=theme.FG_BRIGHT,
@@ -1032,6 +1183,7 @@ class ChatPanel(tk.Frame):
         self._cards.append(card)
 
     def _wrap_width(self) -> int:
+        return min(860, max(360, self.winfo_width() - 64))
         """Ширина тексту в картках — за фактичною шириною стрічки.
 
         Стрічка живе в обмеженій колонці (``max_content_width``), тому
@@ -1069,6 +1221,7 @@ class ChatPanel(tk.Frame):
             tk.Frame(card, bg=theme.CHAT_USER, width=2).place(x=0, y=2, relheight=0.96)
         self._cards.append(card)
         self._trim_cards()
+        card.role_name = role
         return card
 
     def _trim_cards(self, limit: int = 120) -> None:
@@ -1659,7 +1812,69 @@ class ChatPanel(tk.Frame):
             self._note("Агента зупинено користувачем.")
             self.set_busy(False)
 
+
+    def _chat_neon_tick(self) -> None:
+        """?????????????? ??????? ????????? ??????????? ?? ????? ??? ??? ?????? ??????."""
+        if not getattr(self, "_busy", False):
+            try:
+                if hasattr(self, "thoughts_dock"):
+                    self.thoughts_dock.configure(highlightbackground=theme.BORDER)
+                if hasattr(self, "bottom_box"):
+                    self.bottom_box.configure(highlightbackground=theme.BORDER, highlightthickness=1)
+            except Exception:
+                pass
+            return
+        try:
+            if not self.winfo_exists():
+                return
+            colors = ["#6E6096", "#4D7E8C", "#4A7D6B", "#827053", "#7E5E7B", "#536E94"]
+            dots = ["\u25cf\u25cb\u25cb", "\u25cb\u25cf\u25cb", "\u25cb\u25cb\u25cf", "\u25cb\u25cf\u25cb"]
+            idx = getattr(self, "_neon_step", 0)
+            self._neon_step = idx + 1
+            col = colors[idx % len(colors)]
+            col2 = colors[(idx + 2) % len(colors)]
+            d_str = dots[idx % len(dots)]
+            if hasattr(self, "thoughts_dock") and self.thoughts_dock.winfo_viewable():
+                self.thoughts_dock.configure(highlightbackground=col)
+            if hasattr(self, "bottom_box"):
+                self.bottom_box.configure(highlightthickness=1, highlightbackground=col2)
+            if hasattr(self, "_thoughts_grip"):
+                self._thoughts_grip.configure(bg=col)
+            # ACTIVE_CARD_ACCENT_ANIM: ??????????? ???? ?????? ????????? ?????? ?? ?????? ?????????
+            if getattr(self, "_cards", None):
+                last_c = self._cards[-1]
+                bar = getattr(last_c, "accent_bar", None) or getattr(last_c, "_accent", None)
+                if bar is not None and bar.winfo_exists():
+                    bar.configure(bg=col)
+            btn_s = getattr(self, "send_btn", None) or getattr(self, "stop_btn", None)
+            if btn_s is not None and btn_s.winfo_exists():
+                try:
+                    pass  # no harsh button flash
+                except Exception:
+                    pass
+            if hasattr(self, "_neon_badge_lbl"):
+                self._neon_badge_lbl.configure(text=f" {d_str} ", fg=col)
+            self.after(450, self._chat_neon_tick)
+        except Exception:
+            pass
+
     def set_busy(self, busy: bool) -> None:
+        try:
+            _top = self.winfo_toplevel()
+            _hb = getattr(_top, "header_bar", None)
+            if busy:
+                self.after(60, self._chat_neon_tick)
+                if _hb and hasattr(_hb, "start_busy_animation"):
+                    _hb.start_busy_animation()
+            else:
+                if hasattr(self, "_thoughts_grip"):
+                    self._thoughts_grip.configure(bg=theme.BORDER)
+                if hasattr(self, "_neon_badge_lbl"):
+                    self._neon_badge_lbl.configure(text=" \u2713 ", fg=theme.SUCCESS)
+                if _hb and hasattr(_hb, "stop_busy_animation"):
+                    _hb.stop_busy_animation()
+        except Exception:
+            pass
         self._busy = busy
         self.send_btn.configure(fg=theme.FG_FAINT if busy else theme.ON_ACCENT)
         if busy:
@@ -1822,6 +2037,9 @@ class ChatPanel(tk.Frame):
                 if role == "user":
                     card = self._new_card(ROLE_USER, accent=theme.CHAT_USER, bg=theme.BG_CARD)
                     self._body_text(card, text, tag_colour=theme.FG_BRIGHT)
+                    card.add_action("\u21ba", lambda t=text: self.rerun(t), "\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
+                    card.add_action("\u270e", lambda t=text: self.set_text(t), "\u0420\u0435\u0434\u0430\u0433\u0443\u0432\u0430\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
+                    card.add_action("\u29c9", lambda t=text: self._copy(t), "\u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
                     self.transcript.add(f"\n{ROLE_USER}\n{text}\n")
                 elif role == "assistant":
                     self._add_assistant(text)
@@ -2717,6 +2935,15 @@ class ChatPanel(tk.Frame):
         повернути крок у чергу. Інакше крок «висів» би в стані «аналіз»
         назавжди — саме це й виглядало як зависання моделі.
         """
+        # DEDUP_UNANSWERED_USER: ????????? ????????? ?????? ??????????? ??? ????????? ??????
+        self._post_answer_quiet = False
+        try:
+            while self._cards and getattr(self._cards[-1], "role_name", "") == ROLE_USER:
+                _old_c = self._cards.pop()
+                if _old_c.winfo_exists():
+                    _old_c.destroy()
+        except Exception:
+            pass
         text = (text or "").strip()
         if not text:
             return False
@@ -2766,6 +2993,9 @@ class ChatPanel(tk.Frame):
             if self.on_split_task:
                 card = self._new_card(ROLE_USER, accent=theme.CHAT_USER, bg=theme.BG_CARD)
                 self._body_text(card, text, tag_colour=theme.FG_BRIGHT)
+                card.add_action("\u21ba", lambda t=text: self.rerun(t), "\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
+                card.add_action("\u270e", lambda t=text: self.set_text(t), "\u0420\u0435\u0434\u0430\u0433\u0443\u0432\u0430\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
+                card.add_action("\u29c9", lambda t=text: self._copy(t), "\u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
                 # Іконки прикріплень лишаються й тут: велике завдання теж
                 # може йти зі скриншотом, і саме цей шлях показує картку
                 # замість звичайного ``_send``.
@@ -2779,6 +3009,9 @@ class ChatPanel(tk.Frame):
                 return True
         card = self._new_card(ROLE_USER, accent=theme.CHAT_USER, bg=theme.BG_CARD)
         self._body_text(card, text, tag_colour=theme.FG_BRIGHT)
+        card.add_action("\u21ba", lambda t=text: self.rerun(t), "\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
+        card.add_action("\u270e", lambda t=text: self.set_text(t), "\u0420\u0435\u0434\u0430\u0433\u0443\u0432\u0430\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
+        card.add_action("\u29c9", lambda t=text: self._copy(t), "\u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
         # ── Що саме пішло моделі разом із цим запитом ─────────────────────
         # Знімки прикріплені й одразу зникають зі смуги композера: чергу
         # очищає ``session.build()`` на першому ж кроці. Без цієї копії
@@ -3166,14 +3399,28 @@ class ChatPanel(tk.Frame):
             # недосяжною — Python зупиняється на першому збігу, тож
             # `_arrow_thought` для думок не викликався взагалі.
             self._add_reasoning(event.text)
-            self._arrow_thought(event.text, show=True)
+            pass  # SINGLE_UNIFIED_THOUGHTS_DOCK
         elif event.kind == "token":
             self._on_token(event.text)
         elif event.kind == "reasoning_token":
             self._on_reasoning_token(event.text)
         elif event.kind == "tool_call":
+            # SAVED_TOOL_ACTION: ???????? ???????????? ?????????? ? ??????????? ?????? ????? ?? ???
+            try:
+                _tname = str(getattr(event, "tool", "") or getattr(event, "text", "") or "tool").strip()
+                _targ = str(getattr(event, "text", "") or "").strip()[:140]
+                self._add_reasoning(f"\U0001f6e0 \u0406\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442: {_tname}" + (f" ({_targ})" if _targ and _targ != _tname else ""))
+            except Exception:
+                pass
             self._add_tool_call(event)
         elif event.kind == "tool_result":
+            # SAVED_TOOL_RESULT: ???????? ????????? ??????? ??????????? ? ??????? ??????? ????? ?? ???
+            try:
+                _res_short = " ".join(str(getattr(event, "text", "") or "").split())[:150]
+                if _res_short:
+                    self._add_reasoning(f"\u2713 \u0420\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442: {_res_short}")
+            except Exception:
+                pass
             self._add_tool_result(event)
         elif event.kind == "status":
             self._add_status(event.text)
@@ -3221,13 +3468,21 @@ class ChatPanel(tk.Frame):
         elif event.kind == "done":
             ok = bool(event.data.get("ok", True))
             self._finish_work_log(ok=ok)
+            try:
+                if getattr(self, "_thought_stages", None):
+                    self._thought_stages[-1]["expanded"] = False
+                    self._build_thought_stages_accordion()
+                    self._save_thought_stages()
+                    self._save_thought_stages()
+            except Exception:
+                pass
             self.end_deep(ok=ok)
             # Хід завершився — етап, що був у роботі, отримує підсумок.
             # Без цього спінер крутився б вічно після останньої відповіді.
             self.finish_stages(ok=ok)
             # Зона мислення більше не потрібна — приховуємо, щоб не
             # забирала місце над полем вводу.
-            self._arrow_thought("", show=False)
+            # disabled_arrow: self._arrow_thought("", show=False)
             self.set_busy(False)
             # Прокрутка вниз ПІСЛЯ дорахунку layout: картка відповіді щойно
             # створена, і звичайний _scroll_to_end прокручував до ще старої
@@ -3735,119 +3990,76 @@ class ChatPanel(tk.Frame):
         self.end_deep()      # попередній сеанс (якщо лишився) — закрити
         self.current_goal = goal
         session = deep_mode.DeepSession(goal=deep_mode.goal_from(goal))
-        card = self._new_card("", accent=theme.FG_FAINT, bg=theme.BG_CARD)
-        try:
-            card.role_label.master.pack_forget()
-        except (tk.TclError, AttributeError):
-            pass
-        widget = deep_view.DeepCard(
-            card.content, self.fonts, session,
-            wrap_width=self._wrap_width() - 24,
+        _ts = __import__("datetime").datetime.now().strftime("%H:%M:%S")
+        _q_preview = (getattr(self, "_last_user_text", "") or "?????").strip()[:60]
+        _stage_box = tk.Frame(self._thoughts_body, bg=theme.BG_CARD)
+        _stage_box.pack(fill="x", pady=(4, 1))
+        _stage_log_lines = [f"[{_ts}] {_q_preview}"]
+        self._current_stage_lines = _stage_log_lines
+        _sep = tk.Label(
+            _stage_box,
+            text=f"\u2500\u2500 [{_ts}] {_q_preview} \u2500\u2500",
+            bg=theme.BG_CARD, fg=theme.ACCENT, font=theme.font(8, "bold"), anchor="w",
+        )
+        _sep.pack(side="left", fill="x", expand=True)
+        _cp_stage_btn = widgets.HoverLabel(
+            _stage_box, text="\u29c9 \u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438",
+            command=lambda lines=_stage_log_lines: self._copy("\n".join(lines)),
+            bg=theme.BG_CARD, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,
+            hover_fg=theme.FG_BRIGHT, font=theme.font(8), padx=6, pady=0,
+        )
+        _cp_stage_btn.pack(side="right")
+        widgets.Tip(_cp_stage_btn, "\u0421\u043a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438 \u0432\u0435\u0441\u044c \u0435\u0442\u0430\u043f \u0434\u0443\u043c\u043e\u043a \u0442\u0430 \u0434\u0456\u0439 \u0446\u044c\u043e\u0433\u043e \u0437\u0430\u043f\u0438\u0442\u0443")
+        self.thoughts_dock.grid()
+        log = work_log.WorkLog(
+            self._thoughts_body, self.fonts, wrap_width=max(320, self._wrap_width() - 32),
             on_open_result=self._show_full,
         )
-        widget.pack(fill="x")
-        card.deep = widget  # type: ignore[attr-defined]
-        self.deep_card = widget
-        self._deep_card_holder = card
-        # Картку не наповнюємо штучною думкою: перше справжнє повідомлення
-        # агента прийде за мить, а вигаданий рядок лишався б у стрічці
-        # назавжди й дублювався з реальним («Розберуся…» двічі).
-        self.transcript.add("\n◔ Глибокий аналіз\n")
-        self._scroll_to_end()
-        return widget
+        log.pack(fill="x")
+        self._log = log
+        self._log_card = None
+        log.begin("Аналіз запиту")
+        return log
 
-    def set_deep_plan(self, steps) -> None:
-        """Показати складений план у картці аналізу."""
-        card = self.deep_card
-        if card is None:
-            return
-        try:
-            card.set_tasks(steps)
-            card.add_narration("План готовий — починаю з першої задачі.")
-        except tk.TclError:
-            return
-        self._scroll_to_end()
-
-    def deep_active(self) -> bool:
-        return bool(self.deep_card is not None and self.deep_card.winfo_exists())
-
-    def end_deep(self, *, ok: bool = True) -> None:
-        """Закрити сеанс: таймер застигає, задачі отримують фінальний стан."""
-        card = self.deep_card
-        self.deep_card = None
-        self._deep_card_holder = None
-        if card is None:
-            return
-        try:
-            if card.winfo_exists():
-                card.finish(ok=ok)
-        except tk.TclError:
-            pass
-
-    def set_goal(self, text: str) -> None:
-        """Оновити «Поточну ціль» і в картці аналізу, і для наступних сеансів."""
-        self.current_goal = (text or "").strip()
-        if self.deep_active():
-            try:
-                self.deep_card.set_goal(self.current_goal)
-            except (tk.TclError, AttributeError):
-                pass
-
-    def _deep_tool(self, event: AgentEvent) -> None:
-        """Записати виклик інструмента в картку аналізу (якщо вона є)."""
-        if not self.deep_active():
-            return
-        name = str(event.data.get("name") or "")
-        arguments = str(event.data.get("arguments") or "")
-        try:
-            self.deep_card.add_tool(name, work_log._target_of(
-                work_log.tool_view(name)[2], arguments))
-        except (tk.TclError, AttributeError):
-            pass
-
-    def _deep_tool_done(self, event: AgentEvent) -> None:
-        if not self.deep_active():
-            return
-        try:
-            self.deep_card.finish_tool(ok=bool(event.data.get("ok")))
-        except (tk.TclError, AttributeError):
-            pass
-
-    def _deep_narration(self, text: str) -> None:
-        """Проміжна думка агента — в картку аналізу."""
-        if not self.deep_active():
-            return
-        try:
-            self.deep_card.add_narration(text)
-        except (tk.TclError, AttributeError):
-            pass
-        self._scroll_to_end()
-
-    # ── журнал роботи ──────────────────────────────────────────────────────
     def _work_log(self) -> Optional[work_log.WorkLog]:
-        """Поточний журнал роботи (створюється на перший крок)."""
+        """???????? ?????? ?????? (? ??????????? ?????? ????? ??? ????? ?????)."""
+        if getattr(self, "_post_answer_quiet", False) and self._log is None:
+            return getattr(self, "_last_completed_log", None)
         if self._log is not None:
             try:
                 if self._log.winfo_exists():
                     return self._log
             except tk.TclError:
                 pass
-        card = self._new_card("", accent=theme.FG_FAINT, bg=theme.BG_CARD)
-        # Порожній підпис ролі не потрібен — журнал має власний заголовок.
-        try:
-            card.role_label.master.pack_forget()
-        except (tk.TclError, AttributeError):
-            pass
+        for child in self._thoughts_body.winfo_children():
+            try:
+                child.destroy()
+            except tk.TclError:
+                pass
+        self.thoughts_dock.grid()
         log = work_log.WorkLog(
-            card.content, self.fonts, wrap_width=self._wrap_width() - 24,
+            self._thoughts_body, self.fonts, wrap_width=max(320, self._wrap_width() - 32),
             on_open_result=self._show_full,
         )
         log.pack(fill="x")
-        card.log = log  # type: ignore[attr-defined]
         self._log = log
-        self._log_card = card
-        log.begin("Аналіз запиту")
+        self._log_card = None
+        _ts = __import__("datetime").datetime.now().strftime("%H:%M:%S")
+        _q_preview = (getattr(self, "_last_user_text", "") or "\u0417\u0430\u043f\u0438\u0442").strip()[:60]
+        self._append_thought_text(f"\n\u2500\u2500 [{_ts}] {_q_preview} \u2500\u2500", "stage")
+        self.after(50, lambda: self._thoughts_canvas.yview_moveto(1.0))
         return log
+
+    def end_deep(self, *, ok: bool = True) -> None:
+        """????????? ?????? ????????? ???????, ???? ???? ???????."""
+        card = getattr(self, "deep_card", None)
+        if card is not None:
+            try:
+                if card.winfo_exists() and hasattr(card, "finish"):
+                    card.finish(ok=ok)
+            except tk.TclError:
+                pass
+        self.deep_card = None
 
     def _finish_work_log(self, *, ok: bool = True) -> None:
         """Завершити журнал: таймер застигає, крапка стає спокійною."""
@@ -3861,7 +4073,195 @@ class ChatPanel(tk.Frame):
         except tk.TclError:
             pass
 
+
+
+
+
+
+
+    def _open_thought_url(self, url: str) -> None:
+        try:
+            top = self.winfo_toplevel()
+            if hasattr(top, "open_url_in_browser"):
+                top.open_url_in_browser(url)
+        except Exception:
+            pass
+
+    def _active_store_chat(self):
+        try:
+            top = self.winfo_toplevel()
+            st = getattr(top, "chat_store", None)
+            if st is not None:
+                cid = str(getattr(st, "active_id", "") or getattr(self, "chat_id", "") or "").strip()
+                if cid:
+                    ch = st.get(cid)
+                    if ch is not None:
+                        return st, ch
+        except Exception:
+            pass
+        return None, None
+
+    def load_thoughts_for_chat(self, chat_id: str) -> None:
+        self.chat_id = str(chat_id or "").strip()
+        self._thought_stages = []
+        self._load_thought_stages()
+
+    def wipe_all_thoughts(self) -> None:
+        self._thought_stages = []
+        self.chat_id = ""
+        self._build_thought_stages_accordion()
+
+    def reset_thoughts_for_chat(self, chat_id: str = "") -> None:
+        self.chat_id = str(chat_id or "").strip()
+        self._thought_stages = []
+        st, ch = self._active_store_chat()
+        if ch is not None:
+            ch.thought_stages = []
+            try:
+                st.save()
+            except Exception:
+                pass
+        self._build_thought_stages_accordion()
+
+    def _save_thought_stages(self) -> None:
+        try:
+            st, ch = self._active_store_chat()
+            if ch is not None:
+                stages = getattr(self, "_thought_stages", [])
+                ch.thought_stages = [{"title": s.get("title", ""), "lines": list(s.get("lines", [])), "expanded": False} for s in stages[-60:]]
+                st.save()
+        except Exception:
+            pass
+
+    def _load_thought_stages(self) -> None:
+        try:
+            _st, ch = self._active_store_chat()
+            if ch is not None and isinstance(getattr(ch, "thought_stages", None), list):
+                self._thought_stages = [dict(s) for s in ch.thought_stages if isinstance(s, dict)]
+            else:
+                self._thought_stages = []
+            self._build_thought_stages_accordion()
+        except Exception:
+            pass
+
+    def _insert_thought_line_rich(self, tw, clean_ln: str) -> None:
+        import re as _re
+        parts = _re.split(r"(https?://[^\s\)\]>\"']+)", clean_ln)
+        note = " (\u0432\u0456\u0434\u043a\u0440\u0438\u0454\u0442\u044c\u0441\u044f \u0443 \u0432\u043d\u0443\u0442\u0440\u0456\u0448\u043d\u044c\u043e\u043c\u0443 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0456)"
+        for p in parts:
+            if not p:
+                continue
+            if p.startswith(("http://", "https://")):
+                u_tag = f"url_{abs(hash(p))}_{tw.index('end')}"
+                tw.insert("end", p, ("thought_url", u_tag))
+                tw.insert("end", note, ("thought_url_hint", u_tag))
+                tw.tag_bind(u_tag, "<Button-1>", lambda _e, u=p: self._open_thought_url(u))
+                tw.tag_bind(u_tag, "<Enter>", lambda _e: tw.configure(cursor="hand2"))
+                tw.tag_bind(u_tag, "<Leave>", lambda _e: tw.configure(cursor="arrow"))
+            else:
+                tw.insert("end", p, "step")
+        tw.insert("end", "\n")
+
+    def _build_thought_stages_accordion(self) -> None:
+        if not hasattr(self, "_thoughts_text"):
+            return
+        try:
+            tw = self._thoughts_text
+            if not tw.winfo_exists():
+                return
+            stages = getattr(self, "_thought_stages", [])
+            tw.configure(state="normal")
+            tw.delete("1.0", "end")
+            w_steps = "\u043a\u0440\u043e\u043a\u0456\u0432"
+            w_copy = "\u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438"
+            w_query = "\u0417\u0430\u043f\u0438\u0442"
+            for idx, stg in enumerate(stages):
+                expanded = bool(stg.get("expanded", False))
+                arrow = "\u25be" if expanded else "\u25b8"
+                title = str(stg.get("title") or w_query).replace("\u2500", "").strip()
+                lines = stg.get("lines", [])
+                tag_hdr, tag_cp = f"hdr_{idx}", f"cp_{idx}"
+                tw.insert("end", f"{arrow} \u2116{idx + 1} \u00b7 {title} ({len(lines)} {w_steps})   ", ("stage", tag_hdr))
+                tw.insert("end", f"[\u29c9 {w_copy}]\n", ("copy_btn", tag_cp))
+                tw.tag_bind(tag_hdr, "<Button-1>", lambda _e, i=idx: self._toggle_thought_stage(i))
+                tw.tag_bind(tag_cp, "<Button-1>", lambda _e, i=idx: self._copy_thought_stage(i))
+                if expanded:
+                    for si, ln in enumerate(lines, 1):
+                        cln = str(ln or "").lstrip(" ").strip()
+                        tw.insert("end", f"    {si:02d}. ", "step_num")
+                        self._insert_thought_line_rich(tw, cln)
+                    tw.insert("end", "\n")
+            tw.configure(state="disabled")
+            if stages and stages[-1].get("expanded", False):
+                tw.see("end")
+        except Exception:
+            pass
+
+    def _toggle_thought_stage(self, idx: int) -> None:
+        stages = getattr(self, "_thought_stages", [])
+        if 0 <= idx < len(stages):
+            stages[idx]["expanded"] = not bool(stages[idx].get("expanded", False))
+            self._build_thought_stages_accordion()
+
+    def _copy_thought_stage(self, idx: int) -> None:
+        stages = getattr(self, "_thought_stages", [])
+        if 0 <= idx < len(stages):
+            stg = stages[idx]
+            self._copy((stg.get("title", "") + "\n" + "\n".join(stg.get("lines", []))).strip())
+
+    def _append_thought_text(self, line: str, tag: str = "thought") -> None:
+        if not hasattr(self, "_thoughts_text"):
+            return
+        try:
+            tw = self._thoughts_text
+            if not tw.winfo_exists():
+                return
+            self.thoughts_dock.grid()
+            if not hasattr(self, "_thought_stages"):
+                self._thought_stages = []
+            if tag == "stage":
+                clean_title = str(line or "").replace("\u2500", "").strip()
+                if self._thought_stages:
+                    last_t = self._thought_stages[-1].get("title", "")
+                    if getattr(self, "_post_answer_quiet", False) or (clean_title.split("]", 1)[-1].strip() == last_t.split("]", 1)[-1].strip()):
+                        return
+                for prev in self._thought_stages:
+                    prev["expanded"] = False
+                self._thought_stages.append({"title": clean_title, "lines": [], "expanded": True})
+                self._build_thought_stages_accordion()
+                return
+            if not self._thought_stages:
+                _ts0 = __import__("datetime").datetime.now().strftime("%H:%M:%S")
+                _q0 = (getattr(self, "_last_user_text", "") or "\u0417\u0430\u043f\u0438\u0442").strip()[:60]
+                self._thought_stages.append({"title": f"[{_ts0}] {_q0}", "lines": [], "expanded": True})
+            cur_stg = self._thought_stages[-1]
+            cur_stg["lines"].append(line)
+            if cur_stg.get("expanded", True):
+                snum = len(cur_stg["lines"])
+                cln = str(line or "").lstrip(" ").strip()
+                tw.configure(state="normal")
+                tw.insert("end", f"    {snum:02d}. ", "step_num")
+                self._insert_thought_line_rich(tw, cln)
+                tw.configure(state="disabled")
+                tw.see("end")
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "_thoughts_text") and self._thoughts_text is not None:
+                if int(str(self._thoughts_text.index("end-1c")).split(".")) > 220:
+                    self._thoughts_text.delete("1.0", "80.0")
+        except Exception:
+            pass
+    def _pin_thought_line(self, text: str, *, color: str = "") -> None:
+        clean = " ".join(str(text or "").split()).strip()
+        if clean:
+            self._append_thought_text("   " + clean, "step" if color == theme.ACCENT else "thought")
+
     def _add_reasoning(self, text: str) -> None:
+        self._pin_thought_line(text, color=theme.ACCENT)
+        if hasattr(self, "_current_stage_lines") and text:
+            self._current_stage_lines.append(str(text).strip())
         """Роздуми моделі — у журнал, а не окремою карткою."""
         log = self._work_log()
         if log is None:
@@ -3911,6 +4311,8 @@ class ChatPanel(tk.Frame):
             return
 
     def _add_status(self, text: str) -> None:
+        if text and "?????? ?????????" not in str(text):
+            self._pin_thought_line(text, color=theme.FG_FAINT)
         """Службовий статус агента — у журнал, без окремих ноток.
 
         «Запит до <модель>…» не показуємо: це дублює заголовок журналу,
@@ -3944,6 +4346,26 @@ class ChatPanel(tk.Frame):
             return
         self.transcript.add(f"· {clean}\n")
 
+    def deep_active(self) -> bool:
+        """?? ??????? ????? ?????? ????????? ???????."""
+        card = getattr(self, "deep_card", None)
+        if card is None:
+            return False
+        try:
+            return bool(card.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _deep_tool(self, event: AgentEvent) -> None:
+        """??????? ?????? ????????? ??????? ??? ??????? ??????????? (???? ???????)."""
+        card = getattr(self, "deep_card", None)
+        if card is not None:
+            try:
+                if card.winfo_exists() and hasattr(card, "add_tool"):
+                    card.add_tool(getattr(event, "tool", ""), getattr(event, "text", ""))
+            except Exception:
+                pass
+
     def _add_tool_call(self, event: AgentEvent) -> None:
         # У режимі глибокого аналізу кроки йдуть у згортані групи картки —
         # окремий журнал там зайвий, інакше те саме видно двічі.
@@ -3960,6 +4382,16 @@ class ChatPanel(tk.Frame):
             return
         self.transcript.add(f"\n⚙ {event.text}\n")
         self._scroll_to_end()
+
+    def _deep_tool_done(self, event: AgentEvent) -> None:
+        """????????? ???? ??????????? ? ?????? ????????? ??????? (???? ???????)."""
+        card = getattr(self, "deep_card", None)
+        if card is not None:
+            try:
+                if card.winfo_exists() and hasattr(card, "finish_tool"):
+                    card.finish_tool(getattr(event, "tool", ""), getattr(event, "text", ""))
+            except Exception:
+                pass
 
     def _add_tool_result(self, event: AgentEvent) -> None:
         ok = bool(event.data.get("ok"))
@@ -4109,6 +4541,9 @@ class ChatPanel(tk.Frame):
         if tag == "user_text":
             card = self._new_card(ROLE_USER, accent=theme.CHAT_USER, bg=theme.BG_CARD)
             self._body_text(card, clean, tag_colour=theme.FG_BRIGHT)
+            card.add_action("\u21ba", lambda t=clean: self.rerun(t), "\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
+            card.add_action("\u270e", lambda t=clean: self.set_text(t), "\u0420\u0435\u0434\u0430\u0433\u0443\u0432\u0430\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
+            card.add_action("\u29c9", lambda t=clean: self._copy(t), "\u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438 \u0437\u0430\u043f\u0438\u0442")
             self._pending_role = None
             self.transcript.add(f"\n{ROLE_USER}\n{clean}\n")
             return
@@ -4122,6 +4557,15 @@ class ChatPanel(tk.Frame):
 
     # ── дії з текстом ──────────────────────────────────────────────────────
     def _copy(self, text: str) -> None:
+        try:
+            val = str(text or "")
+            if val:
+                top = self.winfo_toplevel()
+                top.clipboard_clear()
+                top.clipboard_append(val)
+                top.update()
+        except Exception:
+            pass
         try:
             self.clipboard_clear()
             self.clipboard_append(text or "")

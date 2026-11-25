@@ -169,20 +169,7 @@ TOOL_CATALOG: tuple[tuple[str, str, str], ...] = (
 )
 
 #: Дії, які виконує MCP-сервер (доступні як mcp__<сервер>__master_agent_router).
-MCP_CATALOG: tuple[tuple[str, str, str], ...] = (
-    ("search_web", "пошук в інтернеті", "знайди в інтернеті новини про Python"),
-    ("memory_search", "згадати, про що говорили раніше", "що ти пам'ятаєш про проєкт"),
-    ("save_rule", "запам'ятати правило назавжди", "запам'ятай: відповідай українською"),
-    ("index_project", "проіндексувати проєкт для RAG", "проіндексуй проєкт"),
-    ("analyze_project", "огляд і аналіз проєкту", "проаналізуй проєкт"),
-    ("night_shift", "працювати над задачами вночі", "працюй вночі 4 години"),
-    ("todo_write", "додати задачу в список", "додай задачу перевірити тести"),
-    ("todo_list", "показати список задач", "які в мене задачі"),
-    ("db_schema", "схема бази SQLite", "покажи схему бази"),
-    ("review_code", "оглянути код на проблеми", "перевір код на помилки"),
-    ("fetch_url", "завантажити сторінку", "прочитай https://example.com"),
-    ("run_and_repair", "запустити й виправити помилку", "запусти і виправ"),
-)
+MCP_CATALOG: tuple[tuple[str, str, str], ...] = ()
 
 #: Наміри ``vibe_router``, які справді можна виконати в IDE.
 #:
@@ -539,7 +526,7 @@ def _ide_rules(phrase: str) -> list[ToolHint]:
     if _has(low, "вночі", "нічна зміна", "поки я сплю", "працюй до ранку",
             "нічний режим", "night shift"):
         hours = _hours(phrase)
-        hints.append(ToolHint("mcp:night_shift",
+        hints.append(ToolHint("night_shift",
                               {"request": phrase, "query": str(hours)},
                               HIGH, "нічний режим", source="vibe_router"))
 
@@ -1028,3 +1015,5 @@ __all__ = [
     "is_actionable",
     "route",
 ]
+
+

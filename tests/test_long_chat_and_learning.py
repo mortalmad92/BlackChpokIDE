@@ -149,9 +149,19 @@ class TestDigestReachesThePrompt(unittest.TestCase):
         runner.session.context_limit = 16384
         block = runner._render_digest()
         self.assertIn("пароль", block)
-        system = runner.session.system_message()["content"]
-        self.assertIn("пароль", system,
-                      "хроніка не потрапила в системний промпт")
+        # Хроніка йде у запит «хвостом» ПІСЛЯ історії (не в голові):
+        # мінлива частина в голові ламає KV-префікс — рушій перераховує
+        # весь промпт щокроку, і «кеш: 0%» у смузі статистики. Зміст не
+        # змінився: хроніка мусить ДОЙТИ до запиту — перевіряємо повний
+        # build().
+        messages = runner.session.build()
+        system = messages[0]["content"]
+        tail = messages[-1]["content"] if len(messages) > 1 else ""
+        self.assertIn("пароль", system + tail,
+                      "хроніка не потрапила в запит (ні в голову, ні в хвіст)")
+        self.assertTrue(tail.endswith("пароль не змінювати ніколи") or
+                        "пароль" in tail,
+                        "хроніка має бути в хвості запиту, а не в голові")
 
     def test_evicted_block_goes_into_digest(self) -> None:
         runner = self._runner()

@@ -266,7 +266,14 @@ class ContextStats:
     last_prompt_tokens: int = 0     # скільки займає поточний контекст
     started_at: float = field(default_factory=time.time)
     tool_calls: int = 0
+    evictions_count: int = 0
+    evicted_tokens: int = 0
     breakdown: ContextBreakdown = field(default_factory=ContextBreakdown)
+
+    def record_eviction(self, tokens: int = 0) -> int:
+        self.evictions_count += 1
+        self.evicted_tokens += max(0, int(tokens))
+        return self.evictions_count
 
     # ── накопичення ────────────────────────────────────────────────────────
     def add(self, step: StepStats) -> None:
@@ -299,6 +306,8 @@ class ContextStats:
     def reset(self) -> None:
         self.steps.clear()
         self.tool_calls = 0
+        self.evictions_count = 0
+        self.evicted_tokens = 0
         self.last_prompt_tokens = 0
         self.breakdown = ContextBreakdown()
         self.started_at = time.time()
@@ -318,6 +327,10 @@ class ContextStats:
     @property
     def completion_tokens(self) -> int:
         return sum(step.completion_tokens for step in self.steps)
+
+    @property
+    def total_session_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
 
     @property
     def cached_tokens(self) -> int:

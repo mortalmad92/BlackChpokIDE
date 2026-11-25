@@ -364,12 +364,9 @@ class BlackChpokIDE(tk.Tk):
         # Створюється ДО розкладки, бо центр завдань у нижній панелі вже
         # показує кнопки, підключені до нього. Сам агент створюється
         # пізніше — виконавець кличе його лише під час роботи кроку.
-        # Перевірка МЕТИ кроку (а не лише «файл змінився»): задача «прибери
-        # позначку TODO» не стає «готово», поки маркер справді не зник.
         self.executor = task_executor.QueueExecutor(
             self.task_queue,
-            validator=task_executor.TaskValidator(
-                self._project_root, goal_checker=self._task_goal_problem),
+            validator=task_executor.TaskValidator(self._project_root),
             on_run_step=self._run_plan_step,
             # Колбеки йдуть із ПОТОКУ АГЕНТА, а чіпають віджети. Tkinter
             # цього не дозволяє: ``set_status`` і ``_update_queue_badge``
@@ -411,12 +408,6 @@ class BlackChpokIDE(tk.Tk):
                 self.registry.attach_memory(self.memory)
             except Exception:                        # noqa: BLE001
                 LOG.warning("Пам'ять не підключено до реєстру", exc_info=True)
-            # ── Базові знання про проєкт — у пам'ять, а не в нікуди ────────
-            # Локальна модель не знає нічого про ЦЕЙ проєкт: ні як запускати
-            # тести, ні де лежить черга. Без цього кроку кожне завдання
-            # починалося з нуля й повторювало вже виправлені помилки.
-            # Запис іде у фоні: старт вікна не має чекати на пам'ять.
-            self._seed_knowledge()
         self.layout = layout.load()
         # Живе тестування: агент запускає/клікає/знімає скріншоти застосунку.
         self.app = AppController(self._project_root)
@@ -790,6 +781,7 @@ class BlackChpokIDE(tk.Tk):
         git_menu.add_command(label="Diff", command=lambda: self.terminal.run("git diff"))
         git_menu.add_command(label="Історія", command=lambda: self.terminal.run("git log --oneline -15"))
         git_menu.add_command(label="Додати все", command=lambda: self.terminal.run("git add -A"))
+        self._cat_git_menu = git_menu
         menubar.add_cascade(label="Git", menu=git_menu)
 
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -797,7 +789,7 @@ class BlackChpokIDE(tk.Tk):
         help_menu.add_command(label="Про програму", command=self.show_about)
         menubar.add_cascade(label="Довідка", menu=help_menu)
 
-        self.configure(menu=menubar)
+        self._top_menubar = menubar
 
     # ── розкладка ──────────────────────────────────────────────────────────
     def _build_layout(self) -> None:
@@ -919,6 +911,31 @@ class BlackChpokIDE(tk.Tk):
         """
         command_registry.register_all(self)
     def run_command(self, key: str) -> bool:
+        _header_quick = {
+            "file.open_dialog": self.open_file_dialog,
+            "file.save_all": lambda: self.tabs.save_all(),
+            "edit.search_project": self.open_project_search,
+            "side.explorer": lambda: self.show_side("explorer"),
+            "side.changes": lambda: self.show_side("changes"),
+            "side.rag": lambda: self.show_side("rag"),
+            "side.skills": lambda: self.show_side("skills"),
+            "side.tools": lambda: self.show_side("tools"),
+            "view.queue": lambda: self.show_side("queue"),
+            "view.autonomous": self.show_autonomous,
+            "edit.palette": self.command_palette,
+            "view.settings": self.open_settings,
+            "ui.test_dropdowns": lambda: self.header_bar.run_dropdown_self_test(),
+            "view.model_hub": self.open_model_hub,
+            "view.terminal": self.toggle_bottom,
+            "view.sidebar": self.toggle_sidebar,
+            "run.start": self.start_site,
+            "run.stop": self.stop_plan,
+            "run.browser": self.open_live_browser,
+            "agent.toggle_web": lambda: self.show_side("tools"),
+        }
+        if key in _header_quick:
+            _header_quick[key]()
+            return True
         """Виконати команду з реєстру (шапка, палітра, меню — усе через неї)."""
         command = commands.get(key)
         if command is None:
@@ -1025,7 +1042,65 @@ class BlackChpokIDE(tk.Tk):
         except (tk.TclError, AttributeError):
             LOG.debug("Git-чип не оновлено", exc_info=True)
 
+    def _keycode_shortcut_dispatch(self, event) -> str | None:
+        try:
+            if str(getattr(event, "keysym", "")).isascii() and str(getattr(event, "keysym", "")).isalpha():
+                return None
+            kc = int(getattr(event, "keycode", 0))
+            state = int(getattr(event, "state", 0))
+            shift = bool(state & 0x0001)
+            alt = bool(state & 0x20000 or state & 0x0008)
+            kc_map = {
+                (78, False, False): self.new_file,
+                (79, False, False): self.open_file_dialog,
+                (83, False, False): self.save_file,
+                (83, True, False): self.save_file_as,
+                (87, False, False): self.close_tab,
+                (80, False, False): self.quick_open,
+                (80, True, False): self.command_palette,
+                (70, False, False): self.open_search,
+                (70, True, False): self.open_project_search,
+                (66, False, False): self.toggle_sidebar,
+                (66, False, True): self.toggle_chat,
+                (65, False, True): self.toggle_autonomous,
+                (74, False, True): lambda: self.show_side("queue"),
+                (75, False, True): lambda: self.show_side("skills"),
+                (73, False, True): lambda: self.show_side("rag"),
+                (84, False, True): lambda: self.show_side("tools"),
+            }
+            fn = kc_map.get((kc, shift, alt))
+            if fn is not None:
+                fn()
+                return "break"
+        except Exception:
+            pass
+        return None
+
     def _header_menu(self, which: str, anchor=None) -> None:
+        if which in ("cat_file", "cat_edit", "cat_view", "cat_mode", "cat_git"):
+            if which == "cat_file":
+                self._popup(anchor, self._menu_items_for("file"))
+            elif which == "cat_edit":
+                self._popup(anchor, self._menu_items_for("edit"))
+            elif which == "cat_view":
+                self._popup(anchor, self._menu_items_for("view"))
+            elif which == "cat_git":
+                self._show_git_menu(anchor)
+            elif which == "cat_mode":
+                self._popup(anchor, [
+                    ("\u221e  \u0410\u0432\u0442\u043e\u043d\u043e\u043c\u043d\u0438\u0439 \u0440\u0435\u0436\u0438\u043c (\u0441\u0442\u0430\u0440\u0442 / \u0441\u0442\u043e\u043f)", self.show_autonomous),
+                    ("\u2261  \u0410\u0432\u0442\u043e\u043c\u0430\u0442\u0438\u0437\u0430\u0446\u0456\u0457 \u0442\u0430 \u0447\u0435\u0440\u0433\u0430 \u0437\u0430\u0434\u0430\u0447", lambda: self.show_side("queue")),
+                    ("\u263d  \u041d\u0456\u0447\u043d\u0430 \u0437\u043c\u0456\u043d\u0430 (4 \u0433\u043e\u0434 \u0441\u0430\u043c\u043e\u0432\u0434\u043e\u0441\u043a\u043e\u043d\u0430\u043b\u0435\u043d\u043d\u044f)", lambda: self.run_command("agent.night_shift") if hasattr(self, "run_command") else self.show_autonomous()),
+                    ("", None),
+                    ("\u2726  \u0421\u043a\u0456\u043b\u0438 \u0430\u0433\u0435\u043d\u0442\u0430", lambda: self.show_side("skills")),
+                    ("\u25eb  \u0411\u0430\u0437\u0430 \u0437\u043d\u0430\u043d\u044c (RAG)", lambda: self.show_side("rag")),
+                    ("\u2692  \u0406\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0438 \u0430\u0433\u0435\u043d\u0442\u0430", lambda: self.show_side("tools")),
+                    ("", None),
+                    ("\uff0b  \u041d\u043e\u0432\u0438\u0439 \u0447\u0430\u0442", self.new_chat),
+                    ("\u2913  \u0415\u043a\u0441\u043f\u043e\u0440\u0442 \u0447\u0430\u0442\u0443", self.export_current_chat),
+                    ("\u2715  \u041e\u0447\u0438\u0441\u0442\u0438\u0442\u0438 \u043f\u043e\u0442\u043e\u0447\u043d\u0438\u0439 \u0447\u0430\u0442", lambda: self.chat.clear() if hasattr(self.chat, "clear") else None),
+                ])
+            return
         """Меню шапки: ``git`` і «⋯».
 
         Окремі пункти «Файл/Правка/Вигляд» тут не потрібні: у вікна вже є
@@ -1038,21 +1113,26 @@ class BlackChpokIDE(tk.Tk):
             self._show_more_menu(anchor)
 
     def _menu_items_for(self, group: str) -> list[tuple[str, Optional[object]]]:
-        """Пункти меню групи: ``(підпис, дія|None)``; ``None`` — розділювач."""
+        if group == "edit":
+            return [
+                ("\u0421\u043a\u0430\u0441\u0443\u0432\u0430\u0442\u0438  (Ctrl+Z)", lambda: self._editor_event("<<Undo>>") if hasattr(self, "_editor_event") else None),
+                ("\u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0438  (Ctrl+Y)", lambda: self._editor_event("<<Redo>>") if hasattr(self, "_editor_event") else None),
+                ("", None),
+                ("\u0417\u043d\u0430\u0439\u0442\u0438 \u0432 \u0444\u0430\u0439\u043b\u0456  (Ctrl+F)", self.open_search),
+                ("\u041f\u043e\u0448\u0443\u043a \u0443 \u043f\u0440\u043e\u0454\u043a\u0442\u0456  (Ctrl+Shift+F)", self.open_project_search),
+                ("\u0428\u0432\u0438\u0434\u043a\u0435 \u0432\u0456\u0434\u043a\u0440\u0438\u0442\u0442\u044f  (Ctrl+P)", self.quick_open),
+                ("\u041a\u043e\u043c\u0430\u043d\u0434\u043d\u0430 \u043f\u0430\u043b\u0456\u0442\u0440\u0430  (Ctrl+Shift+P)", self.command_palette),
+                ("", None),
+                ("AST-\u0434\u0435\u0440\u0435\u0432\u043e \u0444\u0430\u0439\u043b\u0443  (Ctrl+Shift+A)", self.show_ast_tree),
+            ]
         rows: list[tuple[str, Optional[object]]] = []
         for command in commands.all_commands():
-            if command.group != group or command.level == commands.PRIMARY:
-                continue
-            if command.level not in (commands.MENU, commands.PALETTE):
+            if command.group != group:
                 continue
             label = command.label
             if command.shortcut:
-                label = f"{label}\t{command.shortcut}"
-            if not command.is_enabled():
-                # Недоступні пункти лишаємо видимими, але без дії.
-                rows.append((label, None))
-            else:
-                rows.append((label, command.run))
+                label = f"{label}  ({command.shortcut})"
+            rows.append((label, command.run if command.is_enabled() else None))
         return rows
 
     def _popup(self, anchor, rows: list[tuple[str, Optional[object]]]) -> None:
@@ -1088,7 +1168,7 @@ class BlackChpokIDE(tk.Tk):
             for command in items:
                 label = command.label
                 if command.shortcut:
-                    label = f"{label}\t{command.shortcut}"
+                    label = f"{label}  ({command.shortcut})"
                 rows.append((label, command.run if command.is_enabled() else None))
         self._popup(anchor or self.header_bar.more_btn, rows)
 
@@ -1338,7 +1418,6 @@ class BlackChpokIDE(tk.Tk):
             self.side_stack, self.theme, lambda: self.memory,
             on_open_memory=self._show_memory_item,
             on_status=self.set_status,
-            root_provider=self._project_root,
         )
         self._side_widgets = {
             "chats": self.chat_list,
@@ -1405,7 +1484,7 @@ class BlackChpokIDE(tk.Tk):
             on_context=self.toggle_context,
             on_chat_mode=self.show_chat_mode_menu,
         )
-        self.header.grid(row=0, column=0, sticky="ew")
+        # hidden duplicate SessionHeader bar: self.header.grid(row=0, column=0, sticky="ew")
 
         # 2b. Горизонтальний поділ: діалог | робоча область | контекст.
         self.h_split = ttk.PanedWindow(self.main_area, orient="horizontal")
@@ -1589,7 +1668,7 @@ class BlackChpokIDE(tk.Tk):
         self.bottom_tabs.add(self.terminal, text="  Термінал  ")
         self.bottom_tabs.add(self.project_search, text="  Пошук  ")
         self.bottom_tabs.add(self.model_hub, text="  Хаб моделей  ")
-        self.bottom_tabs.add(self.preview, text="  🌐 Сайт  ")
+        # removed duplicate bottom site tab: # removed duplicate bottom site tab: # removed duplicate bottom site tab: self.bottom_tabs.add(self.preview, text="  🌐 Сайт  ")
         self.bottom_tabs.bind("<<NotebookTabChanged>>", self._on_bottom_tab)
         self._bottom_shown = False
         self._bottom_height = int(self.settings.ui.bottom_height or 200)
@@ -2221,6 +2300,9 @@ class BlackChpokIDE(tk.Tk):
         }
         for sequence, handler in bindings.items():
             self.bind_all(sequence, self._wrap(handler), add="+")
+        if not getattr(self, "_kc_shortcuts_bound", False):
+            self._kc_shortcuts_bound = True
+            self.bind_all("<Control-KeyPress>", self._keycode_shortcut_dispatch, add="+")
 
         # Ctrl+C/X/V/A за будь-якої розкладки клавіатури. На українській
         # розкладці клавіша «V» дає символ «і», тому вбудовані прив'язки Tk
@@ -2278,12 +2360,22 @@ class BlackChpokIDE(tk.Tk):
         modes.remember_base_steps(self.settings.agent.max_steps)
         # Режим роботи: дозволи, ліміт кроків і підказка моделі.
         self.set_agent_mode(self.agent_mode, notify=False)
-        self._apply_cloud_provider()
+        # ?????'???????? ??????? ??????? ?????? ???????????: ?? ??????????? ???????? ?????? ?????? ?? ??????
+        if not str(getattr(getattr(self.settings, "llm", None), "model", "") or "").strip():
+            self._apply_cloud_provider()
         # Якщо модель не вибрана, а GGUF лежить на диску — підхопити її.
         # Інакше агент пише «Модель не вибрана» й мовчки йде в офлайн-роутер,
         # хоч модель у користувача вже є.
         self._adopt_local_model()
         self._sync_chat_model()
+        self.after(450, self._restore_user_panel_layout)
+        self.after(200, self._sync_custom_theme_widgets)
+        def _sweep_vec_icons():
+            from . import icons
+            icons.apply_to_tree(self, size=18)
+            self.after(1500, _sweep_vec_icons)
+        self.after(10, _sweep_vec_icons)
+        self.bind_all("<<NotebookTabChanged>>", lambda _e: self.after(1, lambda: icons.apply_to_tree(self, size=18)), add="+")
         # Без вибраного проєкту не показуємо вміст домашньої теки: у
         # провіднику й панелі «Зміни» з'являлись ``AppData``, ``NTUSER.DAT``
         # та інше, і це виглядало так, ніби агент уже працює в домі.
@@ -2908,7 +3000,7 @@ class BlackChpokIDE(tk.Tk):
 
         try:
             profile = hardware.detect()
-            choice = self.chat_panel_choice(path)
+            choice = self.chat_choice(path)
             # ── Один рушій, а не два ───────────────────────────────────────
             # ЗАМІРЯНО ЖИВИМ ПРОГОНОМ: після вивантаження через простій
             # ``launch_with_recovery`` підняв НОВИЙ сервер на 8081 (8080 ще
@@ -2976,7 +3068,7 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Автозапуск моделі не вдався: %s", exc, exc_info=True)
             return f"автозапуск не вдався: {exc}"
 
-    def chat_panel_choice(self, path: Path | str):
+    def chat_choice(self, path: Path | str):
         """Оцінити модель за назвою файлу (для параметрів запуску)."""
         # Публічний метод: сюди можуть прийти рядки з налаштувань і панелей.
         path = Path(path)
@@ -3193,6 +3285,62 @@ class BlackChpokIDE(tk.Tk):
         return self.open_url_in_browser(target)
 
 
+
+    def _sync_custom_theme_widgets(self) -> None:
+        """????? ????????????? ???? ????????? ??????, ??????, ????? ? ????? ??? ????? ????."""
+        try:
+            is_light = (theme.current_mode() == "light")
+            chip_bg = "#E2E8F0" if is_light else "#161B22"
+            chip_fg = "#1E293B" if is_light else "#CBD5E1"
+            btn_bg = "#DBEAFE" if is_light else "#1E293B"
+            btn_fg = "#0F172A" if is_light else "#F8FAFC"
+            btn_brd = "#3B82F6" if is_light else "#38BDF8"
+
+            # 1. ?????? ????? ?? ??????????
+            hb = getattr(self, "header_bar", None)
+            if hb is not None:
+                hb.configure(bg=theme.BG_ALT)
+                if hasattr(hb, "_neon_bar_canvas"):
+                    hb._neon_bar_canvas.configure(bg=theme.BG_ALT)
+                for wname in ("pipeline_scheme_lbl", "net_status", "quick_gemini_btn", "quick_web_btn"):
+                    w = getattr(hb, wname, None)
+                    if w is not None and w.winfo_exists():
+                        w.configure(bg=chip_bg)
+                if hasattr(hb, "update_pipeline_scheme"):
+                    hb.update_pipeline_scheme()
+
+            # 2. ???? ?????? ????? ?? ?????? "+ ????? ???"
+            cl = getattr(self, "chat_list", None) or getattr(self, "sidebar", None)
+            if cl is not None:
+                nb = getattr(cl, "new_btn", None)
+                if nb is not None and nb.winfo_exists():
+                    nb.configure(bg=btn_bg, fg=btn_fg, highlightbackground=btn_brd)
+
+            # 3. ????? ????? ?? ???? ???????? ? chat
+            cp = getattr(self, "chat", None)
+            if cp is not None:
+                if hasattr(cp, "thoughts_dock") and cp.thoughts_dock.winfo_exists():
+                    cp.thoughts_dock.configure(bg=theme.BG_CARD, highlightbackground=theme.BORDER)
+                if hasattr(cp, "_thoughts_title_lbl") and cp._thoughts_title_lbl.winfo_exists():
+                    cp._thoughts_title_lbl.configure(bg=theme.BG_CARD, fg=theme.FG_BRIGHT)
+                if hasattr(cp, "_thoughts_text") and cp._thoughts_text.winfo_exists():
+                    cp._thoughts_text.configure(bg=theme.BG_CARD, fg=theme.FG_DIM)
+                    cp._thoughts_text.tag_configure("stage", foreground="#1D4ED8" if is_light else "#93C5FD")
+                    cp._thoughts_text.tag_configure("step", foreground="#1E293B" if is_light else "#CBD5E1")
+                    cp._thoughts_text.tag_configure("thought_url", foreground="#0284C7" if is_light else "#38BDF8")
+                if hasattr(cp, "bottom_box") and cp.bottom_box.winfo_exists():
+                    cp.bottom_box.configure(bg=theme.BG_CARD, highlightbackground=theme.BORDER)
+                if hasattr(cp, "input_box") and cp.input_box.winfo_exists():
+                    cp.input_box.configure(bg=theme.BG_CARD, fg=theme.FG, insertbackground=theme.FG_BRIGHT)
+
+            # 4. ????? ???????????? PanedWindow
+            style = ttk.Style()
+            style.configure("TPanedwindow", background=theme.BORDER)
+            style.configure("Sash", background=theme.BORDER_LIGHT)
+            self.update_idletasks()
+        except Exception:
+            pass
+
     def apply_theme_mode(self, mode: str) -> None:
         """Перемкнути світлу/темну тему й зберегти вибір.
 
@@ -3211,6 +3359,7 @@ class BlackChpokIDE(tk.Tk):
         try:
             # Скидаємо кеш «останньої теми» стрічки й перемальовуємо картки.
             self.chat.retheme()
+            self._sync_custom_theme_widgets()
         except (tk.TclError, AttributeError):
             pass
         try:
@@ -3819,6 +3968,57 @@ class BlackChpokIDE(tk.Tk):
                   f"інструментом edit_file:\n\n```\n{selection[:4000]}\n```")
         self.send_to_agent(prompt)
 
+
+    def _layout_file_path(self):
+        from pathlib import Path as _P
+        p = _P.home() / "AppData/Roaming/BlackChpokIDE/window_layout.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _save_user_panel_layout(self, _event=None) -> None:
+        try:
+            import json as _js
+            data = {}
+            for name in ("h_split", "v_split", "main_split", "root_split"):
+                sp = getattr(self, name, None)
+                if sp is not None and hasattr(sp, "panes") and hasattr(sp, "sashpos"):
+                    n = len(list(sp.panes())) - 1
+                    if n > 0:
+                        data[name] = [int(sp.sashpos(i)) for i in range(n)]
+            if hasattr(self, "preview_host") and self.preview_host.winfo_viewable():
+                data["preview_w"] = int(self.preview_host.winfo_width())
+            if data:
+                self._layout_file_path().write_text(_js.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _restore_user_panel_layout(self) -> None:
+        try:
+            import json as _js
+            style = ttk.Style()
+            style.configure("TPanedwindow", background=theme.BORDER)
+            style.configure("Sash", sashthickness=6, gripcount=6, background=theme.BORDER_LIGHT)
+            for name in ("h_split", "v_split", "main_split", "root_split"):
+                sp = getattr(self, name, None)
+                if sp is not None:
+                    sp.bind("<ButtonRelease-1>", self._save_user_panel_layout, add="+")
+            p = self._layout_file_path()
+            if not p.exists():
+                return
+            data = _js.loads(p.read_text(encoding="utf-8"))
+            for name, coords in data.items():
+                sp = getattr(self, name, None)
+                if sp is not None and isinstance(coords, list) and hasattr(sp, "sashpos"):
+                    for i, val in enumerate(coords):
+                        try:
+                            sp.sashpos(i, int(val))
+                        except Exception:
+                            pass
+            if "preview_w" in data and hasattr(self, "preview_host"):
+                self.preview_host.configure(width=max(320, int(data["preview_w"])))
+        except Exception:
+            pass
+
     def new_chat(self) -> None:
         self.new_chat_session()
 
@@ -3871,7 +4071,7 @@ class BlackChpokIDE(tk.Tk):
         # Показуємо, з чим користувач працюватиме, і даємо продовжити з цією
         # ж текою: раніше екран лише просив вибрати папку, навіть якщо вона
         # вже вибрана — і «новий чат» щоразу вимагав шукати її заново.
-        current = str(self.settings.workspace or "").strip()
+        current = str(getattr(self, "_last_project_dir", "") or self.settings.workspace or "").strip()
         if current and Path(current).is_dir():
             gate.set_current(current, on_use=self._use_current_project)
         self.project_gate = gate
@@ -3886,16 +4086,17 @@ class BlackChpokIDE(tk.Tk):
 
     def _use_current_project(self) -> None:
         """Продовжити з уже вибраною текою (кнопка на екрані вибору)."""
-        current = str(self.settings.workspace or "").strip()
+        current = str(getattr(self, "_last_project_dir", "") or self.settings.workspace or "").strip()
         if not current or not Path(current).is_dir():
             self._show_project_gate(reason="Ця тека більше не існує — вибери іншу.")
             return
         # Свідоме підтвердження вибору: без прапорця домашня тека вважалась
         # би «нічого не вибрано» і екран повертався б знову.
+        self._last_project_dir = current
         self.settings.remember_workspace(current)
         safe.call_quiet(self.settings.save)
         self._close_project_gate()
-        self.new_chat_session()
+        self.new_chat_session(folder=Path(current))
         self.set_status(f"Працюю з текою: {current}")
 
     def _close_project_gate(self) -> None:
@@ -4070,6 +4271,21 @@ class BlackChpokIDE(tk.Tk):
         self._sync_chat_queue()
         self._focus_composer()
         self.set_status(f"Чат «{chat.title}» прив'язано до теки: {folder}")
+        try:
+            _sid = str(getattr(self, "_active_session_id", "") or getattr(getattr(self, "chat_list", None), "active_id", "") or "").strip()
+            if hasattr(self, "chat") and hasattr(self.chat, "reset_thoughts_for_chat"):
+                if _sid:
+                    (Path.home() / f"AppData/Roaming/BlackChpokIDE/thoughts_history/{_sid}.json").unlink(missing_ok=True)
+                self.chat.reset_thoughts_for_chat(_sid)
+        except Exception:
+            pass
+        try:
+            _final_id = str(getattr(self.chat_store, "active_id", "") or "").strip()
+            if _final_id:
+                (Path.home() / f"AppData/Roaming/BlackChpokIDE/thoughts_history/{_final_id}.json").unlink(missing_ok=True)
+            self.chat.reset_thoughts_for_chat(_final_id)
+        except Exception:
+            pass
         return True
 
     def _pending_chat_active(self) -> bool:
@@ -4817,12 +5033,6 @@ class BlackChpokIDE(tk.Tk):
         tabs = getattr(self, "tabs", None)
         if tabs is None:
             return 0
-        # Спершу скасовуємо відкладений таймер автозбереження: інакше він
-        # спрацює після нашої роботи й запише те саме ще раз.
-        try:
-            tabs.cancel_autosave()
-        except (AttributeError, tk.TclError):
-            pass
         count = 0
         for frame_id in list(getattr(tabs, "_order", [])):
             editor = tabs.editors.get(frame_id)
@@ -4830,12 +5040,6 @@ class BlackChpokIDE(tk.Tk):
             if editor is None or path is None:
                 continue
             if not getattr(editor, "modified", False):
-                continue
-            # ── ПРАВКА АГЕНТА В ПРОЦЕСІ — ПРОПУСКАЄМО ──────────────────────
-            # У буфері зараз стара І нова версії одночасно. Запис такого
-            # буфера й давав дублі блоків у файлах. Правку застосує
-            # ``LiveEdit.accept``, і тоді файл запишеться наступного разу.
-            if getattr(editor, "live_edit_active", False):
                 continue
             try:
                 ws.write_text_file(path, editor.get_text())
@@ -4873,26 +5077,6 @@ class BlackChpokIDE(tk.Tk):
             self.autonomous_panel.refresh()
         except (tk.TclError, AttributeError):
             pass
-
-    def _task_goal_problem(self, task) -> str:
-        """Чи справді досягнуто мети кроку черги (порожній рядок — так).
-
-        Задача, яку поставив автономний режим, пам'ятає свій ключ ідеї
-        (``idea_key``). Для позначки боргу мета перевіряється буквально:
-        маркер мусить зникнути з файлу. Інакше крок ставав «готово» лише
-        тому, що файл змінився, і та сама задача поверталась у чергу.
-        """
-        try:
-            idea_key = str(getattr(task, "idea_key", "") or "")
-            if not idea_key:
-                return ""
-            project = self.autonomous_engine.project or self._project_root()
-            return autonomous.goal_problem(
-                project, idea_key=idea_key,
-                path=str(getattr(task, "file_hint", "") or ""))
-        except Exception:  # noqa: BLE001 - перевірка не має валити крок
-            LOG.debug("Перевірка мети кроку впала", exc_info=True)
-            return ""
 
     def _autonomous_tick(self) -> None:
         """Серце режиму: раз на кілька секунд вирішує, що робити далі."""
@@ -4981,36 +5165,11 @@ class BlackChpokIDE(tk.Tk):
             return False
 
     def _before_agent_request(self) -> None:
-        """Перед кожним запитом: підняти модель, якщо її вивантажив простій.
-
-        ── ЧОМУ У ФОНОВОМУ ПОТОЦІ ─────────────────────────────────────────
-        Підйом — це справжнє завантаження моделі в пам'ять: власний рушій
-        читає гігабайти GGUF (секунди — хвилини), llama-server -
-        ``wait_ready(timeout=300)``. Раніше це виконувалось ПРЯМО в потоці
-        інтерфейсу: вікно переставало відповідати на будь-який клік, і
-        Windows малювала «Not Responding» — саме це бачив користувач на
-        другому запиті після паузи (модель вивантажилась за 5 хв простою,
-        перший запит пішов, другий заморозив вікно). Запит агента при цьому
-        НЕ втрачається: черга подій чату (``_poll_events``) прочитає все,
-        щойно хід почнеться.
-        """
-        if not getattr(self, "_model_unloaded_by_idle", False):
-            return
-        if getattr(self, "_model_wake_busy", False):
-            return
-        self._model_wake_busy = True
-        self.set_status("Модель вивантажено після простою — піднімаю її…")
-
-        def work() -> None:
-            try:
-                self._wake_model_if_needed()
-            except Exception:  # noqa: BLE001 - підйом не має валити запит
-                LOG.debug("Підйом моделі перед запитом не вдався", exc_info=True)
-            finally:
-                self._model_wake_busy = False
-
-        threading.Thread(target=work, daemon=True,
-                         name="model-wake").start()
+        """Перед кожним запитом: підняти модель, якщо її вивантажив простій."""
+        try:
+            self._wake_model_if_needed()
+        except Exception:  # noqa: BLE001 - підйом не має блокувати запит
+            LOG.debug("Підйом моделі перед запитом не вдався", exc_info=True)
 
     def _chat_folder_ready(self) -> bool:
         """Перед запитом привести агента й чат до ОДНІЄЇ теки.
@@ -6394,20 +6553,12 @@ class BlackChpokIDE(tk.Tk):
             return False
 
     def _budget_state_for_panel(self) -> dict:
-        """Розподіл бюджету контексту (вікно/відповідь/історія/схеми).
-
-        ``working`` — скільки ми ЗАПОВНЮЄМО цього разу (автовизначення під
-        запит, див. ``context_budget.working_window``). Воно може бути
-        меншим за ``window``: вікно — це стеля моделі, а не план на кожен
-        хід. Панель показує обидва числа, щоб «0 / 131072» не виглядало як
-        порожній контекст.
-        """
+        """Розподіл бюджету контексту (вікно/відповідь/історія/схеми)."""
         budget = getattr(self.agent, "_context_budget", None)
         if budget is None:
             return {}
         return {
             "window": int(getattr(budget, "window", 0) or 0),
-            "working": int(getattr(budget, "working", 0) or 0),
             "answer": int(getattr(budget, "answer", 0) or 0),
             "history": int(getattr(budget, "history", 0) or 0),
             "tools": int(getattr(budget, "tools", 0) or 0),
@@ -6611,7 +6762,7 @@ class BlackChpokIDE(tk.Tk):
         # Показуємо панель і відкриваємо адресу — людина одразу бачить
         # свій сайт і може натискати кнопки, як у звичайному браузері.
         try:
-            self.show_bottom("site")
+            self.toggle_preview(True)
             live.open_url(url)
             self.set_status(f"Сайт проєкту відкрито: {url}")
         except (tk.TclError, AttributeError):
@@ -6678,23 +6829,34 @@ class BlackChpokIDE(tk.Tk):
                 if (str(data.get("name")) in self._WRITE_TOOLS
                         and bool(data.get("ok", True))):
                     self._auto_open_site_after_write(text)
+                    def _auto_accept_agent_changes():
+                        try:
+                            cp = getattr(self, "changes_panel", None) or getattr(self, "changes", None)
+                            if cp is not None:
+                                if hasattr(cp, "accept_all"):
+                                    cp.accept_all()
+                                elif hasattr(cp, "_accept_all"):
+                                    cp._accept_all()
+                        except Exception:
+                            pass
+                    self._ui_call(_auto_accept_agent_changes)
+                    _web_exts = (".html", ".htm", ".css", ".scss", ".sass", ".less", ".js", ".mjs", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".svg", ".php")
+                    _raw_info = f"{text} {data.get('args', '')}".lower()
+                    if any(ext in _raw_info for ext in _web_exts):
+                        def _stream_whole_webapp():
+                            self.file_tree.refresh()
+                            self._auto_show_preview()
+                            srv = getattr(self.live_preview, "server", None)
+                            if not bool(getattr(srv, "running", False)):
+                                if self.live_preview.inner.detect() is not None:
+                                    self.live_preview.start_server()
+                                    return
+                            safe.call_quiet(self.live_preview.on_file_saved, where="live webapp stream")
+                        self._ui_call(_stream_whole_webapp)
             elif kind == "error":
                 self.case_book.add_step(text or "Помилка", status=cases_panel.FAILED)
             elif kind == "done":
                 ok = bool(data.get("ok", True))
-                # ── НЕЗАВЕРШЕНА ЖИВА ПРАВКА НЕ МАЄ ЛИШАТИСЬ ─────────────────
-                # Хід скінчився, а правка могла не дійти до ``accept``:
-                # модель обірвала стрім, інструмент упав, користувач
-                # скасував. Тоді в редакторі лежали б стара І нова версії,
-                # і будь-яке збереження записало б обидві у файл — саме так
-                # у ``main_window.py``, ``live_edit.py`` і ``night_shift.py``
-                # з'явились дублі блоків і функцій.
-                #
-                # ``getattr`` потрібен, бо метод викликають і тести на
-                # «заглушці» без повного стану вікна.
-                settle = getattr(self, "_ui_call", None)
-                if settle is not None and getattr(self, "_live_edit", None) is not None:
-                    settle(self._settle_live_edit)
                 summary = getattr(self.chat.runner, "last_answer", "") if self.chat.runner else ""
                 error = getattr(self.chat.runner, "last_error", "") if self.chat.runner else ""
                 self.case_book.end(ok=ok, summary=summary, error=error)
@@ -7002,6 +7164,12 @@ class BlackChpokIDE(tk.Tk):
         except (tk.TclError, AttributeError):
             pass
 
+        try:
+            if hasattr(self, 'header') and hasattr(self.header, 'update_pipeline_scheme'):
+                self.header.update_pipeline_scheme()
+        except Exception:
+            pass
+
     def _known_models(self) -> list[str]:
         """Відомі моделі: з провайдера + поточна + локальні."""
         models: list[str] = []
@@ -7079,7 +7247,21 @@ class BlackChpokIDE(tk.Tk):
                 except (tk.TclError, AttributeError):
                     pass
             return
+        _ide_root = Path(__file__).resolve().parent.parent
+        if Path(folder).resolve() == _ide_root:
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "???????? ????? IDE",
+                "????? ????? BlackChpok IDE ???????? ??? ????????? ????? ????????.\n"
+                "???? ?????, ???????? ??? ???????? ?????? ????? ??? ?????? ??????? (?????????, C:\\AI\\projects\\my_app)."
+            )
+            return
         self.set_workspace(Path(folder))
+        try:
+            from . import git_repo
+            git_repo.ensure_folder_git(Path(folder))
+        except Exception:
+            pass
 
     def _autonomous_other_project(self, folder: Path) -> bool:
         """Чи автономний режим зараз працює для ІНШОЇ теки."""
@@ -7106,6 +7288,15 @@ class BlackChpokIDE(tk.Tk):
         return bool(answer)
 
     def set_workspace(self, folder: Path, *, switch_chat: bool = True) -> None:
+        _ide_root = Path(__file__).resolve().parent.parent
+        try:
+            _cand = Path(folder).resolve()
+            if _cand == _ide_root or _ide_root in _cand.parents:
+                _safe_proj = _ide_root.parent / "projects"
+                _safe_proj.mkdir(parents=True, exist_ok=True)
+                folder = _safe_proj
+        except Exception:
+            pass
         """Відкрити теку. Чат при цьому не переїжджає в чужу папку.
 
         ``switch_chat=True`` (меню, недавні, вибір з провідника): якщо
@@ -7161,6 +7352,7 @@ class BlackChpokIDE(tk.Tk):
         folder = Path(folder)
         if not folder.is_dir():
             return
+        self._last_project_dir = str(folder)
         self.settings.remember_workspace(str(folder))
         self.settings.save()
         self.registry.set_root(folder)
@@ -7275,13 +7467,11 @@ class BlackChpokIDE(tk.Tk):
         if not target:
             target = self._running_site_url()
         if not target:
-            if not self.has_project():
-                self._show_project_gate(
-                    reason="Live Browser відкриється, щойно буде вибрано проєкт.")
-                self.set_status("Спершу вибери теку проєкту.")
-                return False
-            started = self.start_site()
-            target = self._running_site_url() if started else ""
+            if self.has_project():
+                started = self.start_site()
+                target = self._running_site_url() if started else ""
+        if not target:
+            target = "https://www.google.com"
         if target:
             self.open_url_in_browser(target)
         # 3. Зліва — файли й діалог: працювати з кодом поруч із результатом.
@@ -7502,12 +7692,6 @@ class BlackChpokIDE(tk.Tk):
                 # б показати в одному файлі дві правки накладкою.
                 if live is not None:
                     live.cancel_timer()
-                # ── ПЕРЕД НОВОЮ ПРАВКОЮ — ЗБЕРЕГТИ ТЕ, ЩО ВЖЕ Є ──────────
-                # Правка починається з ЧИТАННЯ файлу з диска (``open_file``).
-                # Якщо попередня зміна ще лежала в пам'яті, читання повертало
-                # старий вміст, і нова правка накладалась на нього. Тепер
-                # пам'ять і диск збігаються до початку показу.
-                self._flush_editors()
                 live = self._start_live_edit(target, content, search, replaces,
                                              whole_file)
                 self._live_edit = live
@@ -7516,46 +7700,6 @@ class BlackChpokIDE(tk.Tk):
             live.append(content, final=final)
         except Exception:  # noqa: BLE001 - показ правки не має зривати хід
             LOG.debug("Живу правку не показано", exc_info=True)
-
-    def _settle_live_edit(self) -> None:
-        """Закрити живу правку, що лишилась відкритою після ходу агента.
-
-        Її могло не закрити з трьох причин: стрім обірвався, інструмент
-        упав, користувач скасував хід. У всіх випадках у редакторі лежать
-        ДВІ версії тексту, і збереження записало б обидві у файл — звідси
-        й бралися дублі функцій у файлах проєкту.
-
-        Завершена правка сама кличе ``accept`` і ставить ``settled``, тому
-        сюди потрапляють лише «завислі» блоки — їх і відхиляємо.
-        """
-        live = getattr(self, "_live_edit", None)
-        if live is None:
-            return
-        self._live_edit = None
-        self._live_edit_path = ""
-        try:
-            if not getattr(live, "settled", False):
-                live.cancel_timer()
-        except Exception:  # noqa: BLE001 - прибирання не має зривати хід
-            LOG.debug("Живу правку не закрито", exc_info=True)
-        # Після закриття правки буфер редактора знову відповідає диску —
-        # тепер його можна зберегти.
-        self._flush_editors()
-
-    def _flush_editors(self) -> int:
-        """Негайно зберегти всі змінені вкладки (без чекання таймера).
-
-        Використовується там, де гаяти час не можна: перед стартом правки
-        агента (вона читає файл з диска) і перед закриттям вікна.
-        """
-        tabs = getattr(self, "tabs", None)
-        if tabs is None or not hasattr(tabs, "flush_modified"):
-            return 0
-        try:
-            return int(tabs.flush_modified())
-        except Exception:  # noqa: BLE001 - збереження не має зривати хід
-            LOG.debug("Не вдалось зберегти вкладки", exc_info=True)
-            return 0
 
     def _start_live_edit(self, target: Path, content: str, search: str,
                          replaces: bool, whole_file: bool = False):
@@ -7948,6 +8092,16 @@ class BlackChpokIDE(tk.Tk):
             LOG.debug("Тему не збережено", exc_info=True)
         self.set_status("Тема: світла" if target == "light" else "Тема: темна")
 
+        try:
+            from . import icons
+            icons.clear_cache()
+            if hasattr(self, "chat") and hasattr(self.chat, "transcript"):
+                self.chat.transcript.configure(bg=self.theme.BG, fg=self.theme.FG)
+                if hasattr(self.chat.transcript, "text"):
+                    self.chat.transcript.text.configure(bg=self.theme.BG, fg=self.theme.FG)
+            icons.apply_to_tree(self)
+        except Exception:
+            pass
     def font_smaller(self) -> None:
         """Зменшити шрифт на крок."""
         self.zoom(-1)
@@ -8095,7 +8249,13 @@ class BlackChpokIDE(tk.Tk):
                                          and self._centre_in_split()))
         if target:
             try:
-                self.live_preview.inner.detect()
+                self.live_preview.show_address_bar()
+                recipe = self.live_preview.inner.detect()
+                cur_url = str(getattr(self.live_preview, "url", "") or "").strip()
+                srv = getattr(self.live_preview, "server", None)
+                srv_running = bool(getattr(srv, "running", False))
+                if recipe is None and not srv_running and (not cur_url or cur_url == "about:blank"):
+                    self.live_preview.open_url("https://www.google.com")
             except (tk.TclError, AttributeError):
                 pass
         return self._preview_shown
@@ -8229,7 +8389,7 @@ class BlackChpokIDE(tk.Tk):
         elif which == "hub":
             self.bottom_tabs.select(self.model_hub)
         elif which == "site":
-            self.bottom_tabs.select(self.preview)
+            self.toggle_preview(True)
         elif which in ("tasks", "queue", "task_center"):
             self.bottom_tabs.select(self.task_center)
         else:
@@ -8641,20 +8801,6 @@ class BlackChpokIDE(tk.Tk):
         self._on_model_changed()
         self._model_proved_online = False
         self._replace_loaded_model(entry)
-        # ── ЗАПАМ'ЯТАТИ ВИБІР НА ДИСК ───────────────────────────────────────
-        # Скарга користувача (21.11.2026): «не запам'ятовує останню вибрану
-        # модель, завжди стартує на хмарній».
-        #
-        # Причина: ``apply_choice`` змінював ``self.settings`` у ПАМ'ЯТІ, але
-        # у файл це не потрапляло — ``save()`` викликали лише в інших місцях.
-        # Після перезапуску читався старий ``llm.model`` (хмарний), і вибір
-        # людини зникав. Тепер зберігаємо одразу після кожного перемикання.
-        try:
-            self.settings.save()
-            LOG.info("Вибір моделі збережено: %s (%s)", entry.name,
-                     "локальна" if entry.is_local else "хмарна")
-        except Exception as exc:                     # noqa: BLE001
-            LOG.warning("Вибір моделі не збережено: %s", exc, exc_info=True)
         # ── Стан НОВОЇ адреси, а не старого запису зі списку ──────────────
         # ``entry.online`` описує запис, знятий ДО вибору. Для хмари він
         # майже завжди ``False``: хмару не перевіряли, доки вона не поточна
@@ -9050,60 +9196,10 @@ class BlackChpokIDE(tk.Tk):
         except (tk.TclError, AttributeError):
             pass
 
-    @staticmethod
-    def _is_local_choice(base_url: str) -> bool:
-        """Чи збережений вибір моделі — ЛОКАЛЬНИЙ (рушій або localhost).
-
-        Потрібно, щоб хмарні налаштування не перебивали вибір людини при
-        старті. ``native://`` — вбудований рушій; ``127.0.0.1``/``localhost`` —
-        локальний сервер (llama-server, LM Studio, Ollama).
-        """
-        value = str(base_url or "").strip().lower()
-        if not value:
-            return False
-        if value.startswith("native://"):
-            return True
-        return any(marker in value for marker in
-                   ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
-
     def _apply_cloud_provider(self) -> bool:
-        """Підключити ЗБЕРЕЖЕНИЙ вибір моделі — локальний чи хмарний.
-
-        ── ЩО БУЛО НЕ ТАК (скарга користувача 21.11.2026) ───────────────────
-        «Завантаження програми стартує з хмарної моделі, а не локальної, і не
-        запам'ятовує останню вибрану».
-
-        Причина. Цей метод біля кожного старту БЕЗУМОВНО переписував
-        ``llm.base_url``/``llm.model`` на хмарні значення, щойно в
-        налаштуваннях був ключ провайдера — навіть якщо людина востаннє
-        працювала з ЛОКАЛЬНОЮ моделлю. Додатково він ставив
-        ``engine.auto_start = False``, тобто забороняв піднімати локальний
-        рушій. Через це:
-
-        * програма стартувала в хмарі (хоча у файлі ``llm.model`` лежала
-          локальна назва — її просто затирали);
-        * локальна модель не завантажувалась узагалі (``auto_start=False``),
-          і замість неї лишалась «МОДЕЛЬ ОФЛАЙН»;
-        * після перезапуску вибір знову «скидався» на хмару.
-
-        ── ЯК ТЕПЕР ─────────────────────────────────────────────────────────
-        Збережений вибір має пріоритет:
-
-        * ``llm.base_url`` вказує на локальний рушій (``native://`` або
-          ``127.0.0.1``) — хмарні налаштування НЕ чіпаємо взагалі;
-        * вибір справді хмарний — підключаємо хмару, але ``auto_start``
-          лишаємо як було (людина могла мати намір повернутись на локальну).
-
-        Повертає ``True``, якщо підключено хмару.
-        """
+        """Якщо в налаштуваннях є хмарний агент — підключити його замість локального."""
         cloud = getattr(self.settings, "cloud", None)
         if cloud is None or not getattr(cloud, "enabled", False):
-            return False
-        # ── Локальний вибір не перекриваємо хмарою ─────────────────────────
-        current = str(getattr(self.settings.llm, "base_url", "") or "")
-        if self._is_local_choice(current):
-            LOG.info("Збережений вибір локальний (%s) — хмарні налаштування "
-                     "не застосовую", current)
             return False
         url = cloud_agents.normalise_base_url(cloud.base_url)
         if not url or not cloud.api_key.strip():
@@ -9120,9 +9216,8 @@ class BlackChpokIDE(tk.Tk):
         # користувача.
         self.settings.llm.max_tokens = max(256, int(cloud.max_tokens or 8192))
         self.settings.llm.temperature = float(cloud.temperature or 0.3)
-        # ``auto_start`` НЕ вимикаємо: раніше тут стояло ``= False``, і після
-        # будь-якого хмарного старту локальний рушій уже не піднімався —
-        # навіть коли людина поверталась на локальну модель.
+        # Хмарний агент уже запущений — локальний рушій не потрібен.
+        self.settings.engine.auto_start = False
         self.agent.llm_settings = self.settings.llm
         provider = cloud_agents.get(cloud.provider)
         name = provider.label if provider else "хмара"
@@ -9483,58 +9578,6 @@ class BlackChpokIDE(tk.Tk):
             LOG.warning("Пам'ять NEUROMESH недоступна: %s", exc, exc_info=True)
             self.set_status(f"Пам'ять недоступна: {exc}")
             return None
-
-    def _seed_knowledge(self, *, quiet: bool = True) -> dict[str, Any]:
-        """Записати перевірені знання про проєкт у довгострокову пам'ять.
-
-        Що це дає локальній моделі. Кожен факт пакета — коротке перевірене
-        твердження (як запускати тести, де лежить черга, які правила ламати
-        не можна). Вони лягають у NEUROMESH і підкладаються в контекст
-        наступного запиту через ``memory_bridge`` — тобто модель не мусить
-        щоразу доходити до цього сама.
-
-        Чому у фоні. Запис 18 фактів — це 18 транзакцій SQLite плюс вектори;
-        старт вікна не має чекати. Результат повертається в журнал/панель.
-
-        Чому фактів так мало і кожен з перевіркою. Пам'ять із вигаданими
-        фактами гірша за порожню: модель спирається на них упевнено.
-        Не пройшла перевірка по файлу — факт не пишемо й кажемо про це.
-        """
-        from . import knowledge_pack
-
-        result: dict[str, Any] = {"added": 0, "confirmed": 0,
-                                  "stale": [], "failed": 0, "skipped": True}
-        if self.memory is None:
-            return result
-
-        def work() -> None:
-            try:
-                report = knowledge_pack.seed(self.memory, self._project_root())
-            except Exception as exc:                 # noqa: BLE001
-                LOG.debug("Пакет знань не записано: %s", exc, exc_info=True)
-                return
-            result.update(added=report.added, confirmed=report.confirmed,
-                          stale=list(report.stale), failed=report.failed,
-                          skipped=False)
-            text = report.describe()
-            LOG.info("%s", text)
-            if not quiet or report.added or report.stale:
-                self._ui_call(self.set_status, text)
-            self._ui_call(self._refresh_memory_panel)
-
-        threading.Thread(target=work, daemon=True,
-                         name="memory-knowledge").start()
-        return result
-
-    def _refresh_memory_panel(self) -> None:
-        """Оновити панель пам'яті, якщо вона вже створена."""
-        panel = getattr(self, "neuromesh_panel", None)
-        if panel is None:
-            return
-        try:
-            panel.refresh()
-        except (tk.TclError, AttributeError):
-            pass
 
     def _replace_loaded_model(self, entry) -> None:
         """Нова модель займає місце попередньої, а не сідає поруч.
@@ -10055,25 +10098,6 @@ class BlackChpokIDE(tk.Tk):
         if getattr(self, "_closing", False):
             return
         self._closing = True
-        # ── ПЕРЕД ВИХОДОМ — ЗБЕРЕГТИ ВСЕ ──────────────────────────────────
-        # Вимога: «всі файли мають автоматично зберігатися». Спершу
-        # зупиняємо відкладений таймер, потім закриваємо незавершену живу
-        # правку й лише тоді пишемо на диск: інакше записався б буфер із
-        # двома версіями тексту (саме звідси брались дублі блоків).
-        tabs = getattr(self, "tabs", None)
-        if tabs is not None:
-            try:
-                tabs.cancel_autosave()
-            except (AttributeError, tk.TclError):
-                pass
-        try:
-            self._settle_live_edit()
-        except Exception:  # noqa: BLE001 - вихід не має падати
-            LOG.debug("Живу правку не закрито перед виходом", exc_info=True)
-        try:
-            self._flush_editors()
-        except Exception:  # noqa: BLE001
-            LOG.debug("Вкладки не збережено перед виходом", exc_info=True)
         self._remember_layout()
         # Контекст активної розмови зберігаємо на диск: інакше після
         # перезапуску чат відкривався б із повідомленнями, але агент не
@@ -10161,7 +10185,7 @@ class BlackChpokIDE(tk.Tk):
                     card.destroy()
                 except tk.TclError:
                     pass
-        # ``cancel_probe`` живе в ``chat_panel.ModelBar``, а ``ModelBar``
+        # ``cancel_probe`` живе в ``chat.ModelBar``, а ``ModelBar``
         # ніде не створюється — тобто на ``ChatPanel`` такого методу немає
         # (перевірено: ``hasattr(ChatPanel, "cancel_probe") is False``).
         # Виклик через getattr був гарантованим no-op. Шукаємо метод там,

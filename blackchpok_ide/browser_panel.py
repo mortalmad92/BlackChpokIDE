@@ -501,6 +501,47 @@ class BrowserView(tk.Frame):
             relief="flat", font=theme.font(10), bd=0, highlightthickness=1,
             highlightbackground=theme.BORDER, highlightcolor=theme.ACCENT_SOFT,
         )
+        if not getattr(self.address, "_enhanced_input", False):
+            self.address._enhanced_input = True
+            def _addr_submit(_e=None):
+                raw = str(self.address.get() or "").strip()
+                if not raw:
+                    return "break"
+                self.open_url(raw)
+                return "break"
+            def _addr_paste_go():
+                try:
+                    txt = str(self.clipboard_get() or "").strip()
+                    if txt:
+                        self.address.delete(0, "end")
+                        self.address.insert(0, txt)
+                        _addr_submit()
+                except Exception:
+                    pass
+            def _addr_paste():
+                try:
+                    txt = str(self.clipboard_get() or "")
+                    if txt:
+                        if self.address.selection_present():
+                            self.address.delete("sel.first", "sel.last")
+                        self.address.insert("insert", txt)
+                except Exception:
+                    pass
+            def _addr_ctx(ev):
+                widgets.context_menu(self, [
+                    ("\u23ce  \u0412\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0442\u0430 \u043f\u0435\u0440\u0435\u0439\u0442\u0438", _addr_paste_go),
+                    ("\u2398  \u0412\u0441\u0442\u0430\u0432\u0438\u0442\u0438", _addr_paste),
+                    ("\u2397  \u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438", lambda: self.address.event_generate("<<Copy>>")),
+                    ("\u2702  \u0412\u0438\u0440\u0456\u0437\u0430\u0442\u0438", lambda: self.address.event_generate("<<Cut>>")),
+                    ("", None),
+                    ("\u25a3  \u0412\u0438\u0434\u0456\u043b\u0438\u0442\u0438 \u0432\u0441\u0435", lambda: (self.address.select_range(0, "end"), self.address.icursor("end"))),
+                ], ev)
+                return "break"
+            self.address.bind("<Button-1>", lambda _e: self.address.focus_set(), add="+")
+            self.address.bind("<Return>", _addr_submit, add="+")
+            self.address.bind("<KP_Enter>", _addr_submit, add="+")
+            self.address.bind("<Button-3>", _addr_ctx, add="+")
+
         self.address.grid(row=0, column=1, sticky="ew", ipady=4, padx=(0, 4))
         self.address.bind("<Return>", lambda _e: self.go_from_address())
         self.address.bind("<Escape>", lambda _e: self._paint_address())

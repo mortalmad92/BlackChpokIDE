@@ -64,6 +64,144 @@ class LivePreviewPanel(tk.Frame):
         self._tick_state()
 
     # ── побудова ───────────────────────────────────────────────────────────
+    def _on_ctrl_wheel_zoom(self, event) -> None:
+        try:
+            if not self.winfo_viewable():
+                return
+            x_root = getattr(event, "x_root", 0)
+            if x_root >= self.winfo_rootx():
+                delta = getattr(event, "delta", 0)
+                if delta > 0:
+                    self._change_zoom(0.1)
+                elif delta < 0:
+                    self._change_zoom(-0.1)
+        except Exception:
+            pass
+
+    def _toggle_fullscreen_preview(self) -> None:
+        try:
+            host = getattr(self, "master", None)
+            split = getattr(host, "master", None) if host is not None else None
+            if host is None or split is None:
+                return
+            total_w = max(800, split.winfo_width())
+            if not getattr(self, "_is_preview_max", False):
+                self._saved_preview_w = max(360, host.winfo_width())
+                self._is_preview_max = True
+                self._resize_preview(int(total_w * 0.88) - self._saved_preview_w)
+            else:
+                self._is_preview_max = False
+                target_w = getattr(self, "_saved_preview_w", 460)
+                self._resize_preview(target_w - host.winfo_width())
+        except Exception:
+            pass
+
+    def _close_preview_panel(self) -> None:
+        try:
+            top = self.winfo_toplevel()
+            if hasattr(top, "toggle_preview"):
+                top.toggle_preview(False)
+        except Exception:
+            pass
+
+    def set_viewport_mode(self, mode: str = "desktop", target_w: int = 0) -> str:
+        """?????????? ????? ????????? ????????: mobile (????????), tablet (???????), desktop (????'????)."""
+        m = str(mode or "desktop").strip().lower()
+        presets = {"mobile": 415, "phone": 415, "smartphone": 415, "tablet": 790, "desktop": 0, "pc": 0}
+        if m not in presets:
+            m = "desktop"
+        width = target_w if target_w > 0 else presets[m]
+        self._viewport_mode = "mobile" if m in ("mobile", "phone", "smartphone") else ("tablet" if m == "tablet" else "desktop")
+        for k, b in getattr(self, "_vp_btns", {}).items():
+            try:
+                b.configure(fg="#38BDF8" if k == self._viewport_mode else theme.FG_DIM)
+            except Exception:
+                pass
+        try:
+            top = self.winfo_toplevel()
+            pw = getattr(top, "_split", None) or getattr(top, "main_split", None)
+            total_w = top.winfo_width()
+            if width > 0 and total_w > width + 260:
+                if pw is not None and hasattr(pw, "sashpos"):
+                    panes = pw.panes()
+                    if len(panes) >= 2:
+                        pw.sashpos(len(panes) - 2, max(240, total_w - width))
+            elif width == 0 and total_w > 900:
+                if pw is not None and hasattr(pw, "sashpos"):
+                    panes = pw.panes()
+                    if len(panes) >= 2:
+                        pw.sashpos(len(panes) - 2, int(total_w * 0.52))
+            self.reload_page()
+        except Exception:
+            pass
+        return f"????? ?????????: {self._viewport_mode}"
+
+    def _resize_preview(self, delta: int) -> None:
+        try:
+            host = getattr(self, "master", None)
+            split = getattr(host, "master", None) if host is not None else None
+            if host is None or split is None:
+                return
+            cur_w = max(320, host.winfo_width())
+            total_w = max(800, split.winfo_width())
+            new_w = max(320, min(int(total_w * 0.72), cur_w + int(delta)))
+            real_delta = new_w - cur_w
+            if real_delta == 0:
+                return
+            host.configure(width=new_w)
+            if hasattr(split, "sash_place") and hasattr(split, "panes"):
+                panes = list(split.panes())
+                n_sashes = len(panes) - 1
+                for si in range(n_sashes):
+                    sx, sy = split.sash_coord(si)
+                    split.sash_place(si, max(180, sx - real_delta), sy)
+        except Exception:
+            pass
+
+    def _change_zoom(self, step: float) -> None:
+        try:
+            z = round(max(0.6, min(2.2, getattr(self, "_page_zoom", 1.0) + step)), 2)
+            self._page_zoom = z
+            view = getattr(getattr(self, "inner", None), "view", None)
+            if view is not None and hasattr(view, "ensure_cdp"):
+                sess = view.ensure_cdp()
+                if sess is not None:
+                    sess.evaluate(f"document.documentElement.style.zoom = '{z}'; document.body.style.zoom = '{z}';")
+            if hasattr(self, "status_label"):
+                self.status_label.configure(text=f"\u041c\u0430\u0441\u0448\u0442\u0430\u0431 \u0441\u0442\u043e\u0440\u0456\u043d\u043a\u0438: {int(z * 100)}%")
+        except Exception:
+            pass
+
+    def _translate_page_to_ukrainian(self) -> None:
+        try:
+            import urllib.parse as _up
+            view = getattr(getattr(self, "inner", None), "view", None)
+            cur_url = str(getattr(view, "url", "") or "").strip()
+            if not cur_url or "translate.goog" in cur_url or "translate.google.com" in cur_url:
+                return
+            if view is not None and hasattr(view, "ensure_cdp"):
+                try:
+                    sess = view.ensure_cdp()
+                    if sess is not None:
+                        js_gt = (
+                            "if(!document.getElementById('gt_ide_el')){"
+                            "var d=document.createElement('div');d.id='gt_ide_el';d.style.cssText='position:fixed;top:6px;right:6px;z-index:999999;background:#fff;padding:4px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,.3)';"
+                            "document.body.appendChild(d);"
+                            "window.googleTranslateElementInit=function(){new google.translate.TranslateElement({pageLanguage:'auto',includedLanguages:'uk,en,pl,de',autoDisplay:true},'gt_ide_el');};"
+                            "var s=document.createElement('script');s.src='https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';document.body.appendChild(s);"
+                            "}"
+                        )
+                        sess.evaluate(js_gt)
+                except Exception:
+                    pass
+            tr_url = f"https://translate.google.com/translate?sl=auto&tl=uk&u={_up.quote(cur_url, safe='')}"
+            top = self.winfo_toplevel()
+            if hasattr(top, "open_url_in_browser"):
+                top.open_url_in_browser(tr_url)
+        except Exception:
+            pass
+
+
     def _build(self) -> None:
         # ── заголовок
         head = tk.Frame(self, bg=theme.BG_ALT)
@@ -106,6 +244,52 @@ class LivePreviewPanel(tk.Frame):
             fg=theme.FG_DIM, font=theme.font(10),
             tooltip="Знімок самої сторінки (не екрана) у PNG")
         self.shot_btn.pack(side="left")
+        # ?????? ????????? ??????? ?????, ????????? (A-/A+) ?? ???????????? Google ?? ?????????? ????
+        self._page_zoom = 1.0
+        self._viewport_mode = "desktop"
+        self._vp_btns = {}
+        for vp_key, vp_icon, vp_w, vp_tip in (
+            ("mobile", "\U0001f4f1 390", 415, "\u0420\u0435\u0436\u0438\u043c \u0441\u043c\u0430\u0440\u0442\u0444\u043e\u043d\u0430 (390\u00d7844)"),
+            ("tablet", "\U0001f4df 768", 790, "\u0420\u0435\u0436\u0438\u043c \u043f\u043b\u0430\u043d\u0448\u0435\u0442\u0430 (768\u00d71024)"),
+            ("desktop", "\U0001f5a5 PC", 0, "\u0420\u0435\u0436\u0438\u043c \u043a\u043e\u043c\u043f'\u044e\u0442\u0435\u0440\u0430 (\u0448\u0438\u0440\u043e\u043a\u0438\u0439 \u0435\u043a\u0440\u0430\u043d)"),
+        ):
+            vbtn = widgets.HoverLabel(
+                actions, text=vp_icon, command=lambda m=vp_key, w=vp_w: self.set_viewport_mode(m, w),
+                bg=theme.BG_ALT, fg=theme.FG_BRIGHT if vp_key == "desktop" else theme.FG_DIM,
+                hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT, font=theme.font(8, "bold"), padx=5, pady=2)
+            vbtn.pack(side="left", padx=(3, 0))
+            widgets.Tip(vbtn, vp_tip)
+            self._vp_btns[vp_key] = vbtn
+
+        self.zoom_out_btn = widgets.HoverLabel(
+            actions, text="A\u2212", command=lambda: self._change_zoom(-0.15),
+            bg=theme.BG_ALT, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT, font=theme.font(8, "bold"), padx=5, pady=2)
+        self.zoom_out_btn.pack(side="left", padx=(4, 0))
+        widgets.Tip(self.zoom_out_btn, "\u0417\u043c\u0435\u043d\u0448\u0438\u0442\u0438 \u0448\u0440\u0438\u0444\u0442 \u0456 \u043c\u0430\u0441\u0448\u0442\u0430\u0431")
+
+        self.zoom_in_btn = widgets.HoverLabel(
+            actions, text="A+", command=lambda: self._change_zoom(0.15),
+            bg=theme.BG_ALT, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT, font=theme.font(8, "bold"), padx=5, pady=2)
+        self.zoom_in_btn.pack(side="left")
+        widgets.Tip(self.zoom_in_btn, "\u0417\u0431\u0456\u043b\u044c\u0448\u0438\u0442\u0438 \u0448\u0440\u0438\u0444\u0442 \u0456 \u043c\u0430\u0441\u0448\u0442\u0430\u0431")
+
+        self.translate_ua_btn = widgets.HoverLabel(
+            actions, text="\U0001f310 UA", command=self._translate_page_to_ukrainian,
+            bg=theme.BG_ALT, fg="#38BDF8", hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT, font=theme.font(8, "bold"), padx=6, pady=2)
+        self.translate_ua_btn.pack(side="left", padx=(4, 0))
+        self.fullscreen_btn = widgets.HoverLabel(
+            actions, text="\u26f6", command=self._toggle_fullscreen_preview,
+            bg=theme.BG_ALT, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT, font=theme.font(9, "bold"), padx=5, pady=2)
+        self.fullscreen_btn.pack(side="left", padx=(4, 0))
+        widgets.Tip(self.fullscreen_btn, "\u041d\u0430 \u0432\u0435\u0441\u044c \u0435\u043a\u0440\u0430\u043d / \u041f\u043e\u0432\u0435\u0440\u043d\u0443\u0442\u0438 \u0440\u043e\u0437\u043c\u0456\u0440")
+
+        self.close_preview_btn = widgets.HoverLabel(
+            actions, text="\u2715", command=self._close_preview_panel,
+            bg=theme.BG_ALT, fg="#F87171", hover_bg=theme.BG_HOVER, hover_fg="#FCA5A5", font=theme.font(9, "bold"), padx=5, pady=2)
+        self.close_preview_btn.pack(side="left", padx=(4, 0))
+        widgets.Tip(self.close_preview_btn, "\u0417\u0430\u043a\u0440\u0438\u0442\u0438 \u0432\u0431\u0443\u0434\u043e\u0432\u0430\u043d\u0438\u0439 \u0431\u0440\u0430\u0443\u0437\u0435\u0440")
+        self.bind_all("<Control-MouseWheel>", self._on_ctrl_wheel_zoom, add="+")
+        widgets.Tip(self.translate_ua_btn, "\u041f\u0435\u0440\u0435\u043a\u043b\u0430\u0441\u0442\u0438 \u0441\u0442\u043e\u0440\u0456\u043d\u043a\u0443 \u043d\u0430 \u0443\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0443 (Google Translate)")
 
         # ── адресний рядок
         url_host = tk.Frame(self, bg=theme.BG_CARD)
@@ -624,7 +808,6 @@ class LivePreviewPanel(tk.Frame):
         return True
 
     def show_address_bar(self) -> None:
-        """Показати рядок адреси внутрішнього браузера (для вільного входу)."""
         for name in ("address", "back_btn", "go_btn"):
             widget = getattr(self.inner.view, name, None)
             if widget is None:
@@ -632,6 +815,52 @@ class LivePreviewPanel(tk.Frame):
             try:
                 widget.grid()
             except tk.TclError:
+                pass
+        addr = getattr(self.inner.view, "address", None)
+        if addr is not None and not getattr(addr, "_ctx_enhanced", False):
+            addr._ctx_enhanced = True
+            def _go_addr(_e=None):
+                raw = str(addr.get() or "").strip()
+                if not raw:
+                    return "break"
+                if " " in raw or ("." not in raw and not raw.startswith(("http://", "https://", "localhost"))):
+                    import urllib.parse
+                    raw = "https://google.com" + urllib.parse.quote_plus(raw)
+                self.open_url(raw)
+                return "break"
+            def _paste_and_go():
+                try:
+                    txt = str(self.clipboard_get() or "").strip()
+                    if txt:
+                        addr.delete(0, "end")
+                        addr.insert(0, txt)
+                        _go_addr()
+                except Exception:
+                    pass
+            def _paste_only():
+                try:
+                    txt = str(self.clipboard_get() or "")
+                    if txt:
+                        if addr.selection_present():
+                            addr.delete("sel.first", "sel.last")
+                        addr.insert("insert", txt)
+                except Exception:
+                    pass
+            def _show_addr_ctx(ev):
+                widgets.context_menu(self, [
+                    ("\u23ce  \u0412\u0441\u0442\u0430\u0432\u0438\u0442\u0438 \u0442\u0430 \u043f\u0435\u0440\u0435\u0439\u0442\u0438", _paste_and_go),
+                    ("\u2398  \u0412\u0441\u0442\u0430\u0432\u0438\u0442\u0438", _paste_only),
+                    ("\u2397  \u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438", lambda: addr.event_generate("<<Copy>>")),
+                    ("\u2702  \u0412\u0438\u0440\u0456\u0437\u0430\u0442\u0438", lambda: addr.event_generate("<<Cut>>")),
+                    ("", None),
+                    ("\u25a3  \u0412\u0438\u0434\u0456\u043b\u0438\u0442\u0438 \u0432\u0441\u0435", lambda: (addr.select_range(0, "end"), addr.icursor("end"))),
+                ], ev)
+                return "break"
+            try:
+                addr.bind("<Return>", _go_addr, add="+")
+                addr.bind("<KP_Enter>", _go_addr, add="+")
+                addr.bind("<Button-3>", _show_addr_ctx, add="+")
+            except Exception:
                 pass
 
     def on_file_saved(self) -> None:
@@ -648,3 +877,4 @@ class LivePreviewPanel(tk.Frame):
 
 
 __all__ = ["LivePreviewPanel"]
+

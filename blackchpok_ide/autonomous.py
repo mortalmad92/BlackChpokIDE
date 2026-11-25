@@ -339,6 +339,14 @@ def analyse_project(root: Path, *, limit: int = 24) -> list[Candidate]:
     return unique
 
 
+def _syntax_error_line(src: str) -> tuple[int, str]:
+    import ast as _ast
+    try:
+        _ast.parse(src)
+        return 0, ""
+    except SyntaxError as exc:
+        return int(exc.lineno or 1), str(exc.msg or "SyntaxError")
+
 def _count_swallowed(lines: list[str]) -> int:
     """Порахувати місця «except …: pass» (без важкого розбору AST)."""
     count = 0
@@ -570,6 +578,16 @@ class AutonomousEngine:
         return True, ""
 
     def start(self, project: Path) -> tuple[bool, str]:
+        # AUTONOMOUS_IDE_GUARD
+        _ide_root = Path(__file__).resolve().parent.parent
+        try:
+            _p_cur = Path(str(getattr(self, "project", "") or "")).resolve()
+            if _p_cur == _ide_root or _ide_root in _p_cur.parents:
+                _safe = _ide_root.parent / "projects"
+                _safe.mkdir(parents=True, exist_ok=True)
+                self.project = _safe
+        except Exception:
+            pass
         """Увімкнути режим. Повертає (успіх, повідомлення)."""
         target = Path(project)
         ok, reason = self.can_start(target)

@@ -384,7 +384,10 @@ class AppController:
             if not ok:
                 return False, detail
             self.server = server
-            ready, note = web_server.wait_for_port(server.port, timeout=45)
+            # Передаємо процес: якщо сервер помер одразу (помилка в коді
+            # проєкту), чекати решту 45 с безглуздо — див. ``wait_for_port``.
+            ready, note = web_server.wait_for_port(server.port, timeout=45,
+                                                   process=server.process)
             if not ready:
                 tail = server.tail(12).strip()
                 return False, f"{note}\n{tail[-300:]}" if tail else note

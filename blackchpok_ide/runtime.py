@@ -882,7 +882,10 @@ class ServerConfig:
             "--port", str(self.port),
             "--api-key", self.api_key,
             "--jinja",                 # шаблони чату й tool calling з GGUF-метаданих
-            "--no-webui",              # веб-інтерфейс не потрібен, лише API
+            "--no-webui",
+            "--no-kv-offload",
+            "--cache-type-k", "q8_0",
+            "--cache-type-v", "q8_0",              # веб-інтерфейс не потрібен, лише API
         ]
         if self.mmproj_path:
             mmproj = Path(self.mmproj_path)

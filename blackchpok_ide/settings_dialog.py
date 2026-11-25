@@ -147,7 +147,7 @@ class SettingsDialog(tk.Toplevel):
         self._text_pump_after = None
         self._ensure_text_queue()
         # Позиція під розмір діалогу й межі екрана, а не «десь зверху».
-        widgets.place_window(self, width=820, height=640, center_on=master)
+        widgets.place_window(self, width=1060, height=660, center_on=master)
 
     def _build(self) -> None:
         # Footer пакується ПЕРШИМ (side="bottom"): pack резервує нижню смугу
@@ -166,15 +166,15 @@ class SettingsDialog(tk.Toplevel):
         #: був локальною змінною, і дістатись до вкладок було неможливо.
         self.notebook = notebook
 
-        notebook.add(self._model_tab(notebook), text="  Модель  ")
-        notebook.add(self._runtime_tab(notebook), text="  AI Runtime  ")
-        notebook.add(self._editor_tab(notebook), text="  Редактор  ")
-        notebook.add(self._agent_tab(notebook), text="  Агент  ")
-        notebook.add(self._sections_tab(notebook), text="  Розділи  ")
-        notebook.add(self._mcp_tab(notebook), text="  MCP  ")
-        notebook.add(self._cloud_tab(notebook), text="  Хмарні агенти  ")
-        notebook.add(self._social_tab(notebook), text="  Соцмережі  ")
-        notebook.add(self._voice_tab(notebook), text="  Голос  ")
+        notebook.add(self._model_tab(notebook), text="Модель")
+        notebook.add(self._runtime_tab(notebook), text="AI Runtime")
+        notebook.add(self._editor_tab(notebook), text="Редактор")
+        notebook.add(self._agent_tab(notebook), text="Агент")
+        notebook.add(self._sections_tab(notebook), text="Розділи")
+        notebook.add(self._mcp_tab(notebook), text="MCP")
+        notebook.add(self._cloud_tab(notebook), text="Хмарні агенти")
+        notebook.add(self._social_tab(notebook), text="Соцмережі")
+        notebook.add(self._voice_tab(notebook), text="Голос")
 
         # Висота діалогу під найвищу вкладку — у межах екрана: тоді навіть
         # «Соцмережі» видно целиком, а на маленьких екранах footer усе одно
@@ -332,6 +332,8 @@ class SettingsDialog(tk.Toplevel):
                 widgets.attach_edit_actions(widget, readonly=readonly)
             except tk.TclError:
                 continue
+
+    _working_choice = staticmethod(_working_choice)
 
     def _fit_height(self, notebook: ttk.Notebook, footer: ttk.Frame) -> None:
         """Підібрати висоту діалогу під вміст, не виходячи за екран."""
@@ -1845,6 +1847,10 @@ class SettingsDialog(tk.Toplevel):
             values = {name: entry.get().strip() for name, entry in entries.items()}
             s.social.set_values(key, values)
 
-        s.save()
-        if self.on_saved:
-            self.on_saved()
+        # SAFE_CLOUD_SAVE
+        try:
+            if hasattr(self, 'cloud_enabled') and hasattr(self.settings, 'cloud'):
+                self.settings.cloud.enabled = bool(self.cloud_enabled.get())
+        except Exception:
+            pass
+        self.settings.save()

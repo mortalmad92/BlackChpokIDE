@@ -788,6 +788,9 @@ def classify_message(text: str, *, previous: Sequence[str] | None = None) -> str
     # читання коду (``task_plan.READ``), і агент ішов оглядати проєкт,
     # витрачаючи кроки на порожню роботу. Питання Ж про проєкт («що робить
     # цей файл») містить слова «файл»/«код»/«тест», тому його не чіпаємо.
+    _COMPLAINT = ("не працює","не паше","не робе","зламалось","зламалося","помилка","баг","крашиться","висить","не запускається","не відкривається","не грузиться","впало","впадає")
+    if _has_any(low, _COMPLAINT):
+        return DEBUG
     if (_has_any(low, _EXPLAIN_MARKERS) and not understanding.paths
             and not _has_any(low, _CODE_WORDS)):
         return EXPLAIN

@@ -225,7 +225,9 @@ class ModeLearner:
         """Усі правила (найчастіші першими)."""
         return sorted(self._rules, key=lambda rule: (-rule.hits, -rule.last))
 
-    def suggest(self, text: str) -> Optional[ModeMistake]:
+    def suggest(self, *a, **kw):
+        return None
+    def _disabled_suggest(self, text: str) -> Optional[ModeMistake]:
         """Правило, що підходить до цього тексту (найдовша фраза перемагає).
 
         Найдовша — бо «виправ помилку» є окремим випадком «виправ», і
@@ -274,7 +276,9 @@ class ModeLearner:
         return rule.wanted, rule
 
     # ── запис ─────────────────────────────────────────────────────────────
-    def record(self, text: str, *, chosen: str, wanted: str, reason: str,
+    def record(self, *a, **kw):
+        return None
+    def _disabled_record(self, text: str, *, chosen: str, wanted: str, reason: str,
                source: str = "") -> Optional[ModeMistake]:
         """Запам'ятати помилку вибору. ``None`` — якщо вчитись нема чого."""
         if not self.enabled:

@@ -83,7 +83,7 @@ PROVIDERS: tuple[CloudProvider, ...] = (
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         key_url="https://aistudio.google.com/app/apikey",
         docs_url="https://ai.google.dev/gemini-api/docs",
-        models=("gemini-2.0-flash", "gemini-2.5-pro", "gemini-1.5-pro"),
+        models=("gemini-flash-lite-latest", "gemini-2.0-flash", "gemini-2.5-pro"),
         context=1_000_000,
         note="Типово — OpenAI-сумісний шлях /openai. Якщо вказати адресу "
              "без /openai, IDE сама перейде на нативний :generateContent.",

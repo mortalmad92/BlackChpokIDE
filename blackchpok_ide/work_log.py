@@ -302,7 +302,7 @@ class WorkLog(tk.Frame):
             # Автоматичне згортання після завершення. Якщо користувач уже
             # розгорнув журнал сам (``_expanded_before_finish`` знято в
             # ``toggle``), його вибір не скасовуємо.
-            self._expanded = False
+            self._expanded = True
         else:
             self._expanded_before_finish = False
         self._apply_expanded()
@@ -410,6 +410,20 @@ class WorkLog(tk.Frame):
         return row
 
     def set_live_reasoning(self, text: str) -> None:
+        # UNIFIED_THOUGHTS: ???????? ??????? ? ?????? ?????? ??? ????????? ??????? ?????/????????
+        clean_t = " ".join(str(text or "").split()).strip()
+        if not clean_t:
+            return
+        if getattr(self, "_live_r_row", None) is None:
+            self._live_r_row = self.add_reasoning(f"\U0001f9e0 {clean_t[:220]}")
+        else:
+            try:
+                lbl = getattr(self._live_r_row, "label", None) or getattr(self._live_r_row, "text_label", None)
+                if lbl is not None:
+                    lbl.configure(text=f"\U0001f9e0 {clean_t[:220]}")
+            except Exception:
+                pass
+        return
         """Оновлювати рядок роздумів у міру стрімінгу (один рядок, не сотні)."""
         preview = _first_sentence(text, limit=160)
         if not preview:
@@ -477,6 +491,7 @@ class WorkLog(tk.Frame):
             pass
 
     def _trim(self) -> None:
+        return  # KEEP_ALL_THOUGHTS
         while len(self._rows) > MAX_ROWS:
             row = self._rows.pop(0)
             if row.call_id:

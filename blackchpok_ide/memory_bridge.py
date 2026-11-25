@@ -479,6 +479,15 @@ class MemoryBridge:
         saved = self.remember_fact(
             text, kind="task", source="контекст: хід завершено",
             task=task, confidence=0.5)
+        # dialogue_learned: ?????????? ?????? ?? ??????????? ?? ???????? ????
+        if len(parts) >= 2 and len(parts[0]) >= 18:
+            self.remember_fact(
+                " | ".join(parts[:2])[:650],
+                kind="fact",
+                source="dialogue_learned",
+                task=task,
+                confidence=0.72,
+            )
         # Історія задач: щоб ``memory_task_history`` бачив, що було зроблено.
         if saved:
             self.record_turn(task=task or parts[0][:120],

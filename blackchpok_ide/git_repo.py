@@ -479,3 +479,56 @@ __all__ = [
     "state",
     "tool_owned",
 ]
+
+
+def ensure_folder_git(folder: Path | str) -> Path:
+    """????'????? ????? ?? ????? ?? ???????? ???????????? Git-???????????."""
+    root = Path(folder).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    if not (root / ".git").exists():
+        _run(["init", "-b", "main"], cwd=root)
+        exclude_tool_dirs(root)
+    return root
+
+
+def has_meaningful_changes(folder: Path | str, min_lines: int = 15) -> tuple[bool, int, list[str]]:
+    """??????????, ?? ? ? ????? ??????? ??????? ????? (????? git status --porcelain ?? numstat)."""
+    root = Path(folder).resolve()
+    if not (root / ".git").exists():
+        return False, 0, []
+    ignored_ext = (".log", ".tmp", ".pyc", ".pyo", ".cache")
+    try:
+        st_res = _run(["status", "--porcelain"], cwd=root)
+        raw_lines = [ln for ln in (st_res.stdout or "").splitlines() if len(ln) > 3]
+        files = [ln[3:].strip().strip('"') for ln in raw_lines]
+        files = [f for f in files if f and not any(f.lower().endswith(x) for x in ignored_ext)]
+    except Exception:
+        return False, 0, []
+    if not files:
+        return False, 0, []
+    changed_lines = 0
+    try:
+        res = _run(["diff", "--numstat"], cwd=root)
+        for ln in (res.stdout or "").splitlines():
+            parts = ln.split("	")
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                changed_lines += int(parts[0]) + int(parts[1])
+    except Exception:
+        pass
+    untracked_bonus = sum(20 for f in files if not (root / f).is_dir())
+    total_weight = max(changed_lines, untracked_bonus if len(files) >= 1 else 0)
+    return (total_weight >= min_lines or len(files) >= 2), total_weight, files
+
+
+def smart_auto_sync(folder: Path | str, token: str = "", min_lines: int = 15) -> tuple[bool, str]:
+    """??????????? ??????? GitHub ??? ???????? ?????, ?????? ???? ? ??????? ?????."""
+    root = Path(folder).resolve()
+    ok, weight, files = has_meaningful_changes(root, min_lines=min_lines)
+    if not ok:
+        return False, f"???????? ???? ????? ({weight} ??????)  ??????? ????."
+    st = state(root)
+    if not st.remote_url:
+        return False, "??? ???? ????? ?? ?? ?????????? ?????????? ??????????? GitHub."
+    msg = default_message(files)
+    pub = publish(root, message=msg, token=token)
+    return pub.ok, pub.summary

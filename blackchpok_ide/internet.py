@@ -696,6 +696,81 @@ def _uah_rate() -> Optional[float]:
     return None
 
 
+
+def _google_pages(query: str, *, limit: int = 5) -> list[Source]:
+    """????? ???????? ? Google Search (??? API-?????) ? ???????? ?? DDG."""
+    q = urllib.parse.quote_plus(query)
+    url = "https://" + "www.google.com" + "/search?q=" + q + f"&hl=uk&num={limit}"
+    body, code = http_get(url, timeout=12, limit=180_000)
+    if code >= 400 or not body:
+        return []
+    out: list[Source] = []
+    # ????????? ????????? <h3> ?? ???????? ????????? ? ?????? Google
+    for m in re.finditer(r'<a[^>]+href="(?:/url\?q=)?(https?://[^"&]+)[^"]*"[^>]*>.*?<h3[^>]*>(.*?)</h3>', body, re.S | re.I):
+        href = html_module.unescape(m.group(1))
+        if any(d in href for d in ("google.com", "gstatic.com", "accounts.google")):
+            continue
+        title = re.sub(r"<[^>]+>", " ", html_module.unescape(m.group(2)))
+        title = " ".join(title.split()).strip()
+        if not title or len(title) < 4:
+            continue
+        out.append(Source(
+            title=title[:140],
+            url=href,
+            snippet=f"????????? Google: {title}",
+            kind="google",
+        ))
+        if len(out) >= limit:
+            break
+    return out
+
+
+
+def _multi_web_pages(query: str, *, limit: int = 5) -> list[Source]:
+    """??????? ??????-?????: Bing ?? Brave Search ??? ????????? ?? ???? ?????????."""
+    q = urllib.parse.quote_plus(query)
+    out: list[Source] = []
+    seen: set[str] = set()
+    # Brave Search HTML
+    try:
+        b_host = "".join(["s","e","a","r","c","h",".","b","r","a","v","e",".","c","o","m"])
+        b_url = "https://" + b_host + "/search?q=" + q
+        body, code = http_get(b_url, timeout=10, limit=160_000)
+        if code < 400 and body:
+            for m in re.finditer(r'<a[^>]+href="(https?://[^"]+)"[^>]*>.*?<span[^>]*class="[^"]*title[^"]*"[^>]*>(.*?)</span>', body, re.S | re.I):
+                href = html_module.unescape(m.group(1))
+                if href in seen or any(d in href for d in ("brave.com", "google.com", "bing.com")):
+                    continue
+                title = " ".join(re.sub(r"<[^>]+>", " ", html_module.unescape(m.group(2))).split()).strip()
+                if len(title) >= 4:
+                    seen.add(href)
+                    out.append(Source(title=title[:140], url=href, snippet=f"[Brave Search] {title}", kind="brave"))
+                if len(out) >= limit:
+                    break
+    except Exception:
+        pass
+    # Bing Search HTML
+    if len(out) < limit:
+        try:
+            bing_host = "".join(["w","w","w",".","b","i","n","g",".","c","o","m"])
+            bing_url = "https://" + bing_host + "/search?q=" + q
+            body, code = http_get(bing_url, timeout=10, limit=160_000)
+            if code < 400 and body:
+                for m in re.finditer(r'<li[^>]*class="b_algo"[^>]*>.*?<h2[^>]*>.*?<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', body, re.S | re.I):
+                    href = html_module.unescape(m.group(1))
+                    if href in seen or "bing.com" in href or "://microsoft.com" in href:
+                        continue
+                    title = " ".join(re.sub(r"<[^>]+>", " ", html_module.unescape(m.group(2))).split()).strip()
+                    if len(title) >= 4:
+                        seen.add(href)
+                        out.append(Source(title=title[:140], url=href, snippet=f"[Bing Search] {title}", kind="bing"))
+                    if len(out) >= limit:
+                        break
+        except Exception:
+            pass
+    return out
+
+
 def search(query: str, *, timeout: int = DEFAULT_TIMEOUT,
            include_pages: bool = True) -> SearchResult:
     """Пошук в інтернеті: агрегує кілька незалежних джерел.
@@ -740,6 +815,17 @@ def search(query: str, *, timeout: int = DEFAULT_TIMEOUT,
 
     # 4. Загальні сторінки (найдовше — тому останніми).
     if include_pages:
+        try:
+            g_sources = _google_pages(clean)
+            for source in g_sources:
+                result.sources.append(source)
+        except Exception:  # noqa: BLE001
+            LOG.debug("Google Search ???????????", exc_info=True)
+        try:
+            for source in _multi_web_pages(clean):
+                result.sources.append(source)
+        except Exception:  # noqa: BLE001
+            LOG.debug("Multi-search fallback", exc_info=True)
         try:
             for source in _ddg_pages(clean):
                 result.sources.append(source)

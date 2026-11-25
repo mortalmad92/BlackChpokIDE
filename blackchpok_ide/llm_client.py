@@ -18,6 +18,26 @@ from __future__ import annotations
 
 import base64
 import json
+
+def _inject_gemini_thought_sig(obj):
+    # SKIP_THOUGHT_SIG_UNIVERSAL
+    if isinstance(obj, dict):
+        tcs = obj.get("tool_calls")
+        if isinstance(tcs, list):
+            for tc in tcs:
+                if isinstance(tc, dict):
+                    ec = tc.setdefault("extra_content", {})
+                    if isinstance(ec, dict):
+                        gg = ec.setdefault("google", {})
+                        if isinstance(gg, dict) and "thought_signature" not in gg:
+                            gg["thought_signature"] = "skip_thought_signature_validator"
+        for v in obj.values():
+            _inject_gemini_thought_sig(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _inject_gemini_thought_sig(item)
+    return obj
+
 import logging
 import re
 import time
@@ -186,9 +206,9 @@ def _looks_like_tool_json(text: str, names: set[str]) -> bool:
     # Розрізняємо їх лише тоді, коли вже видно ім'я інструмента; доти
     # притримуємо, щоб не показати обрізаний виклик.
     head = body[:300]
-    if '"name"' not in head and '"tool"' not in head:
+    if any(f'"{name}"' in head for name in names):
         return True
-    return any(f'"{name}"' in head for name in names)
+    return False
 
 
 def _visible_end(text: str, names: set[str] | None = None) -> int:
@@ -314,6 +334,38 @@ class _StreamGuard:
         return self._accumulated
 
 
+_LIST_CALL_RE = re.compile(
+    r"^\s*\d+\.\s*([a-zA-Z_][\w.]*)\s*:\s*(.+?)$",
+    re.MULTILINE,
+)
+
+
+def _extract_numbered_list_calls(content: str, names: set[str]) -> list[dict[str, Any]]:
+    """Розпізнати виклики у форматі нумерованого списку (Qwen2.5-Coder)."""
+    calls: list[dict[str, Any]] = []
+    for match in _LIST_CALL_RE.finditer(content or ""):
+        name = match.group(1)
+        if name not in names:
+            continue
+        body = match.group(2).strip()
+        arguments: dict[str, Any] = {}
+        for arg_match in re.finditer(r'(\w+)\s*=\s*"([^"]*)"', body):
+            arguments[arg_match.group(1)] = arg_match.group(2)
+        if not arguments:
+            for arg_match in re.finditer(r'(\w+)\s*=\s*([^\s,]+)', body):
+                arguments[arg_match.group(1)] = arg_match.group(2)
+        if not arguments:
+            continue
+        calls.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(_inject_gemini_thought_sig(arguments), ensure_ascii=False),
+            },
+        })
+    return calls
+
+
 def extract_tool_calls(content: str, tools: list[dict[str, Any]],
                        known_names: Iterable[str] | None = None
                        ) -> list[dict[str, Any]]:
@@ -347,6 +399,11 @@ def extract_tool_calls(content: str, tools: list[dict[str, Any]],
     native = tool_dialect.extract_native_calls(content, names)
     if native:
         return native
+
+    # Нумерований список (Qwen2.5-Coder-14B у llama.cpp)
+    list_calls = _extract_numbered_list_calls(content, names)
+    if list_calls:
+        return list_calls
 
     payloads: list[Any] = []
     # 1. Явні теги <tool_call>…</tool_call>
@@ -489,7 +546,7 @@ def _as_tool_calls(candidate: Any, names: set[str]) -> list[dict[str, Any]]:
         arguments = {}
     return [{
         "type": "function",
-        "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)},
+        "function": {"name": name, "arguments": json.dumps(_inject_gemini_thought_sig(arguments), ensure_ascii=False)},
     }]
 
 
@@ -756,7 +813,7 @@ def _human_error_body(body: str) -> str:
         # JSON розібрався, але повідомлення немає — віддаємо
         # розшифрований текст, щоб не показувати escape-послідовності.
         try:
-            return json.dumps(data, ensure_ascii=False)[:800]
+            return json.dumps(_inject_gemini_thought_sig(data), ensure_ascii=False)[:800]
         except (TypeError, ValueError):
             return text[:800]
     return message[:800]
@@ -903,7 +960,14 @@ class LLMClient:
     # ── HTTP ───────────────────────────────────────────────────────────────
     def _open(self, url: str, payload: dict[str, Any] | None, *, method: str = "POST"):
         """Відкрити з'єднання з правильними заголовками (спільне для всіх)."""
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8") \
+        # GEMINI_SIG_FIX
+        if 'googleapis.com' in str(locals().get('url', '') or locals().get('endpoint', '')):
+            for _msg in (payload.get('messages') or []):
+                if isinstance(_msg, dict) and isinstance(_msg.get('tool_calls'), list):
+                    for _tc in _msg['tool_calls']:
+                        if isinstance(_tc, dict):
+                            _tc.setdefault('extra_content', {}).setdefault('google', {}).setdefault('thought_signature', 'skip_thought_signature_validator')
+        data = json.dumps(_inject_gemini_thought_sig(payload), ensure_ascii=False).encode("utf-8") \
             if payload is not None else None
         request = urllib.request.Request(url, data=data, method=method)
         for name, value in self.adapter.headers(self.api_key).items():
@@ -1306,7 +1370,7 @@ class LLMClient:
         )
         url = self.adapter.url(self.base_url, self.adapter.chat_path, self.api_key)
         request = urllib.request.Request(
-            url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            url, data=json.dumps(_inject_gemini_thought_sig(payload), ensure_ascii=False).encode("utf-8"),
             method="POST")
         for name, value in self.adapter.headers(self.api_key).items():
             request.add_header(name, value)
@@ -1454,7 +1518,7 @@ class LLMClient:
         path = provider_adapters.gemini_chat_path(self.model, stream=True)
         url = self.adapter.url(self.base_url, path, self.api_key)
         request = urllib.request.Request(
-            url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            url, data=json.dumps(_inject_gemini_thought_sig(payload), ensure_ascii=False).encode("utf-8"),
             method="POST")
         for name, value in self.adapter.headers(self.api_key).items():
             request.add_header(name, value)
@@ -1692,7 +1756,7 @@ class LLMClient:
 
         url = self.adapter.url(self.base_url, self.adapter.chat_path, self.api_key)
         request = urllib.request.Request(
-            url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            url, data=json.dumps(_inject_gemini_thought_sig(payload), ensure_ascii=False).encode("utf-8"),
             method="POST")
         for name, value in self.adapter.headers(self.api_key).items():
             request.add_header(name, value)
@@ -1929,7 +1993,7 @@ class LLMClient:
             "stream": True,
         }
         url = f"{self.base_url}/chat/completions"
-        request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST")
+        request = urllib.request.Request(url, data=json.dumps(_inject_gemini_thought_sig(payload)).encode("utf-8"), method="POST")
         request.add_header("Content-Type", "application/json")
         if self.api_key:
             request.add_header("Authorization", f"Bearer {self.api_key}")

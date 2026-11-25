@@ -358,6 +358,7 @@ class Chat:
     git_remote: str = ""
     git_last_push: float = 0.0
     git_auto_ask: bool = True
+    thought_stages: list[dict[str, Any]] = field(default_factory=list)
 
     # ── серіалізація ───────────────────────────────────────────────────────
     def to_dict(self) -> dict[str, Any]:
@@ -380,6 +381,7 @@ class Chat:
             "git_last_push": _as_float(self.git_last_push, 0.0),
             "git_auto_ask": bool(self.git_auto_ask),
             "messages": [message.to_dict() for message in self.messages],
+            "thought_stages": [dict(s) for s in self.thought_stages if isinstance(s, dict)],
         }
 
     @classmethod
@@ -408,7 +410,10 @@ class Chat:
                     messages.append(ChatMessage.from_dict(item))
                 except Exception:     # noqa: BLE001 - дані з диска не мають валити старт
                     LOG.debug("Пропущено пошкоджене повідомлення", exc_info=True)
+        raw_ts = data.get("thought_stages")
+        ts_list = [dict(s) for s in raw_ts if isinstance(s, dict)] if isinstance(raw_ts, list) else []
         return cls(
+            thought_stages=ts_list,
             id=chat_id,
             title=_as_text(data.get("title")),
             workspace=_as_text(data.get("workspace")),

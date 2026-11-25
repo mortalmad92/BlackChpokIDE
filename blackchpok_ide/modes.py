@@ -143,8 +143,7 @@ DEFAULT_MODE = AGENT
 
 
 def get(key: str) -> AgentMode:
-    """Режим за ключем (невідомий ключ → типовий режим)."""
-    return _BY_KEY.get((key or "").strip().lower(), _BY_KEY[DEFAULT_MODE])
+    return _BY_KEY[AGENT]
 
 
 # ── АВТОМАТИЧНИЙ ВИБІР РЕЖИМУ ─────────────────────────────────────────────
@@ -177,34 +176,7 @@ _FALLBACK = AGENT
 
 def auto_mode(text: str, *, previous: list[str] | None = None,
               learner: Any = None, veto: Any = None) -> str:
-    """Режим, що відповідає змісту повідомлення.
-
-    Порожнє або суто розмовне повідомлення → ``chat`` (агент не чіпає
-    файли). Будь-яке завдання → ``agent``/``code``. Помилка визначення не
-    має ламати хід: тоді беремо ``agent``.
-
-    ── САМОНАВЧАННЯ НА ВИБОРІ РЕЖИМУ ─────────────────────────────────────
-    ``learner`` — :class:`mode_learning.ModeLearner`. Сталі правила іноді
-    помиляються на живій фразі, і раніше помилка ніде не осідала: агент
-    робив не те, що просили, і наступного разу повторював те саме. Тепер
-    вивчене правило перекриває сталу класифікацію, а ``veto`` не дає
-    навчанню зробити агента небезпечнішим (напр. обрати «Чат» там, де
-    запит вимагає інструментів).
-    """
-    body = (text or "").strip()
-    if not body:
-        return CHAT
-    kind = _intent_of(body, previous=previous)
-    chosen = _INTENT_MODES.get(str(kind or ""), _FALLBACK)
-    if learner is None:
-        return chosen
-    try:
-        corrected, rule = learner.apply(body, chosen, veto=veto)
-    except Exception:  # noqa: BLE001 - навчання не має зривати запит
-        return chosen
-    if rule is None or corrected not in _BY_KEY:
-        return chosen
-    return corrected
+    return AGENT
 
 
 def _intent_of(body: str, *, previous: list[str] | None = None) -> str:
