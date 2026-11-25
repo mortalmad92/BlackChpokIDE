@@ -48,8 +48,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest]
+        os: [windows-latest, ubuntu-latest]
     steps:
+      - name: ???????? ?????? GUI ??? Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-tk xvfb
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -65,9 +70,11 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
           BLACKCHPOK_HOME: ${{ github.workspace }}/.buildtmp/ci-gui
-        run: python tests/live_every_button.py
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a python tests/live_every_button.py; else python tests/live_every_button.py; fi
 
       - name: Повний набір через run_all
         env:
           PYTHONIOENCODING: utf-8
-        run: python tests/run_all.py
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a python tests/run_all.py; else python tests/run_all.py; fi

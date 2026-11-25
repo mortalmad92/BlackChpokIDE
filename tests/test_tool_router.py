@@ -98,8 +98,8 @@ MCP_CASES: tuple[tuple[str, str], ...] = (
     ("що ти пам'ятаєш про проєкт", "mcp:memory_search"),
     ("про що ми говорили раніше", "mcp:memory_search"),
     ("проіндексуй проєкт", "mcp:index_project"),
-    ("працюй вночі 4 години", "mcp:night_shift"),
-    ("нічна зміна на 3 години", "mcp:night_shift"),
+    ("працюй вночі 4 години", "night_shift"),
+    ("нічна зміна на 3 години", "night_shift"),
     ("проаналізуй проєкт", "mcp:analyze_project"),
 )
 
@@ -146,7 +146,7 @@ def test_web_not_code_search() -> None:
 
 def test_night_hours() -> None:
     matched = next(h for h in tr.route("працюй вночі 4 години")
-                   if h.tool == "mcp:night_shift")
+                   if h.tool == "night_shift")
     check("нічний режим бере години", matched.arguments.get("query") == "4",
           str(matched.arguments))
 

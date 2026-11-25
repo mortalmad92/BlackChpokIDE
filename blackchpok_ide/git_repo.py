@@ -510,7 +510,7 @@ def has_meaningful_changes(folder: Path | str, min_lines: int = 15) -> tuple[boo
     try:
         res = _run(["diff", "--numstat"], cwd=root)
         for ln in (res.stdout or "").splitlines():
-            parts = ln.split("	")
+            parts = ln.split("\t")
             if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
                 changed_lines += int(parts[0]) + int(parts[1])
     except Exception:
