@@ -60,6 +60,8 @@ def app_data_dir() -> Path:
     tmp = os.environ.get("TEMP") or os.environ.get("TMP") or tempfile.gettempdir()
     if tmp:
         candidates.append(Path(tmp) / APP_SLUG)
+    if is_frozen():
+        candidates.append(Path(sys.executable).resolve().parent / "userdata")
     candidates.append(resource_dir() / "userdata")
     for target in candidates:
         try:

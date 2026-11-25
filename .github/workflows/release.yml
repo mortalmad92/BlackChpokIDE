@@ -1,0 +1,58 @@
+name: build-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow numpy pygments
+      - name: Build icon & executable
+        run: |
+          python tools/make_icon.py
+          python -m PyInstaller --noconfirm --clean BlackChpokIDE.spec
+      - name: Package Windows ZIP
+        run: |
+          Compress-Archive -Path dist/BlackChpok/* -DestinationPath BlackChpokIDE-Windows-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlackChpokIDE-Windows-x64
+          path: BlackChpokIDE-Windows-x64.zip
+
+  build-linux:
+    name: Build Linux x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install system & Python dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-tk
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow numpy pygments
+      - name: Build Linux binary
+        run: |
+          python tools/make_icon.py
+          python -m PyInstaller --noconfirm --clean BlackChpokIDE.spec
+      - name: Package Linux tar.gz
+        run: |
+          tar -czf BlackChpokIDE-Linux-x64.tar.gz -C dist BlackChpok
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlackChpokIDE-Linux-x64
+          path: BlackChpokIDE-Linux-x64.tar.gz

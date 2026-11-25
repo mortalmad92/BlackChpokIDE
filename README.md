@@ -22,7 +22,8 @@
 git clone https://github.com
 cd BlackChpokIDE
 install.bat
-run_ide.bat
+run_ide.bat        :: запуск IDE
+build_exe.bat      :: збірка портативної версії dist\\BlackChpok\\BlackChpok.exe
 ```
 
 ### Linux (Ubuntu / Debian / Arch)

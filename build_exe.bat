@@ -71,19 +71,19 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "%~dp0dist\BlackChpok.exe" (
-  echo ПОМИЛКА: dist\BlackChpok.exe не створено.
+if not exist "%~dp0dist\BlackChpok\BlackChpok.exe" (
+  echo ПОМИЛКА: dist\BlackChpok\BlackChpok.exe не створено.
   pause
   exit /b 1
 )
 
 echo.
 echo ============================================
-echo   ГОТОВО: dist\BlackChpok.exe
+echo   ГОТОВО: dist\BlackChpok\BlackChpok.exe
 echo ============================================
-for %%F in ("%~dp0dist\BlackChpok.exe") do echo   Розмір: %%~zF байт
+for %%F in ("%~dp0dist\BlackChpok\BlackChpok.exe") do echo   Розмір: %%~zF байт
 echo.
-echo   Запуск: dist\BlackChpok.exe "C:\шлях\до\проєкту"
-echo   Перевірка без вікна: dist\BlackChpok.exe --selftest
+echo   Запуск: dist\BlackChpok\BlackChpok.exe "C:\шлях\до\проєкту"
+echo   Перевірка без вікна: dist\BlackChpok\BlackChpok.exe --selftest
 echo.
 pause
