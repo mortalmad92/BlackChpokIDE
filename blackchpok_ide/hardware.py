@@ -814,3 +814,53 @@ __all__ = [
     "plan_for",
     "recommend",
 ]
+
+
+_CACHED_RAM_BW_GBS: float | None = None
+
+
+def measure_ram_bandwidth_gbs() -> float:
+    """??????? 15-?? ????? ???????? ?????????? ????????? ??????????? ???'??? (??/?)."""
+    global _CACHED_RAM_BW_GBS
+    if _CACHED_RAM_BW_GBS is not None:
+        return _CACHED_RAM_BW_GBS
+    import time as _t_bw
+    try:
+        size_mb = 16
+        buf = bytearray(size_mb * 1024 * 1024)
+        t0 = _t_bw.perf_counter()
+        mv = memoryview(buf)
+        mv[:] = b"\x5a" * len(buf)
+        _ = bytes(mv[:4096])
+        dt = max(1e-4, _t_bw.perf_counter() - t0)
+        bw = round(min(120.0, max(12.0, (size_mb / 1024.0) / dt * 2.4)), 1)
+    except Exception:
+        bw = 32.0
+    _CACHED_RAM_BW_GBS = bw
+    return bw
+
+
+def estimate_decode_tps(profile: HardwareProfile, choice: ModelChoice, gpu_layers: int = -1) -> float:
+    """?????? ?????????? ????????? ????????? (tok/s) ?? ????????? ??????."""
+    size_gb = max(1.0, float(getattr(choice, "size_gb", 8.0) or 8.0))
+    total_layers = max(1, int(getattr(choice, "layers", 32) or 32))
+    if gpu_layers < 0 or gpu_layers >= total_layers:
+        gpu_ratio = 1.0 if profile.best_gpu is not None else 0.0
+    else:
+        gpu_ratio = max(0.0, min(1.0, gpu_layers / total_layers))
+
+    if profile.has_cuda:
+        gpu_bw = 360.0 if profile.vram_gb >= 11.5 else 220.0
+    elif profile.has_vulkan or profile.has_rocm:
+        gpu_bw = 180.0
+    else:
+        gpu_bw = 0.0
+
+    ram_bw = measure_ram_bandwidth_gbs()
+    eff_bw = gpu_bw * gpu_ratio + ram_bw * (1.0 - gpu_ratio) if gpu_ratio > 0 else ram_bw
+    # ?????????? ??????? ???? ?? ????? (??? MoE ~25% ???, ??? dense ~100%)
+    name_low = str(getattr(choice, "name", "") or "").lower()
+    active_ratio = 0.28 if any(k in name_low for k in ("moe", "a3b", "30b-a", "35b-a", "mixtral")) else 1.0
+    active_gb = max(0.8, size_gb * active_ratio)
+    tps = (eff_bw / active_gb) * 0.72
+    return round(max(1.2, min(240.0, tps)), 1)

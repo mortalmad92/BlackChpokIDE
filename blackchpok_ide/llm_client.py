@@ -1121,6 +1121,41 @@ class LLMClient:
         LOG.info("Модель не була вибрана — вбудований рушій бере «%s»", loaded)
         return True
 
+    def decide(
+        self,
+        state: str,
+        question: str,
+        options: list[str],
+        *,
+        timeout: int = 12,
+    ) -> str:
+        """???????? ???????????? ?????? ??? ????????? ??????? ?????? (? ???????? KV-?????)."""
+        clean_opts = [str(o).strip() for o in (options or []) if str(o).strip()]
+        if not clean_opts:
+            return ""
+        opts_str = " | ".join(clean_opts)
+        prompt = (
+            f"State:\n{str(state)[:2500]}\n\n"
+            f"Question: {question}\n"
+            f"Allowed options: [{opts_str}]\n"
+            "Reply with ONLY ONE exact option from the list above, nothing else:"
+        )
+        try:
+            res = self.chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=12,
+                timeout=timeout,
+            )
+            ans = str(getattr(res, "text", "") or "").strip().strip('"\'.,:;!')
+            low_ans = ans.lower()
+            for opt in clean_opts:
+                if opt.lower() == low_ans or opt.lower() in low_ans:
+                    return opt
+        except Exception:
+            pass
+        return clean_opts
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -1150,6 +1185,10 @@ class LLMClient:
         if self.reasoning_effort and self.reasoning_effort != "default":
             if self.reasoning_effort in {"none", "low", "medium", "high", "max"}:
                 payload["reasoning_effort"] = self.reasoning_effort
+            if _is_local_url(self.base_url):
+                _is_aux = (not tools) and int(max_tokens or 0) > 0 and int(max_tokens or 0) <= 256
+                payload.setdefault("cache_prompt", True)
+                payload.setdefault("id_slot", 1 if _is_aux else 0)
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice or "auto"
