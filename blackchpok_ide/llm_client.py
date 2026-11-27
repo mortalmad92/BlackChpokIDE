@@ -909,6 +909,60 @@ class ChatResult:
         return payload
 
 
+
+def _describe_images_via_gemini(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """???? ? ???????????? ? image_url, ? ???????? ?????? ??? mmproj  ???????? ???????? ????? Gemini."""
+    has_img = False
+    for m in messages or ():
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, list) and any(isinstance(p, dict) and p.get("type") == "image_url" for p in c):
+            has_img = True
+            break
+    if not has_img:
+        return messages
+    try:
+        import json as _jv, urllib.request as _uv
+        from . import config as _cfgv
+        gkey = str(getattr(_cfgv.AppSettings.load(), "gemini_api_key", "") or "").strip()
+        if not gkey:
+            return messages
+        out_msgs = []
+        for m in messages:
+            c = m.get("content") if isinstance(m, dict) else None
+            if not isinstance(c, list):
+                out_msgs.append(m)
+                continue
+            texts, img_parts = [], []
+            for part in c:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    texts.append(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    u = str((part.get("image_url") or {}).get("url") or "")
+                    if u.startswith("data:") and ";base64," in u:
+                        hdr, b64 = u.split(";base64,", 1)
+                        mime = hdr.replace("data:", "", 1) or "image/png"
+                        img_parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+            if img_parts:
+                prompt_v = "Describe the attached image(s) in detail (UI elements, text, errors, layout) in Ukrainian for a coding agent."
+                body = _jv.dumps({"contents": [{"role": "user", "parts": [{"text": prompt_v}] + img_parts}]}).encode("utf-8")
+                url = f"https://googleapis.com{gkey}"
+                req = _uv.Request(url, data=body, headers={"Content-Type": "application/json"})
+                with _uv.urlopen(req, timeout=12) as resp:
+                    raw = _jv.loads(resp.read().decode("utf-8"))
+                desc = raw["candidates"]["content"]["parts"]["text"].strip()
+                merged_txt = ("\n".join(texts) + f"\n\n[\u041e\u043f\u0438\u0441 \u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u043d\u044f \u0447\u0435\u0440\u0435\u0437 Vision]:\n{desc}").strip()
+                nm = dict(m)
+                nm["content"] = merged_txt
+                out_msgs.append(nm)
+            else:
+                out_msgs.append(m)
+        return out_msgs
+    except Exception:
+        return messages
+
+
 class LLMClient:
     """Мінімальний клієнт chat/completions з підтримкою tool calling."""
 
@@ -1169,9 +1223,10 @@ class LLMClient:
     ) -> ChatResult:
         if not self.model and not self._use_embedded_default_model():
             raise LLMError("Модель не вибрана. Відкрий Налаштування → Модель і натисни «Оновити список».")
+        _send_msgs = _describe_images_via_gemini(messages) if _is_local_url(self.base_url) else messages
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": _send_msgs,
             "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
             "stream": False,
         }

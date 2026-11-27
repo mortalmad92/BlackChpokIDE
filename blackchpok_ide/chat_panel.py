@@ -206,6 +206,9 @@ class _MessageCard(tk.Frame):
             _clean_label = "↻ Повторити"
             _act_key = "retry"
         elif "продовж" in _low_tip or _raw_t in ("→", "⇥", "▶"):
+        elif "\u0440\u0435\u0434\u0430\u0433" in _low_tip or _raw_t in ("\u270e", "\u270f", "\u270d"):
+            _clean_label = "\u270e \u0420\u0435\u0434\u0430\u0433\u0443\u0432\u0430\u0442\u0438"
+            _act_key = "edit"
             _clean_label = "▶ Продовжити"
             _act_key = "continue"
         else:
