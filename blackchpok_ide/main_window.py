@@ -7288,6 +7288,7 @@ class BlackChpokIDE(tk.Tk):
         return bool(answer)
 
     def set_workspace(self, folder: Path, *, switch_chat: bool = True) -> None:
+        switch_chat = True
         _ide_root = Path(__file__).resolve().parent.parent
         try:
             _cand = Path(folder).resolve()

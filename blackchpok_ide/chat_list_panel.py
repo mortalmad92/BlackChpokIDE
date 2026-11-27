@@ -86,12 +86,28 @@ class _SessionRow(tk.Frame):
         self.dot.grid(row=0, column=0, rowspan=2, padx=(10, 8), pady=(9, 8))
 
         # ── колонка 1: назва + прев'ю
-        title = chat.title or "Новий агент"
+        _ws_raw = str(getattr(chat, "workspace", "") or "").strip()
+        _ws_name = Path(_ws_raw).name if _ws_raw else ""
+        _first_q = ""
+        try:
+            for _m in getattr(chat, "messages", None) or ():
+                if isinstance(_m, dict) and _m.get("role") == "user":
+                    _cand_q = " ".join(str(_m.get("content") or "").split()).strip()
+                    if _cand_q:
+                        _first_q = _cand_q
+                        break
+        except Exception:
+            pass
+        _raw_title = str(getattr(chat, "title", "") or "").strip()
+        if _first_q and (not _raw_title or _raw_title in ("\u041d\u043e\u0432\u0438\u0439 \u0430\u0433\u0435\u043d\u0442", "\u041d\u043e\u0432\u0438\u0439 \u0447\u0430\u0442", _ws_name)):
+            title = _first_q
+        else:
+            title = _raw_title or _first_q or "\u041d\u043e\u0432\u0438\u0439 \u0430\u0433\u0435\u043d\u0442"
         if chat.pinned:
-            title = "★ " + title
-        limit = COMPACT_TITLE_CHARS if compact else 60
+            title = "\u2605 " + title
+        limit = COMPACT_TITLE_CHARS if compact else 56
         if len(title) > limit:
-            title = title[: limit - 1] + "…"
+            title = title[: limit - 1] + "\u2026"
         self.title_label = tk.Label(
             self, text=title, bg=bg,
             fg=theme.FG_BRIGHT if active else theme.FG,
@@ -100,12 +116,11 @@ class _SessionRow(tk.Frame):
         )
         self.title_label.grid(row=0, column=1, sticky="ew", padx=(0, 4), pady=(8, 0))
 
-        folder_name = ""
-        if str(getattr(chat, "workspace", "") or "").strip():
-            folder_name = Path(chat.workspace).name
-        preview = chat.preview(72) or folder_name or "Порожня сесія"
-        if compact:
-            preview = chat.preview(40) or folder_name or "Порожня сесія"
+        if _ws_raw:
+            _ws_disp = _ws_raw if len(_ws_raw) <= 44 else "\u2026" + _ws_raw[-43:]
+            preview = f"\U0001f4c1 {_ws_disp}"
+        else:
+            preview = chat.preview(60) or "\u041f\u043e\u0440\u043e\u0436\u043d\u044f \u0441\u0435\u0441\u0456\u044f"
         self.preview_label = tk.Label(
             self, text=preview, bg=bg, fg=theme.FG_FAINT,
             font=theme.font(8), anchor="w", justify="left",

@@ -532,3 +532,68 @@ def smart_auto_sync(folder: Path | str, token: str = "", min_lines: int = 15) ->
     msg = default_message(files)
     pub = publish(root, message=msg, token=token)
     return pub.ok, pub.summary
+
+_ASKED_GH_FOLDERS: set[str] = set()
+
+
+def prompt_create_and_publish_github(folder: Path | str, token: str = "", suggested_name: str = "") -> tuple[bool, str]:
+    """Ask user to confirm repository name and publish on GitHub when project has meaningful code."""
+    root = Path(folder).resolve()
+    key = str(root).lower()
+    if key in _ASKED_GH_FOLDERS:
+        return False, "Already prompted for this folder."
+    ok_meaningful, lines_cnt, _ = has_meaningful_changes(root, min_lines=25)
+    if not ok_meaningful:
+        return False, f"Not enough meaningful lines ({lines_cnt}) yet."
+    st = state(root)
+    if st.remote_url:
+        return smart_auto_sync(root, token=token)
+    tok = str(token or "").strip()
+    if not tok:
+        return False, "GitHub account not linked."
+    _ASKED_GH_FOLDERS.add(key)
+
+    import re as _re_gh, json as _j_gh, urllib.request as _u_gh
+    base_slug = _re_gh.sub(r"[^a-zA-Z0-9._-]+", "-", (suggested_name or root.name or "blackchpok-project")).strip("-").lower()
+    if not base_slug or base_slug in ("tests", "blackchpokprojects", "project"):
+        base_slug = "smart-project-2026"
+
+    repo_name = base_slug
+    try:
+        import tkinter as _tk_gh
+        from tkinter import simpledialog as _sd_gh
+        if getattr(_tk_gh, "_default_root", None) is not None:
+            ans = _sd_gh.askstring(
+                "GitHub",
+                f"Project ready ({lines_cnt} lines). Confirm GitHub repository name to create and publish:",
+                initialvalue=base_slug,
+                parent=_tk_gh._default_root,
+            )
+            if not ans or not ans.strip():
+                return False, "Cancelled by user."
+            repo_name = _re_gh.sub(r"[^a-zA-Z0-9._-]+", "-", ans.strip()).strip("-")
+    except Exception:
+        pass
+
+    try:
+        req_body = _j_gh.dumps({"name": repo_name, "private": False, "auto_init": False}).encode("utf-8")
+        req = _u_gh.Request(
+            "https://github.com",
+            data=req_body,
+            headers={
+                "Authorization": f"token {tok}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "User-Agent": "BlackChpokIDE",
+            },
+        )
+        with _u_gh.urlopen(req, timeout=12) as resp:
+            created = _j_gh.loads(resp.read().decode("utf-8"))
+        clone_url = str(created.get("clone_url") or "")
+        if clone_url:
+            ensure_folder_git(root)
+            _run(["git", "remote", "add", "origin", clone_url], cwd=root)
+            return publish(root, token=tok, message=f"feat: initial release of {repo_name}")
+    except Exception as exc:
+        return False, f"GitHub create failed: {exc}"
+    return False, "Could not obtain repository URL."

@@ -3111,6 +3111,21 @@ class AgentRunner:
                 except Exception:
                     pass
 
+
+        # Lock workspace per chat: 1 chat = 1 directory, forbid switching paths mid-session
+        if not getattr(self, "_ws_lock_injected", False):
+            self._ws_lock_injected = True
+            _locked_dir = str(getattr(self, "workspace", "") or "")
+            _ws_rule = (
+                f"\n[\u041f\u0420\u0418\u0412'\u042f\u0417\u041a\u0410 \u0420\u041e\u0411\u041e\u0427\u041e\u0407 \u0414\u0418\u0420\u0415\u041a\u0422\u041e\u0420\u0406\u0407 (1 \u0427\u0410\u0422 = 1 \u041f\u0410\u041f\u041a\u0410)]: {_locked_dir}\n"
+                "\u0421\u0423\u0412\u041e\u0420\u041e \u0417\u0410\u0411\u041e\u0420\u041e\u041d\u0415\u041d\u041e \u0437\u043c\u0456\u043d\u044e\u0432\u0430\u0442\u0438 \u0440\u043e\u0431\u043e\u0447\u0438\u0439 \u0448\u043b\u044f\u0445 \u0430\u0431\u043e \u043f\u0435\u0440\u0435\u0445\u043e\u0434\u0438\u0442\u0438 \u0432 \u0456\u043d\u0448\u0456 \u043f\u0430\u043f\u043a\u0438 \u043f\u043e\u0441\u0435\u0440\u0435\u0434 \u043f\u0440\u043e\u0446\u0435\u0441\u0443. \u041f\u0440\u0430\u0446\u044e\u0439 \u0432\u0438\u043a\u043b\u044e\u0447\u043d\u043e \u0432\u0441\u0435\u0440\u0435\u0434\u0438\u043d\u0456 \u0446\u0456\u0454\u0457 \u0434\u0438\u0440\u0435\u043a\u0442\u043e\u0440\u0456\u0457.\n"
+            )
+            try:
+                if self.session.messages and self.session.messages.get("role") == "system":
+                    self.session.messages["content"] = str(self.session.messages.get("content") or "") + "\n" + _ws_rule
+            except Exception:
+                pass
+
         budget = self.step_budget
         facts = selflearning.TurnFacts(
             calls=calls,
