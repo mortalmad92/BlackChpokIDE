@@ -137,13 +137,13 @@ class HeaderBar(tk.Frame):
         tk.Label(brand_title, text="BlackChpok", bg=theme.BG_ALT, fg=theme.FG_BRIGHT, font=(UI_FONT, 14, "bold")).pack(side="left")
         tk.Label(brand_title, text="AI", bg=theme.BG_ALT, fg="#38BDF8", font=(UI_FONT, 14, "bold")).pack(side="left")
         for ck, ct in (("cat_file", i18n.tr("cat_file")), ("cat_edit", i18n.tr("cat_edit")), ("cat_view", i18n.tr("cat_view")), ("cat_mode", i18n.tr("cat_mode"))):
-            cb = widgets.HoverLabel(brand, text=ct, command=lambda k=ck: self._menu(k), bg=theme.BG_ALT, fg=theme.FG, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT, font=(UI_FONT, TEXT_SIZE), padx=5, pady=4)
+            cb = widgets.HoverLabel(brand, text=ct, command=lambda k=ck: self._menu(k), bg=theme.BG_ALT, fg=theme.FG, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT, font=(UI_FONT, 9), width=8, padx=4, pady=4)
             cb.pack(side="left", padx=1); self._buttons[ck] = cb
 
         self.agent_btn = widgets.HoverLabel(
             brand, text="\u25c8 \u0410\u0433\u0435\u043d\u0442 \u25be", command=lambda: self._menu("agent"),
             bg=theme.BG_ALT, fg=theme.FG, hover_bg=theme.BG_HOVER,
-            hover_fg=theme.FG_BRIGHT, font=(UI_FONT, TEXT_SIZE), padx=5, pady=4)
+            hover_fg=theme.FG_BRIGHT, font=(UI_FONT, 9), width=9, padx=4, pady=4)
         self.agent_btn.pack(side="left", padx=(2, 1))
         widgets.Tip(self.agent_btn, "\u0406\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0438 \u0430\u0433\u0435\u043d\u0442\u0430")
         self._buttons["agent"] = self.agent_btn
@@ -151,34 +151,10 @@ class HeaderBar(tk.Frame):
         self.model_btn = widgets.HoverLabel(
             brand, text="\u229f \u043c\u043e\u0434\u0435\u043b\u044c \u25be", command=lambda: self._menu("model"),
             bg=theme.BG_ALT, fg=theme.FG, hover_bg=theme.BG_HOVER,
-            hover_fg=theme.FG_BRIGHT, font=(UI_FONT, TEXT_SIZE), padx=5, pady=4)
+            hover_fg=theme.FG_BRIGHT, font=(UI_FONT, 9), width=9, padx=4, pady=4)
         self.model_btn.pack(side="left", padx=(1, 4))
         widgets.Tip(self.model_btn, "\u0412\u0438\u0431\u0456\u0440 \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u043e\u0457 \u0447\u0438 \u0445\u043c\u0430\u0440\u043d\u043e\u0457 \u043c\u043e\u0434\u0435\u043b\u0456")
         self._buttons["model"] = self.model_btn
-
-        def _switch_ui_lang():
-            _nl = i18n.toggle_lang()
-            self.lang_btn.configure(text=f"\U0001f310 {_nl.upper()}")
-            for _k in ("cat_file", "cat_edit", "cat_view", "cat_mode", "agent", "model"):
-                if _k in self._buttons:
-                    try:
-                        self._buttons[_k].configure(text=i18n.tr(_k))
-                    except Exception:
-                        pass
-
-            try:
-                i18n.apply_to_widget_tree(self.winfo_toplevel(), _nl)
-            except Exception:
-                pass
-
-        self.lang_btn = widgets.HoverLabel(
-            brand, text=f"\U0001f310 {i18n.get_lang().upper()}", command=_switch_ui_lang,
-            bg=theme.BG_ALT, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,
-            hover_fg=theme.FG_BRIGHT, font=(UI_FONT, TEXT_SIZE), padx=5, pady=4)
-        self.lang_btn.pack(side="left", padx=(2, 2))
-        widgets.Tip(self.lang_btn, "Switch UI & Agent language (UA / EN)")
-        self._buttons["lang"] = self.lang_btn
-
 
         divider = tk.Frame(self, bg=theme.BORDER, width=1, height=HEADER_HEIGHT - 18)
         divider.grid(row=0, column=0, sticky="e", padx=(0, 0))
@@ -336,6 +312,45 @@ class HeaderBar(tk.Frame):
             bg=theme.BG_ALT, fg=theme.FG, hover_bg=theme.BG_HOVER,
             hover_fg=theme.FG_BRIGHT, font=(UI_FONT, ICON_SIZE), padx=8, pady=2)
         self.settings_btn.pack(side="left")
+
+        def _switch_ui_lang():
+            _nl = i18n.toggle_lang()
+            _flg = i18n.get_flag_icon(_nl)
+            self.lang_btn.configure(text=f" {_nl.upper()}", image=_flg)
+            self.lang_btn._flag_img = _flg
+            for _k in ("cat_file", "cat_edit", "cat_view", "cat_mode", "agent", "model"):
+                if _k in self._buttons:
+                    try:
+                        self._buttons[_k].configure(text=i18n.tr(_k))
+                    except Exception:
+                        pass
+            try:
+                i18n.apply_to_widget_tree(self.winfo_toplevel(), _nl)
+            except Exception:
+                pass
+
+        _init_lang = i18n.get_lang()
+        _init_flag = i18n.get_flag_icon(_init_lang)
+        self.lang_btn = widgets.HoverLabel(
+            right,
+            text=f" {_init_lang.upper()}",
+            image=_init_flag,
+            compound="left",
+            command=_switch_ui_lang,
+            bg="#161B22",
+            fg=theme.FG_BRIGHT,
+            hover_bg=theme.BG_HOVER,
+            hover_fg=theme.FG_BRIGHT,
+            font=(UI_FONT, 9, "bold"),
+            width=46 if _init_flag else 6,
+            padx=8,
+            pady=4,
+        )
+        self.lang_btn._flag_img = _init_flag
+        self.lang_btn.pack(side="right", padx=(8, 4))
+        widgets.Tip(self.lang_btn, "Language / ???? (UA / EN)")
+        self._buttons["lang"] = self.lang_btn
+
         widgets.Tip(self.settings_btn, "Налаштування (Ctrl+,)")
         # keep visible view.settings
 
