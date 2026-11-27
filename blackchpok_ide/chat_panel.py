@@ -195,18 +195,39 @@ class _MessageCard(tk.Frame):
         return
 
     def add_action(self, text: str, command: Callable[[], None], tooltip: str = "") -> tk.Label:
+        _raw_t = str(text or "").strip()
+        _tip = str(tooltip or "").strip()
+        _low_tip = _tip.lower()
+        # ???????????? ??????/?????? ?????? ?? ????????? ???????
+        if "копі" in _low_tip or _raw_t in ("⧉", "📋"):
+            _clean_label = "⎘ Копіювати"
+            _act_key = "copy"
+        elif "повтор" in _low_tip or _raw_t in ("↻", "↺", "↶", "⟳"):
+            _clean_label = "↻ Повторити"
+            _act_key = "retry"
+        elif "продовж" in _low_tip or _raw_t in ("→", "⇥", "▶"):
+            _clean_label = "▶ Продовжити"
+            _act_key = "continue"
+        else:
+            _clean_label = _raw_t
+            _act_key = _tip or _raw_t
+
+        # ???????????? ?? ?????? ??? ?? ???????: ?????? ?????? ? ????? ????????????
         for _existing in list(self.extra.winfo_children()):
             try:
-                if str(_existing.cget("text") or "") == str(text or ""):
+                if getattr(_existing, "_act_key", None) == _act_key or str(_existing.cget("text") or "") == _clean_label:
+                    _existing.configure(text=_clean_label)
                     _existing.command = command
                     return _existing
             except Exception:
                 pass
-        label = widgets.HoverLabel(self.extra, text=text, command=command, bg=self._bg,
-                                   fg=theme.FG_FAINT, hover_fg=theme.FG_BRIGHT,
-                                   font=theme.font(self.ACTION_FONT_SIZE),
-                                   padx=6, pady=2, anchor="center")
-        label.pack(side="left")
+
+        label = widgets.HoverLabel(self.extra, text=_clean_label, command=command, bg=self._bg,
+                                   fg=theme.FG_DIM, hover_fg=theme.FG_BRIGHT,
+                                   font=theme.font(9),
+                                   padx=7, pady=2, anchor="center")
+        label._act_key = _act_key
+        label.pack(side="left", padx=(2, 0))
         if tooltip:
             widgets.Tip(label, tooltip)
         return label
