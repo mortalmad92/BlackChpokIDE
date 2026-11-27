@@ -3086,6 +3086,31 @@ class AgentRunner:
             except Exception:
                 pass
 
+
+        #  ?????? ????????? ?????: ?? ?????????? calculator.py ??? ??????? ????????? ?????????? 
+        if not getattr(self, "_empty_dir_guard_injected", False):
+            self._empty_dir_guard_injected = True
+            _ws_p = Path(str(getattr(self, "workspace", "") or "."))
+            _ign_d = {".git", ".mcp_rag", ".venv", "venv", "__pycache__"}
+            _real_files = []
+            if _ws_p.is_dir():
+                _real_files = [
+                    f for f in _ws_p.iterdir()
+                    if f.name not in _ign_d and not f.name.startswith(".")
+                ]
+            if not _real_files:
+                _empty_note = (
+                    "\n[\u0423\u0412\u0410\u0413\u0410: \u041f\u0410\u041f\u041a\u0410 \u041f\u0420\u041e\u0404\u041a\u0422\u0423 \u041f\u041e\u0420\u041e\u0416\u041d\u042f (0 \u0444\u0430\u0439\u043b\u0456\u0432)]: "
+                    "\u042f\u043a\u0449\u043e \u043a\u043e\u0440\u0438\u0441\u0442\u0443\u0432\u0430\u0447 \u043f\u0440\u043e\u0441\u0438\u0442\u044c \u043f\u0440\u043e\u0430\u043d\u0430\u043b\u0456\u0437\u0443\u0432\u0430\u0442\u0438 \u043f\u0440\u043e\u0454\u043a\u0442 \u0430\u0431\u043e \u0437\u043d\u0430\u0439\u0442\u0438 \u043f\u043e\u043c\u0438\u043b\u043a\u0438 \u2014 "
+                    "\u041a\u0410\u0422\u0415\u0413\u041e\u0420\u0418\u0427\u041d\u041e \u0417\u0410\u0411\u041e\u0420\u041e\u041d\u0415\u041d\u041e \u0441\u0442\u0432\u043e\u0440\u044e\u0432\u0430\u0442\u0438 \u043d\u0430\u0432\u0447\u0430\u043b\u044c\u043d\u0456 \u0447\u0438 \u0432\u0438\u0433\u0430\u0434\u0430\u043d\u0456 \u0444\u0430\u0439\u043b\u0438 (calculator.py, test_*.py \u0442\u043e\u0449\u043e). "
+                    "\u041e\u0434\u0440\u0430\u0437\u0443 \u043f\u043e\u0432\u0456\u0434\u043e\u043c \u043a\u043e\u0440\u0438\u0441\u0442\u0443\u0432\u0430\u0447\u0443, \u0449\u043e \u0440\u043e\u0431\u043e\u0447\u0430 \u0442\u0435\u043a\u0430 \u043f\u043e\u0440\u043e\u0436\u043d\u044f, \u0456 \u0437\u0430\u043f\u0440\u043e\u043f\u043e\u043d\u0443\u0439 \u043e\u0431\u0440\u0430\u0442\u0438 \u0442\u0435\u043a\u0443 \u0437 \u043a\u043e\u0434\u043e\u043c.\n"
+                )
+                try:
+                    if self.session.messages and self.session.messages[0].get("role") == "system":
+                        self.session.messages[0]["content"] = str(self.session.messages[0].get("content") or "") + "\n" + _empty_note
+                except Exception:
+                    pass
+
         budget = self.step_budget
         facts = selflearning.TurnFacts(
             calls=calls,
