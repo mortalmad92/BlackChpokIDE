@@ -3069,6 +3069,23 @@ class AgentRunner:
             except Exception:
                 pass
 
+
+        #  ???????? ?????? ?????????? ???????? ??????????? + Vision-???? ??? ????????? ? ???? 
+        if not getattr(self, "_vision_screenshot_injected", False):
+            self._vision_screenshot_injected = True
+            _vis_rule = (
+                "\n[\u0412\u0406\u0417\u0423\u0410\u041b\u042c\u041d\u0410 \u0412\u0406\u0414\u041b\u0410\u0414\u041a\u0410 \u0422\u0410 \u0421\u041a\u0420\u0406\u041d\u0428\u041e\u0422\u0418]: "
+                "\u0422\u0438 \u0412\u041c\u0406\u0404\u0428 \u0440\u043e\u0431\u0438\u0442\u0438 \u0441\u043a\u0440\u0456\u043d\u0448\u043e\u0442\u0438 \u0447\u0435\u0440\u0435\u0437 project_screenshot (\u0434\u043b\u044f \u0441\u0430\u0439\u0442\u0443 \u0432 Live Preview) "
+                "\u0442\u0430 app_screenshot (\u0434\u043b\u044f \u0432\u0456\u043a\u043d\u0430 \u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0438/\u0435\u043a\u0440\u0430\u043d\u0430)! "
+                "\u041f\u0456\u0441\u043b\u044f \u0441\u0442\u0432\u043e\u0440\u0435\u043d\u043d\u044f \u0430\u0431\u043e \u0437\u043c\u0456\u043d\u0438 UI/\u0441\u0430\u0439\u0442\u0443/GUI-\u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0438 \u041e\u0411\u041e\u0412'\u042f\u0417\u041a\u041e\u0412\u041e \u0432\u0438\u043a\u043b\u0438\u043a\u0430\u0439 project_screenshot \u0430\u0431\u043e app_screenshot, "
+                "\u0449\u043e\u0431 \u043f\u0435\u0440\u0435\u0432\u0456\u0440\u0438\u0442\u0438 \u0432\u0435\u0440\u0441\u0442\u043a\u0443/\u0432\u0456\u0434\u0441\u0443\u0442\u043d\u0456\u0441\u0442\u044c \u043f\u043e\u043c\u0438\u043b\u043e\u043a \u0442\u0430 \u043f\u043e\u043a\u0430\u0437\u0430\u0442\u0438 \u0437\u043d\u0456\u043c\u043e\u043a \u043a\u043e\u0440\u0438\u0441\u0442\u0443\u0432\u0430\u0447\u0443 \u0432 \u0447\u0430\u0442\u0456.\n"
+            )
+            try:
+                if self.session.messages and self.session.messages.get("role") == "system":
+                    self.session.messages["content"] = str(self.session.messages.get("content") or "") + "\n" + _vis_rule
+            except Exception:
+                pass
+
         budget = self.step_budget
         facts = selflearning.TurnFacts(
             calls=calls,
