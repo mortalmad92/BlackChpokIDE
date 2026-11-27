@@ -279,11 +279,11 @@ class HeaderBar(tk.Frame):
             git, text="\U0001f4e6 Hub", command=lambda: self._command("view.model_hub"),
             bg=theme.BG_ALT, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,
             hover_fg=theme.FG_BRIGHT, font=(UI_FONT, SMALL_SIZE), padx=4, pady=4)
-        self.quick_hub_btn.pack(side="left", padx=(0, 6))
+        # clean-3.0: hub_btn hidden
         self.pipeline_scheme_lbl = tk.Label(
             git, text="", bg=git.cget("bg"), fg=theme.FG_DIM, font=theme.font(8, "bold"),
         )
-        self.pipeline_scheme_lbl.pack(side="left", padx=(2, 8))
+        # clean-3.0: pipeline_lbl hidden
         widgets.Tip(self.pipeline_scheme_lbl, "\u041f\u043e\u0442\u043e\u0447\u043d\u0430 \u0441\u0445\u0435\u043c\u0430 \u0440\u043e\u0431\u043e\u0442\u0438 \u0430\u0433\u0435\u043d\u0442\u0430")
         widgets.Tip(self.quick_hub_btn, "Open Model Hub")
         self.git_btn = widgets.HoverLabel(
@@ -709,9 +709,9 @@ class HeaderBar(tk.Frame):
                 steps = 32
                 sw = w / steps
                 for s in range(steps):
-                    t_val = phase + (s / steps) * 2.0 * math.pi
+                    t_val = phase + (s / steps) * 3.0 * math.pi
                     r = int(115 + 45 * math.sin(t_val))
-                    g = int(130 + 45 * math.sin(t_val + 2.09))
+                    g = int(130 + 45 * math.sin(t_val + 3.09))
                     b = int(165 + 45 * math.sin(t_val + 4.18))
                     hx = f"#{r:02x}{g:02x}{b:02x}"
                     cv.create_rectangle(int(s * sw), 0, int((s + 1) * sw) + 1, 2, fill=hx, outline="")

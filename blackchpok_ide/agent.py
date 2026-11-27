@@ -3141,6 +3141,22 @@ class AgentRunner:
             except Exception:
                 pass
 
+
+        # BlackChpok 3.0.0: Infinite Context NEUROMESH + Autonomous Engineering Protocol
+        if not getattr(self, "_nm30_injected", False):
+            self._nm30_injected = True
+            _nm_rule = (
+                "\n[BLACKCHPOK 3.0.0 NEUROMESH INFINITE CONTEXT]: "
+                "1) Keep responses concise, structured, and action-driven. "
+                "2) Always verify code changes with syntax checks or live screenshots (project_screenshot / app_screenshot). "
+                "3) Never invent dummy files in empty workspaces; always inspect real project files first.\n"
+            )
+            try:
+                if self.session.messages and self.session.messages.get("role") == "system":
+                    self.session.messages["content"] = str(self.session.messages.get("content") or "") + _nm_rule
+            except Exception:
+                pass
+
         budget = self.step_budget
         facts = selflearning.TurnFacts(
             calls=calls,

@@ -1,4 +1,4 @@
-# BlackChpok IDE 2.0
+# BlackChpok IDE 3.0.0
 
 **English** | [Українська](README_UK.md)
 

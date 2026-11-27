@@ -414,4 +414,26 @@ class NeuromeshPanel(tk.Frame):
             return Path.cwd()
 
 
+
+    def run_integrity_check(self) -> None:
+        try:
+            svc = getattr(self, 'service', None) or getattr(self, '_service', None)
+            if svc is not None and hasattr(svc, 'integrity'):
+                res = svc.integrity()
+                self.refresh()
+                from tkinter import messagebox as _mb_nm
+                _mb_nm.showinfo('NEUROMESH 3.0', f'Integrity: {res}')
+        except Exception:
+            pass
+
+    def run_reindex_vectors(self) -> None:
+        try:
+            svc = getattr(self, 'service', None) or getattr(self, '_service', None)
+            if svc is not None and hasattr(svc, 'reindex_vectors'):
+                res = svc.reindex_vectors()
+                self.refresh()
+                from tkinter import messagebox as _mb_nm
+                _mb_nm.showinfo('NEUROMESH 3.0', f'Vectors: {res}')
+        except Exception:
+            pass
 __all__ = ["NeuromeshPanel", "RECENT_LIMIT"]
