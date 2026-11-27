@@ -265,8 +265,23 @@ def main(argv: list[str] | None = None) -> int:
     _ide_dir = Path(__file__).resolve().parent
     _ws_arg = Path(args.workspace).resolve() if getattr(args, "workspace", None) else _ide_dir
     if _ws_arg == _ide_dir or _ide_dir in _ws_arg.parents:
-        _ws_arg = (Path.home() / "BlackChpokProjects")
-        _ws_arg.mkdir(parents=True, exist_ok=True)
+        _restored = None
+        try:
+            from blackchpok_ide.config import AppSettings as _AS_boot
+            _st_boot = _AS_boot.load()
+            for _cand_p in [getattr(_st_boot, "workspace", None)] + list(getattr(_st_boot, "recent", None) or []):
+                if _cand_p:
+                    _cp = Path(str(_cand_p)).resolve()
+                    if _cp.is_dir() and _cp != _ide_dir and _ide_dir not in _cp.parents:
+                        _restored = _cp
+                        break
+        except Exception:
+            pass
+        if _restored is not None:
+            _ws_arg = _restored
+        else:
+            _ws_arg = (Path.home() / "BlackChpokProjects")
+            _ws_arg.mkdir(parents=True, exist_ok=True)
     return run(_ws_arg)
 
 
