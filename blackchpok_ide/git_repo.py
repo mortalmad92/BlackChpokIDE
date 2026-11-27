@@ -578,7 +578,7 @@ def prompt_create_and_publish_github(folder: Path | str, token: str = "", sugges
     try:
         req_body = _j_gh.dumps({"name": repo_name, "private": False, "auto_init": False}).encode("utf-8")
         req = _u_gh.Request(
-            "https://github.com",
+            "https://api.://github.com",
             data=req_body,
             headers={
                 "Authorization": f"token {tok}",
