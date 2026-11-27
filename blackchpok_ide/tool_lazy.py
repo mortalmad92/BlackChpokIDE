@@ -86,7 +86,10 @@ TIER_TITLES: dict[int, str] = {
 #: економити один крок на читанні файлу означало б платити зайвим кроком
 #: моделі в КОЖНОМУ завданні.
 CORE_TOOLS: tuple[str, ...] = (
-    "read_file", "write_file", "edit_file", "append_file",
+    "read_file", "write_file", "edit_file",
+    "run_command",
+    "project_screenshot",
+    "app_screenshot", "append_file",
     "list_dir", "search_text", "find_files", "run_command",
     "project_tree", "python_check", "git_status", "git_diff",
     # ── ІНТЕРНЕТ — таке саме ядро, як читання файлу ──────────────────────
