@@ -2439,14 +2439,14 @@ class BlackChpokIDE(tk.Tk):
             active = self.chat_store.active()
             if active is not None and active.message_count:
                 self.open_chat(active.id)
-        try:
-            from . import i18n as _i18n_mw
-            _i18n_mw.apply_to_widget_tree(self.root)
-            self.root.after(600, lambda: _i18n_mw.apply_to_widget_tree(self.root))
-        except Exception:
-            pass
             else:
                 self.after(120, self.show_welcome)
+            try:
+                from . import i18n as _i18n_mw
+                _i18n_mw.apply_to_widget_tree(self.root)
+                self.root.after(600, lambda: _i18n_mw.apply_to_widget_tree(self.root))
+            except Exception:
+                pass
 
     def _project_root(self) -> Optional[Path]:
         """Тека проєкту для панелей — або ``None``, поки її не вибрано.
