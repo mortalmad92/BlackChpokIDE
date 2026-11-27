@@ -166,6 +166,11 @@ class HeaderBar(tk.Frame):
                     except Exception:
                         pass
 
+            try:
+                i18n.apply_to_widget_tree(self.winfo_toplevel(), _nl)
+            except Exception:
+                pass
+
         self.lang_btn = widgets.HoverLabel(
             brand, text=f"\U0001f310 {i18n.get_lang().upper()}", command=_switch_ui_lang,
             bg=theme.BG_ALT, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,

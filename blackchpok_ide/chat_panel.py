@@ -25,6 +25,7 @@ from . import (autonomy, command_menu, deep_mode, deep_view, effort, markdown_vi
 from .agent import AgentEvent, AgentRunner
 from .agent_tools import ToolRegistry
 from .config import Settings
+from . import i18n
 
 LOG = logging.getLogger("blackchpok.chat")
 
