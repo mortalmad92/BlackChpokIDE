@@ -135,7 +135,7 @@ class HeaderBar(tk.Frame):
         brand_title.pack(side="left", padx=(6, 10))
         tk.Label(brand_title, text="BlackChpok", bg=theme.BG_ALT, fg=theme.FG_BRIGHT, font=(UI_FONT, 14, "bold")).pack(side="left")
         tk.Label(brand_title, text="AI", bg=theme.BG_ALT, fg="#38BDF8", font=(UI_FONT, 14, "bold")).pack(side="left")
-        for ck, ct in (("cat_file", "\u0424\u0430\u0439\u043b \u25be"), ("cat_edit", "\u041f\u0440\u0430\u0432\u043a\u0430 \u25be"), ("cat_view", "\u0412\u0438\u0433\u043b\u044f\u0434 \u25be"), ("cat_mode", "\u0420\u0435\u0436\u0438\u043c \u25be")):
+        for ck, ct in (("cat_file", i18n.tr("cat_file")), ("cat_edit", i18n.tr("cat_edit")), ("cat_view", i18n.tr("cat_view")), ("cat_mode", i18n.tr("cat_mode"))):
             cb = widgets.HoverLabel(brand, text=ct, command=lambda k=ck: self._menu(k), bg=theme.BG_ALT, fg=theme.FG, hover_bg=theme.BG_HOVER, hover_fg=theme.FG_BRIGHT, font=(UI_FONT, TEXT_SIZE), padx=5, pady=4)
             cb.pack(side="left", padx=1); self._buttons[ck] = cb
 
@@ -154,6 +154,25 @@ class HeaderBar(tk.Frame):
         self.model_btn.pack(side="left", padx=(1, 4))
         widgets.Tip(self.model_btn, "\u0412\u0438\u0431\u0456\u0440 \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u043e\u0457 \u0447\u0438 \u0445\u043c\u0430\u0440\u043d\u043e\u0457 \u043c\u043e\u0434\u0435\u043b\u0456")
         self._buttons["model"] = self.model_btn
+
+        def _switch_ui_lang():
+            _nl = i18n.toggle_lang()
+            self.lang_btn.configure(text=f"\U0001f310 {_nl.upper()}")
+            for _k in ("cat_file", "cat_edit", "cat_view", "cat_mode", "agent", "model"):
+                if _k in self._buttons:
+                    try:
+                        self._buttons[_k].configure(text=i18n.tr(_k))
+                    except Exception:
+                        pass
+
+        self.lang_btn = widgets.HoverLabel(
+            brand, text=f"\U0001f310 {i18n.get_lang().upper()}", command=_switch_ui_lang,
+            bg=theme.BG_ALT, fg=theme.FG_DIM, hover_bg=theme.BG_HOVER,
+            hover_fg=theme.FG_BRIGHT, font=(UI_FONT, TEXT_SIZE), padx=5, pady=4)
+        self.lang_btn.pack(side="left", padx=(2, 2))
+        widgets.Tip(self.lang_btn, "Switch UI & Agent language (UA / EN)")
+        self._buttons["lang"] = self.lang_btn
+
 
         divider = tk.Frame(self, bg=theme.BORDER, width=1, height=HEADER_HEIGHT - 18)
         divider.grid(row=0, column=0, sticky="e", padx=(0, 0))

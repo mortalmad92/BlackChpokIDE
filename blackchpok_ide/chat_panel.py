@@ -199,16 +199,16 @@ class _MessageCard(tk.Frame):
         _tip = str(tooltip or "").strip()
         _low_tip = _tip.lower()
         if "\u043a\u043e\u043f\u0456" in _low_tip or _raw_t in ("\u29c9", "\u2398"):
-            _clean_label = "\u2398 \u041a\u043e\u043f\u0456\u044e\u0432\u0430\u0442\u0438"
+            _clean_label = i18n.tr("copy")
             _act_key = "copy"
         elif "\u043f\u043e\u0432\u0442\u043e\u0440" in _low_tip or _raw_t in ("\u21bb", "\u21ba", "\u21b6", "\u27f3"):
-            _clean_label = "\u21bb \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0438"
+            _clean_label = i18n.tr("retry")
             _act_key = "retry"
         elif "\u0440\u0435\u0434\u0430\u0433" in _low_tip or _raw_t in ("\u270e", "\u270f", "\u270d"):
-            _clean_label = "\u270e \u0420\u0435\u0434\u0430\u0433\u0443\u0432\u0430\u0442\u0438"
+            _clean_label = i18n.tr("edit")
             _act_key = "edit"
         elif "\u043f\u0440\u043e\u0434\u043e\u0432\u0436" in _low_tip or _raw_t in ("\u2192", "\u21e5", "\u25b6"):
-            _clean_label = "\u25b6 \u041f\u0440\u043e\u0434\u043e\u0432\u0436\u0438\u0442\u0438"
+            _clean_label = i18n.tr("continue")
             _act_key = "continue"
         else:
             _clean_label = _raw_t

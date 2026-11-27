@@ -3126,6 +3126,21 @@ class AgentRunner:
             except Exception:
                 pass
 
+
+        # Respect active UI language (Ukrainian or English)
+        if not getattr(self, "_lang_pref_injected", False):
+            self._lang_pref_injected = True
+            try:
+                from . import i18n as _i18n_ag
+                if _i18n_ag.get_lang() == "en":
+                    _lnote = "\n[LANGUAGE]: Respond and write explanations/comments in clear English.\n"
+                else:
+                    _lnote = "\n[\u041c\u041e\u0412\u0410]: \u0412\u0456\u0434\u043f\u043e\u0432\u0456\u0434\u0430\u0439 \u0443\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u043e\u044e \u043c\u043e\u0432\u043e\u044e.\n"
+                if self.session.messages and self.session.messages.get("role") == "system":
+                    self.session.messages["content"] = str(self.session.messages.get("content") or "") + _lnote
+            except Exception:
+                pass
+
         budget = self.step_budget
         facts = selflearning.TurnFacts(
             calls=calls,
