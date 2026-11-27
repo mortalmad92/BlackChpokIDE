@@ -20,6 +20,7 @@ import tkinter as tk
 from typing import Callable, Optional
 
 from . import icons, theme, widgets
+from . import i18n
 
 #: Висота шапки: один рядок із великими іконками.
 #:
